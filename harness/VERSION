@@ -1,0 +1,4 @@
+harness-version: 1.1.0
+changelog:
+  - 1.1.0: design-first 機制、AC 自動覆蓋檢查、可追溯 commit、風險分級、LESSONS 回寫、OpenAPI SoT、黃金範例、交接快照模板
+  - 1.0.0: 初版（orchestrator + 8 subagents、文件契約、workflow、DoD、可攜性指南）

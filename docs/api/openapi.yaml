@@ -1,0 +1,17 @@
+# 契約的機器可讀 source of truth（擁有者：api-contract-designer）
+# docs/02-api-contract.md 是本檔的人讀視圖；兩者衝突時以本檔為準。
+# 前端以本檔 codegen 型別（如 openapi-typescript）；後端可用本檔做回應驗證。
+openapi: 3.1.0
+info:
+  title: "{{PROJECT_NAME}} API"
+  version: "0.0.0"   # 未凍結；凍結時升為 1.0.0 並鎖定
+paths: {}
+components:
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: { type: object }
