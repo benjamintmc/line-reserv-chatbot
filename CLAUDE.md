@@ -48,7 +48,7 @@
 
 ## 4. 程式碼慣例（依專案調整）
 
-- 語言/框架版本：Node.js 20+ / TypeScript 5+（`strict` 開啟）/ Fastify 4+ / `@line/bot-sdk` 最新穩定版。
+- 語言/框架版本：Node.js 20+ / TypeScript 5+（`strict` 開啟）/ Fastify 4+ / `@line/bot-sdk` 最新穩定版 / `better-sqlite3` 版本以 ADR-003 為準（現 pin `^12.x`，因 Node 24 ABI 與 prebuilt 相容性）。
 - 目錄結構：`src/` 依功能分層——`src/webhook`（LINE 事件入口與驗簽）、`src/commands`（指令解析 `+N`/`-N`/`名單`/`開團`…）、`src/domain`（報名與開團 state machine 商業邏輯）、`src/db`（schema、migration、repository）、`src/line`（Messaging API 客戶端與訊息組版）。測試放對應 `__tests__/` 或 `*.test.ts`。
 - 命名：檔名 kebab-case、型別/介面 PascalCase、函式/變數 camelCase；資料表與欄位 snake_case（見 `docs/00-project-brief.md` 資料模型）。
 - 錯誤處理：後端統一錯誤格式 `{ code, message, details }`；對使用者的 LINE 回覆一律繁體中文，且只回應可識別指令（其餘群組訊息忽略，避免洗版）。
