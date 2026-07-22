@@ -10,7 +10,7 @@
 - **目標使用者**：高爾夫球聚 LINE 群組的一般成員、主辦人（Host）、系統管理員（Admin）。
 - **技術棧**：Node.js + TypeScript + Fastify + `@line/bot-sdk`；MVP 資料庫用 SQLite（`better-sqlite3`），無持久磁碟平台可切換 PostgreSQL（Supabase / Neon）。
 - **部署目標**：任一支援 HTTPS 的平台（Render / Fly.io / Cloud Run）；開發期以 ngrok 對接 LINE webhook。
-- **不做什麼（Non-goals）**：MVP 不做候補（waitlist）機制、同群組多場並行活動；代報名（`+1 名字`）為 v1.1 候選；球組編排與收款統計為 v2 候選。詳見 `docs/00-project-brief.md` §待確認事項。
+- **不做什麼（Non-goals）**：MVP 不做同群組多場並行活動（限一場）、球組編排與收款統計（v2）、執行期 Admin 後台指令／網頁介面（以環境變數設 host）。**候補（waitlist）與代報名（`+1 名字`）已納入 MVP**。決策紀錄見 `docs/00-project-brief.md`。
 
 ## 1. 運作模式
 

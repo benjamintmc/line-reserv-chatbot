@@ -26,12 +26,16 @@
 
 ## 範圍
 - **MVP 必要功能（對應 requirements §3 功能需求）**：
-  - **FR-1 報名機制**：`+1`~`+N` 以傳訊人 LINE 顯示名稱報名，多位顯示為 `名字`、`名字(2)`…；重複輸入視為追加；成功後回覆活動摘要 + 完整名單 + 剩餘名額；額滿拒絕超額（`+N` 超額時採「部分接受補滿剩餘並告知」，見待確認 #1）；`-N` 取消，歸零移除。
+  - **FR-1 報名機制**：`+1`~`+N` 以傳訊人 LINE 顯示名稱報名，多位顯示為 `名字`、`名字(2)`…；重複輸入視為追加；成功後回覆活動摘要 + 完整名單 + 剩餘名額；`-N` 取消，歸零移除。
+    - **超額（定案 #1）**：一律拒絕部分接受；`+N` 若無法全數進正取，則**整批 N 位轉入候補佇列**（FIFO），並回覆已排候補與目前候補序位。
+    - **候補（定案 #2）**：候補納入 MVP。有正取名額空出（取消／主辦人提高上限）時，**自動依 FIFO 遞補**最前面的候補為正取，並在群組以 LINE **mention（@）標註**被遞補者通知。
+    - **代報名（定案 #4）**：支援 `+1 名字`（例：`+1 陳大哥`）代非 LINE 用戶報名；該名額記錄 `owner_user_id`（代報者）；取消用 `-1 名字`，**僅原代報者或主辦人**可取消。
   - **FR-2 名單查詢**：`名單`／`list` 回覆活動資訊 + 依序名單（含序號）+ 已報名/上限 + 每人價格 + 預估總金額；無活動時回「目前沒有開放報名的活動」。
   - **FR-3 活動建立（主辦人限定）**：`開團`／`新活動` 觸發，收集 日期/時間/地點/人數上限/每人價格；支援一行式（`開團 2026/08/15 07:30 東方球場 16人 2200元`）與逐步問答兩種；建立前顯示摘要待 `確認`；`關閉報名`、`取消活動` 管理狀態。
   - **FR-4 主辦人管理（後台）**：Admin 以 LINE `userId` 增/刪主辦人；MVP 以環境變數或資料表 + CLI/API 實作；提供 `我的ID`（私訊）讓用戶查自己的 userId。
   - **FR-5 訊息規範**：只回應可識別指令，其餘忽略；全繁體中文。
-- **明確不做（Non-goals）**：候補（waitlist）機制、同群組同時多場活動（MVP 限一場）。代報名（`+1 名字`）列 v1.1 候選；球組編排（每組 4 人）與收款統計列 v2 候選。
+- **候補與代報名納入 MVP**（定案 #2、#4，見上 FR-1）。
+- **明確不做（Non-goals）**：同群組同時多場活動（MVP 限一場，定案 #3）；球組編排（每組 4 人）與收款統計（v2，定案 #5）；執行期 Admin 後台指令／網頁介面（定案 #6，MVP 以環境變數設定 host 白名單，保留 `我的ID` 供 Admin 蒐集 userId）。
 
 ## 限制
 - **技術偏好/限制**：Node.js + TypeScript + Fastify（或 Express）+ `@line/bot-sdk`；MVP 資料庫 SQLite（`better-sqlite3`），無持久磁碟平台改用 PostgreSQL（Supabase / Neon 免費層）。託管於任一支援 HTTPS 平台（Render / Fly.io / Cloud Run），開發期用 ngrok。LINE 端須關閉自動回覆、開啟 webhook 與加入群組權限。
@@ -47,7 +51,7 @@
 ## 資料模型（草案，見 requirements §6）
 - `users`：`line_user_id` UNIQUE、`display_name`（最近快照）、`is_host`。
 - `events`：`group_id`、`host_user_id`、`event_date`、`event_time`、`location`、`capacity`、`price_per_person`、`status`（draft/open/closed/cancelled/done）。
-- `registrations`：`event_id`、`user_id`、`display_name`（報名當下快照）、`count`，`UNIQUE(event_id, user_id)`。
+- `registrations`：因需支援候補 FIFO 遞補與代報名，建議改為**一名額一列（per-slot）**而非單純 `count`：`event_id`、`owner_user_id`（報名／代報者）、`display_name`（報名當下快照，代報名為輸入的名字）、`kind`（self / proxy）、`status`（confirmed / waitlist）、`seq`（報名序，供 FIFO 遞補與名單編號）、`created_at`。實際 schema 由 architect 於 M1 定案（見 `docs/adr/`）。
 - `conversation_states`：逐步開團問答用（`line_user_id` PK、`state`、`payload`）。
 - `processed_events`：webhook 冪等去重（`message_id` PK）。
 
@@ -72,13 +76,13 @@
 - **M4** 主辦人管理與輔助（0.5 天）：`我的ID`、host 白名單管理（CLI 或簡單 admin API）。
 - **M5** 部署與驗收（0.5 天）：正式部署、環境變數、webhook 切換、實機群組測試。
 
-## 待確認事項（開工前決定，見 requirements §10）
-1. `+N` 導致超額：部分接受（補滿剩餘）還是全數拒絕？**建議：部分接受並告知。**
-2. 額滿是否需候補（waitlist）？**建議：MVP 不做，v2 再加。**
-3. 同群組是否可能同時多場活動？**建議：MVP 限一場。**
-4. 是否需代報名（`+1 陳大哥`）？**建議：v1.1 支援 `+1 名字`。**
-5. 活動結束後是否需球組編排與收款統計？**v2 候選。**
-6. Admin 後台形式：CLI／API 即可，還是需網頁介面？
+## 決策紀錄（原待確認事項，已於 2026-07-22 定案）
+1. `+N` 導致超額 → **一律拒絕部分接受；整批轉候補**（FIFO）。
+2. 候補（waitlist）→ **納入 MVP**；自動 FIFO 遞補；遞補時群組 @ 標註被遞補者。
+3. 同群組多場活動 → **MVP 限一場進行中**。
+4. 代報名 `+1 名字` → **納入 MVP**；記 `owner_user_id`；`-1 名字` 取消，限原代報者或主辦人。
+5. 球組編排與收款統計 → **不含，列 v2 候選**。
+6. Admin 後台 → **MVP 不含**；以環境變數設 host 白名單，保留 `我的ID` 供蒐集 userId。
 
 ## 關鍵使用者旅程（供 e2e-tester 使用）
 1. **開團 → 公告 → 報名**：主辦人 `開團 2026/08/15 07:30 東方球場 16人 2200元` → `確認` → 群組公告 → 成員 `+2` → bot 回名單含 `名字`、`名字(2)` 與剩餘名額。
