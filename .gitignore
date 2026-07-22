@@ -12,9 +12,12 @@ build/
 *.tsbuildinfo
 
 # Database (local SQLite)
+data/
 *.sqlite
 *.sqlite3
 *.db
+*.db-wal
+*.db-shm
 
 # Logs
 *.log
