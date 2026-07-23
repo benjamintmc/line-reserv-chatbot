@@ -12,13 +12,14 @@
 | T-003 | 本機安裝 Node.js 20+ | – | – | 使用者 | DONE | – | 確認 Node v24.18.0 / npm 11.16.0，已解除阻塞 |
 | T-004 | M1 DB schema + migration | D-001（APPROVED） | R1 | backend-engineer | DONE | src/db/ | 2026-07-23 完成：build 綠、40 tests、AC 13/13、architect-reviewer Guardrails 零違反、unit-tester 真實覆蓋覆核。收尾項見 Backlog（.sql 複製、ADR-003） |
 | T-005 | M1 command parser（+N/-N/名單/開團） | D-002（APPROVED） | R1 | backend-engineer | DONE | src/commands/ | 2026-07-23 完成：build 綠、83 tests、AC 39/39、architect-reviewer 審 D-002 通過、unit-tester 獨立覆核無 bug（補 17 邊界測試） |
+| T-006 | M2 報名核心（signup/cancel/list domain + webhook 接線） | D-003（IN_DISCUSSION） | R1 | backend-engineer | BLOCKED | src/domain/, src/webhook/ | 等 D-003 APPROVED；需新增 repo 方法 findActiveProxyByName（主辦 override，D-001 未提供） |
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
 |---|---|---|---|
 | D-001 | 資料模型（per-slot、候補、代報名） | architect | APPROVED（2026-07-22，reviewer 通過 + errata + 使用者核可） |
 | D-002 | 指令解析 command parser（+N/-N/名單/開團；全形/上限/邊界） | backend-engineer | APPROVED（2026-07-23，reviewer 通過 + errata + 使用者核可） |
-| D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版） | backend-engineer | 未開始（M2，依賴 D-002 解析輸出 + D-001 repository） |
+| D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版/webhook 接線） | backend-engineer | IN_DISCUSSION — **已通過 architect-reviewer + nit errata，待使用者最終 APPROVED**（OP-1~4 已裁決；風險 R1；下次 session 第一件事） |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
@@ -33,7 +34,8 @@
 - ~~補 ADR-003 記錄 better-sqlite3 版本 pin~~ **已完成（2026-07-23）**：`docs/adr/ADR-003-better-sqlite3-version-pin.md`。附帶待辦：architect 建議 CLAUDE.md §4「最新穩定版」加註「DB 驅動版本以 ADR-003 為準」——**需使用者同意才改 CLAUDE.md**（見決策待辦）。
 - **（D-003 落實）** 報名/取消/遞補交易一律經 `runImmediate` 封裝（G2 守門對 DEFERRED 交易為盡力非強制）；`DATABASE_PATH` vs `DATABASE_URL` 於切 PG 時於 config 併容。
 - **（文件小修，architect-reviewer D-002 nit-4）** D-001 §9 有處括號把 command parser 誤歸 `src/domain/`（實際依 CLAUDE.md §4 應在 `src/commands/`，D-002 已正確）；下次動 D-001 時順手修正措辭。
-- **（webhook 接線，M2）** `src/webhook/handler.ts` 目前仍是 M0 echo；D-003 時換用 `parseCommand` + exhaustive switch 分派，`unknown`→不回覆。
+- **（webhook 接線，M2/T-006）** `src/webhook/handler.ts` 目前仍是 M0 echo；D-003 時換用 `parseCommand` + exhaustive switch 分派，`unknown`→不回覆。architect-reviewer nit-3：handler 需從 `buildReplies` 純函式轉 async（profile fetch）並注入 repositories/lineClient（DI 或 module import 擇一），server.ts 事件 loop 需相應改動——列 T-006 實作範圍。
+- **（e2e，T-006 整合）** architect-reviewer nit-1：D-003 雖標 R1，因含授權（主辦 override）+ 刪除類（soft-delete），e2e 至少需涵蓋 AC-17（主辦跨 owner 代取消觸發 FIFO 遞補）此關鍵流程。
 
 ## 決策待辦（需使用者裁決）
 - （無）CLAUDE.md §4 版本註記已於 2026-07-23 經使用者同意加註指向 ADR-003。
