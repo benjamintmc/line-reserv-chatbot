@@ -11,6 +11,8 @@ export const config = {
     .filter(Boolean),
   /** 本機 SQLite 檔路徑；不寫死、不進版控（data/ 已於 .gitignore 忽略）。 */
   databasePath: process.env.DATABASE_PATH ?? './data/golf.db',
+  /** 跨試/除錯用：設 DEBUG_WEBHOOK=1 時於 log 印出每個 webhook 事件的 source（groupId/userId）與文字，方便手動取得 groupId 以 seed 活動。生產請關閉。 */
+  debugWebhook: (process.env.DEBUG_WEBHOOK ?? '') === '1',
 } as const;
 
 /** 缺少 LINE 憑證時回傳缺項清單，供啟動時警告。 */

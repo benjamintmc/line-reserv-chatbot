@@ -68,6 +68,18 @@ export function buildServer(handler: WebhookHandler = buildHandler()): FastifyIn
     const body = req.body as WebhookBody;
     await Promise.all(
       (body.events ?? []).map(async (event) => {
+        // 跨試/除錯：DEBUG_WEBHOOK=1 時印出事件來源，方便取得 groupId 以 seed 活動。
+        if (config.debugWebhook) {
+          const src = event.source as { type?: string; groupId?: string; userId?: string };
+          const text =
+            event.type === 'message' && event.message.type === 'text'
+              ? event.message.text
+              : undefined;
+          app.log.info(
+            { sourceType: src.type, groupId: src.groupId, userId: src.userId, text },
+            '[DEBUG_WEBHOOK] 收到事件',
+          );
+        }
         let messages: Awaited<ReturnType<WebhookHandler['handleEvent']>> = [];
         try {
           messages = await handler.handleEvent(event);
