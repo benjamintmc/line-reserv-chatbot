@@ -120,6 +120,7 @@ handleEvent(text, groupId, userId, messageId):
 
 - **per-user 隔離**：conversation_states 以 host 的 `line_user_id` 為 PK，故**只有正在開團的 host 自己**的訊息被攔截為答案；**同群其他成員的 `+N`/`名單` 完全不受影響**（走 step 2 正常分派）。此為關鍵正確性保證。
 - **mid-flow 控制集**：流程中僅 `確認`（confirm）與 `取消`（abort）被視為控制指令；其餘整串文字一律當作**當前 state 的欄位答案**（含使用者恰好輸入 `名單`/`+1` 等——在流程中一律視為答案，見 OP-7）。`確認` 僅在 `awaiting_confirm` 生效，其他 state 下的 `確認` 視為該欄答案（多半格式錯 → 重問）。`取消` 在**任一 state** 皆放棄流程。
+- **`awaiting_confirm` 的無欄位特例（design-reviewer B2）**：`awaiting_confirm` 此時**已無待填欄位**，故該 state 下若輸入非 `確認`/`取消`（如 `OK`/`好`/`確定`/`yes`）→ 回 `ContinueFlowResult.confirm_reprompt` → formatter (M) **重新提示**（停留 awaiting_confirm、不建立、不前進）。消除「輸入了卻無回覆」的靜默死角。
 
 #### 3.4 confirm / abort 語意（stateless token → 依 conversation_states 解讀）
 
@@ -127,6 +128,7 @@ handleEvent(text, groupId, userId, messageId):
   - 有流程且 `state==='awaiting_confirm'` → **建立 open event**（§4）。
   - 有流程但非 `awaiting_confirm` → 視為當前欄位答案（§3.3）。
   - **無流程 → 靜默 no-op**（G9；避免誤觸洗版）。
+  - （`awaiting_confirm` 下非 `確認`/`取消` 的其他輸入 → 重新提示 (M)，見 §3.3 特例、B2。）
 - `取消`（abort）：
   - 有流程（任一 state）→ `conversationRepo.delete(userId)` + 回「已取消開團」。
   - **無流程 → 靜默 no-op**（G9）。
@@ -147,8 +149,10 @@ runInTransaction(() => {
        event = events.create({ groupId, hostUserId: host.id, eventDate:draft.date,
                  eventTime:draft.time, location:draft.location, capacity:draft.capacity,
                  pricePerPerson:draft.price, status:'open' })              // 直接 open（OP-5）
-     } catch (uniqueConstraint) {                                          // G3 安全網
-       return { kind:'already_active' }                                    // ux_events_active_group 撞約束
+     } catch (err) {                                                       // G3 安全網
+       if (!isUniqueConstraint(err, 'ux_events_active_group')) throw err   // 窄捕捉：非唯一約束一律 re-throw（architect 裁定 1）
+       conversation.delete(userLineUserId)                                 // 清落敗者流程，不卡 awaiting_confirm（nit-2）
+       return { kind:'already_active' }                                    // → formatter (L)；ux_events_active_group 撞約束
      }
   6. conversation.delete(userLineUserId)                                   // 流程結束
   return { kind:'ok', event }
@@ -244,8 +248,10 @@ type ContinueFlowResult =
   | { kind: 'field_error'; state: string; reason: InvalidReason } // 欄位答案錯 → 停留重問
   | { kind: 'advanced'; state: string }                           // 前進到下一問
   | { kind: 'awaiting_confirm'; draft: CreateEventDraft }         // 收齊 → 摘要
+  | { kind: 'confirm_reprompt' }                                  // awaiting_confirm 下輸入非 確認/取消 → 重新提示 (M)（B2；停留、不建立）
   | { kind: 'aborted' }                                           // 取消開團
   | { kind: 'created'; event: EventRow }                          // awaiting_confirm 下 確認 → 建立
+  | { kind: 'already_active' }                                    // 確認時撞唯一約束（race 落敗）→ (L)，清 conversation
   | { kind: 'duplicate' };                                        // 去重
 
 type ConfirmResult =
@@ -277,11 +283,13 @@ type CancelResult =
 **(A) 逐步問答提問（依序）**
 ```
 awaiting_date    → 開始開團！請輸入活動日期（格式 YYYY/MM/DD，例：2026/08/15）
+                   （過程中隨時輸入「取消」可放棄開團）
 awaiting_time    → 請輸入開球時間（格式 HH:MM，例：07:30）
 awaiting_location→ 請輸入球場地點（例：東方球場）
 awaiting_capacity→ 請輸入人數上限（正整數，例：16）
 awaiting_price   → 請輸入每人費用（元，例：2200；免費請輸入 0）
 ```
+（首問附「取消」逃生口提示，N1；其後每次錯誤重問亦可隨時 `取消` 放棄。）
 
 **(B) 確認摘要（awaiting_confirm；一行式與逐步問答共用）**
 ```
@@ -298,7 +306,7 @@ awaiting_price   → 請輸入每人費用（元，例：2200；免費請輸入 
 ```
 日期格式不正確，請輸入 YYYY/MM/DD（例：2026/08/15）
 ```
-（時間 → `時間格式不正確，請輸入 HH:MM（例：07:30）`；人數 → `人數需為正整數（例：16）`；價格 → `費用需為 0 或正整數（例：2200）`。）
+（時間 → `時間格式不正確，請輸入 HH:MM（例：07:30）`；人數 → `人數需為正整數（例：16）`；價格 → `費用需為 0 或正整數（免費請輸入 0，例：2200）`。錯誤重問時使用者仍可隨時輸入 `取消` 放棄，N3/nit-3。）
 
 **(D) 開團成功公告（確認後 reply 群組）**
 ```
@@ -336,8 +344,10 @@ awaiting_price   → 請輸入每人費用（元，例：2200；免費請輸入 
 目前已有進行中的活動，無法再開新團：
 日期：2026-08-15 07:30
 地點：東方球場
-（如需重開，請先由主辦人「關閉報名」後「取消活動」。）
+每人費用：2200 元
+（如需另開新團，請主辦人先輸入「取消活動」結束目前活動。）
 ```
+（N2：重開只需「取消活動」一步即釋出 active 名額；`關閉報名`(open→closed) 不釋放名額，故不必先關閉。欄位補 `每人費用` 與 (B)/(D) 一致。）
 
 **(J) 生命週期指令但狀態不符**
 ```
@@ -350,6 +360,18 @@ close/cancel 無 active → 目前沒有進行中的活動。
 格式：開團 <日期> <時間> <地點> <人數> <價格>
 例：開團 2026/08/15 07:30 東方球場 16人 2200元
 ```
+
+**(L) 確認時撞唯一約束（race 落敗；不依賴對方活動欄位）—— design-reviewer B1**
+```
+手腳慢了一步！剛剛已有另一場活動成立，目前無法再開新團。你這次的開團未建立。
+```
+（用於 §4 step 5 catch 回 `already_active` 時；**刻意不含日期/地點欄位**——落敗者交易未讀到對方 event 完整欄位，避免渲染空白欄。落敗者的 conversation 於 catch 內一併清除，不卡在 awaiting_confirm，nit-2。）
+
+**(M) 等待確認時輸入無法辨識（停留 awaiting_confirm，不建立）—— design-reviewer B2**
+```
+請輸入「確認」建立活動，或「取消」放棄。
+```
+（`awaiting_confirm` 下輸入非 `確認`/`取消` 的字，如 `OK`/`好`/`確定`/`yes` → 重新提示，停留該 state、不建立、不前進。消除靜默死角。）
 
 ### 9. webhook 分派表（`src/webhook/handler.ts` 修改後）
 
@@ -428,7 +450,7 @@ close/cancel 無 active → 目前沒有進行中的活動。
 - [ ] **[D-004 AC-9]（open/closed→cancelled，且不刪 registrations）**：open 活動且有若干 registrations（含已 soft-delete 列），白名單 host `取消活動` → `updateStatus(cancelled)`、回 (F)；**registrations 列數不變**（無 DELETE）、稽核欄保留；closed 活動亦可 `取消活動`→cancelled。（驗證：unit/整合 test / G2、G10、D-001 §7 註）
 - [ ] **[D-004 AC-10]（非白名單拒絕，無副作用）**：非白名單成員 B `開團 …` / `關閉報名` / `取消活動` → 回 (H) 或靜默（依 OP-2 裁決）、**無任何 DB 變更**（無 conversation、無 event 狀態改變）。（驗證：unit test，handler + 注入白名單 / G1、成功條件 #3、FR-5）
 - [ ] **[D-004 AC-11]（重複開團拒絕）**：同 group 已有 open（或 closed）活動，白名單 host `開團 …` → 回 (I)「已有進行中活動」+ 現有摘要、**不寫 conversation、不 INSERT**。（驗證：unit test / G3、§6、決策 #3）
-- [ ] **[D-004 AC-12]（確認撞唯一約束安全網）**：模擬同 group 於 `確認` INSERT open 時已存在 active（先行插入一場 open）→ `確認` 交易內 INSERT 撞 `ux_events_active_group` → **catch → 回 `already_active`**，不 crash、不外洩例外。（驗證：unit/整合 test / G3、§4）
+- [ ] **[D-004 AC-12]（確認撞唯一約束安全網 + 窄捕捉）**：模擬同 group 於 `確認` INSERT open 時已存在 active（先行插入一場 open）→ `確認` 交易內 INSERT 撞 `ux_events_active_group` → **catch（僅 UNIQUE）→ 回 `already_active`（formatter (L)）、清該 host conversation**，不 crash；**且**注入非唯一約束錯誤（模擬其他 SQLITE error）時**必須向上拋、不得被當作 `already_active`**（窄捕捉，architect 裁定 1）。（驗證：unit/整合 test / G3、§4）
 - [ ] **[D-004 AC-13]（去重：確認重送）**：相同 `message_id` 的 `確認` 連續處理兩次 → 第二次交易內 markProcessed 回 false 中止 → **只建立 1 場 event、只回覆一次**。（驗證：unit/整合 test / G4、NFR-2）
 - [ ] **[D-004 AC-14]（去重：逐步答案重送）**：相同 `message_id` 的欄位答案（如 `07:30`）重送 → 第二次不重複推進 state（避免把同一答案套用到下一問）。（驗證：unit test / G4、§2 交易+dedup）
 - [ ] **[D-004 AC-15]（mid-flow per-user 隔離）**：host A 開團流程進行中（awaiting_location），同群成員 B `+1` → **B 的報名照常由 D-003 處理**（不被當作 A 的 location 答案）；A 的下一則訊息才是 location 答案。（驗證：整合 test，handler + conversation repo / §3.3 關鍵正確性）
@@ -437,6 +459,8 @@ close/cancel 無 active → 目前沒有進行中的活動。
 - [ ] **[D-004 AC-18]（開團後 M2 可報名，銜接）**：白名單 host 走完 `確認` 建立 open 活動後，成員 `+2` → D-003 `signup` 正常產生 2 列 confirmed、回名單（成功條件 #3「開團→公告→報名」全程）。（驗證：e2e/整合 test / 旅程 #1、與 D-003 銜接）
 - [ ] **[D-004 AC-19]（domain 不下 SQL、不觸 LINE）**：`src/domain/{create-flow,event-service,event-formatter}.ts` 內無 SQL 字串、無 `db.prepare`/`db.transaction` 直接呼叫、無 `@line/bot-sdk` import。（驗證：靜態審查 / grep，G5）
 - [ ] **[D-004 AC-20]（payload 型別安全）**：`conversation_states.payload` 之 `JSON.parse` 結果以 `CreateEventDraft` 承載，欄位齊備判定（`isComplete`）正確；缺欄位時不進 `確認` 建立。（驗證：unit test，create-flow / G6）
+- [ ] **[D-004 AC-21]（awaiting_confirm 非確認/取消 → 重新提示）**：`awaiting_confirm` 下輸入 `OK`/`好`/`確定`（非 `確認`/`取消`）→ 回 (M) 重新提示、**停留 awaiting_confirm、不建立、不前進**；隨後 `確認` 正常建立。（驗證：unit test，create-flow + handler / design-reviewer B2、G9）
+- [ ] **[D-004 AC-22]（validator 與 D-002 等價）**：commands 匯出的 `validateDate/validateTime/validateCapacity/validatePrice` 對同一組輸入，與 D-002 §4 一行式 inline parse 產生**相同**的接受/拒絕與正規化輸出（含零填充）。（驗證：對照 unit test / G7、architect nit-1）
 
 ---
 
@@ -472,7 +496,8 @@ close/cancel 無 active → 目前沒有進行中的活動。
 - **【新增：共用交易原語】** `runInTransaction<T>(work: () => T): T`（建議置於 `src/db/index.ts` 或新 `src/db/tx.ts`，或以 `EventRepository.runInTransaction` 提供）。
   - 語意：以 better-sqlite3 `db.transaction(work)()` 包裹**跨 repo 的原子寫入**（`markProcessed` + `conversation.upsert`/`events.create`/`events.updateStatus`/`conversation.delete`），達成去重與狀態變更同成同敗（G4）。
   - 為何不直接複用 `RegistrationRepository.runImmediate`：後者語意屬「報名防超賣的 IMMEDIATE 鎖」，開團/生命週期寫入無超賣併發需求（同群唯一由 `ux_events_active_group` 保證），耦合 RegistrationRepository 不當。此原語為中性交易 runner。
-  - **DEFERRED vs IMMEDIATE 待 architect-reviewer 裁定**：本文件傾向 DEFERRED（開團寫入非讀後寫超賣情境，唯一約束為併發防線）；若 reviewer 認為 `確認` 的「findActiveByGroup 讀 + INSERT」需序列化，可用 IMMEDIATE。屬架構偏移點，交 architect-reviewer。
+  - **隔離級別：DEFERRED（architect-reviewer 2026-07-31 裁定，非 IMMEDIATE）**。理由：開團/生命週期寫入非「讀後寫防超賣」；同群唯一由 `ux_events_active_group` 於 INSERT 當下強制（§4 step 3 的 `findActiveByGroup` 讀僅 UX early-exit，非正確性機制）；且 `markProcessed`（寫）為交易第一步，DEFERRED 於首寫即取 RESERVED 鎖，write-first pattern 下行為近似 IMMEDIATE。與報名 IMMEDIATE 情境本質不同（後者無 DB 約束兜底，read-decide-write 須序列化）。
+  - **窄捕捉要求（architect 裁定 1，T-008 落實 + AC-12 驗）**：`確認` 的 `events.create` 撞約束時，catch **僅得捕捉 `SQLITE_CONSTRAINT_UNIQUE` 且命中 `ux_events_active_group`**（回 `already_active`）；**其餘任何錯誤一律 re-throw**，不得靜默吞掉半完成交易。
 - **【協調 D-002 / commands 層】** 匯出 per-field 驗證純函式 `validateDate/validateTime/validateCapacity/validatePrice`（回傳 `{ ok:true, value }` | `{ ok:false, reason:InvalidReason }`），供 `create-flow` 逐欄驗證複用（OP-9、G7）。此非 repository 原語、屬 parser 層擴充，**需 Orchestrator 確認由本任務一併補上或另開子任務**。
 - **既有原語足夠**：`EventRepository.create`（可傳 `status:'open'`）、`getById`、`findActiveByGroup`、`updateStatus`；`ConversationRepository.get/upsert/delete`；`ProcessedEventRepository.markProcessed`；`UserRepository.upsert/getById` **皆已存在，足以支撐 M3**，除上述交易 runner 與（協調性的）field validator 外**無需新增 event/conversation repository 方法**。
 
@@ -494,4 +519,13 @@ close/cancel 無 active → 目前沒有進行中的活動。
 | 2026-07-31 | OP-9 欄位驗證器來源 | **由 commands 層匯出複用**（守 G7）；orchestrator 裁定**納入 T-008 範圍**由 backend 一併補 commands 匯出（parser 層擴充、非契約變更） |
 | 2026-07-31 | 交易 runner DEFERRED/IMMEDIATE | **交 architect-reviewer 裁定**（見「需新增原語」§；backend 傾向 DEFERRED，唯一約束為併發防線） |
 
-> **OP-1~OP-9 全數定案（2026-07-31）**，裁決與本文件設計內容一致，**無需改動設計正文**。待 R2 雙審（design-reviewer + architect-reviewer）通過後即可 APPROVED。architect-reviewer 需特別裁定：(a) 交易 runner DEFERRED vs IMMEDIATE、(b) 是否需 ADR、(c) 「不物化 draft」對 D-001 §7 狀態機的解讀是否需回寫 D-001 註記。
+> **OP-1~OP-9 全數定案（2026-07-31）**，裁決與本文件設計內容一致，**無需改動設計正文**。architect-reviewer 需特別裁定：(a) 交易 runner DEFERRED vs IMMEDIATE、(b) 是否需 ADR、(c) 「不物化 draft」對 D-001 §7 狀態機的解讀是否需回寫 D-001 註記。
+
+### R2 雙審結果（2026-07-31）
+| reviewer | 結論 | 處置 |
+|---|---|---|
+| architect-reviewer | **建議 APPROVED（零 blocker）** | 裁定 1：交易 runner **DEFERRED** 足夠（+窄捕捉要求，已入 §4/§需新增原語/AC-12）；裁定 2：**不需 ADR**（ADR-004 保留給 PG 切換）；裁定 3：**需回寫 D-001 §7**「draft 不物化」澄清註記（architect 職責，另派）。nit-1 validator 等價（已補 AC-22）、nit-2 already_active 清 conversation（已入 §4/(L)）、nit-3 mid-flow 取消活動（(C) 已提示可 `取消`）。 |
+| design-reviewer | **需修正（2 blocker）→ 已修正** | B1 已補範本 **(L)**（不依賴對方欄位 + 清 conversation）；B2 已補範本 **(M)** + `ContinueFlowResult.confirm_reprompt` + §3.3/§3.4 定義。nit N1（(A) 取消提示）、N2（(I) 簡化為「取消活動」一步 + 補每人費用）、N3（(C) 價格文案）已採納；N4/N5 記錄不改。 |
+
+> **兩 blocker（B1/B2）已於設計正文補齊，architect 零 blocker。** 待使用者最終 APPROVED 即可派 T-008 實作。
+> **後續動作（orchestrator 分派，不阻擋 D-004）**：①派 architect 回寫 D-001 §7/§4「draft 不物化」註記（順帶修 backlog 記的 D-001 §9 command parser 誤歸措辭）②LESSONS 登記「拒絕回覆的 mark/不 mark 去重政策不對稱」（D-003 nit-3 + D-004 §9 同型，第 2 次出現＝回寫候選）。

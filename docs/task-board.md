@@ -22,7 +22,7 @@
 | D-001 | 資料模型（per-slot、候補、代報名） | architect | APPROVED（2026-07-22，reviewer 通過 + errata + 使用者核可） |
 | D-002 | 指令解析 command parser（+N/-N/名單/開團；全形/上限/邊界） | backend-engineer | APPROVED（2026-07-23，reviewer 通過 + errata + 使用者核可） |
 | D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版/webhook 接線） | backend-engineer | **APPROVED（2026-07-31）** — architect-reviewer 通過 + nit-2/5 採納 + 使用者最終核可（OP-1~4 已裁決；風險 R1） |
-| D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | IN_DISCUSSION（2026-07-31）— DRAFT 完成，**OP-1~OP-9 全數定案**（設計正文無需改）。R2 雙審進行中（design-reviewer + architect-reviewer）；architect 需裁定交易 runner DEFERRED/IMMEDIATE + 是否需 ADR + draft 不物化對 D-001 §7 解讀 |
+| D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | IN_DISCUSSION（2026-07-31）— **R2 雙審完成**：architect-reviewer 零 blocker（裁定 交易 runner DEFERRED+窄捕捉、不需 ADR、D-001 §7 補註另派）；design-reviewer 2 blocker（B1 already_active 文案、B2 awaiting_confirm 死角）**已修**（補範本 (L)/(M)、confirm_reprompt、AC-21/22）。**待使用者最終 APPROVED** 即派 T-008 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
