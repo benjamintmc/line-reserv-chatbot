@@ -2,7 +2,7 @@
 
 > 擁有者：orchestrator。這是跨 session、跨模型的共同記憶，每次派工前後必須更新。
 
-## 目前階段：M2 完成並在真實 LINE 群組跨試通過（T-006 DONE + T-007 DONE，2026-07-31）— 下一步 M3 開團流程（D-004 設計，R2）
+## 目前階段：M3 開團流程 D-004 APPROVED（2026-07-31，R2 雙審通過）— T-008 實作 IN_PROGRESS
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
@@ -14,7 +14,7 @@
 | T-005 | M1 command parser（+N/-N/名單/開團） | D-002（APPROVED） | R1 | backend-engineer | DONE | src/commands/ | 2026-07-23 完成：build 綠、83 tests、AC 39/39、architect-reviewer 審 D-002 通過、unit-tester 獨立覆核無 bug（補 17 邊界測試） |
 | T-006 | M2 報名核心（signup/cancel/list domain + webhook 接線） | D-003（APPROVED） | R1 | backend-engineer | DONE | src/domain/, src/webhook/, src/db/repositories/registration-repository.ts, src/server.ts | 2026-07-31 完成：build 綠、124 tests 全綠、AC 58/58（AC-1~AC-19）、architect-reviewer 複審零 blocker G1~G11 逐條 PASS、unit-tester 獨立覆核未揪 bug（補 11 測試）。新增 findActiveProxyByName、domain 三檔、handler 改 async+DI。D-003 §4/§1.1 errata 已同步。e2e AC-17 待整合階段（見 Backlog） |
 | T-007 | M2 真實 LINE 跨試（cloudflared，手動 seed open 活動） | – | R0（測試支援） | orchestrator + 使用者 | DONE | scripts/seed-open-event.ts, docs/integration-test-m2-line.md | 2026-07-31 使用者於真實 LINE 群組跨試**全數通過**：名單/+N/整批候補/取消觸發 @遞補（textV2 mention 藍字可點）/代報名 +N名字/-N名字/+99 靜默/閒聊不回覆 皆符預期。通道用 cloudflared quick tunnel（免帳號）。踩雷紀錄見 LESSONS |
-| T-008 | M3 開團流程（開團/確認/關閉報名/取消活動 + event 狀態機 + host 白名單 + 逐步問答 conversation_states） | D-004（撰寫中） | R2 | backend-engineer | BLOCKED | src/domain/, src/webhook/handler.ts | 2026-07-31 派 backend 撰寫 D-004 設計中。R2：含 host 授權（env 白名單）+ 狀態機轉移；待 D-004 APPROVED（雙 reviewer）後動工 |
+| T-008 | M3 開團流程（開團/確認/關閉報名/取消活動 + event 狀態機 + host 白名單 + 逐步問答 conversation_states） | D-004（APPROVED） | R2 | backend-engineer | IN_PROGRESS | src/domain/, src/webhook/handler.ts, src/commands/, src/db/ | 2026-07-31 D-004 APPROVED 解阻，已派工。範圍：runInTransaction(DEFERRED+窄捕捉)、commands 匯出 field validators、create-flow/event-service/event-formatter、handler 接上 no-op+conversation 攔截、AC-1~AC-22 |
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
@@ -22,7 +22,7 @@
 | D-001 | 資料模型（per-slot、候補、代報名） | architect | APPROVED（2026-07-22，reviewer 通過 + errata + 使用者核可） |
 | D-002 | 指令解析 command parser（+N/-N/名單/開團；全形/上限/邊界） | backend-engineer | APPROVED（2026-07-23，reviewer 通過 + errata + 使用者核可） |
 | D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版/webhook 接線） | backend-engineer | **APPROVED（2026-07-31）** — architect-reviewer 通過 + nit-2/5 採納 + 使用者最終核可（OP-1~4 已裁決；風險 R1） |
-| D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | IN_DISCUSSION（2026-07-31）— **R2 雙審完成**：architect-reviewer 零 blocker（裁定 交易 runner DEFERRED+窄捕捉、不需 ADR、D-001 §7 補註另派）；design-reviewer 2 blocker（B1 already_active 文案、B2 awaiting_confirm 死角）**已修**（補範本 (L)/(M)、confirm_reprompt、AC-21/22）。**待使用者最終 APPROVED** 即派 T-008 |
+| D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 2 blocker 已修）、OP-1~9 定案、使用者核可 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |

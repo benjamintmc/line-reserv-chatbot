@@ -1,6 +1,6 @@
 # D-004: 開團流程（Event Creation：建立 / 確認 / 關閉報名 / 取消活動 + 逐步問答 state machine）
 
-- 狀態：**DRAFT**
+- 狀態：**APPROVED（2026-07-31）**——R2 雙審通過（architect-reviewer 零 blocker + design-reviewer 2 blocker 已修）、OP-1~OP-9 定案、使用者最終核可
 - 撰寫者：backend-engineer
 - 風險等級：**R2（高）**——含 host 授權（env 白名單）、event 狀態機轉移、刪除類「取消活動」。依 CLAUDE.md §5：強制 design-reviewer + architect-reviewer 雙審 + e2e，Guardrails ≥ 3（本文件列 10 條）。
 - 關聯：Brief FR-3 活動建立（主辦人限定）§34 / FR-4 主辦人管理 §35 / FR-5 訊息規範 §36 / 決策紀錄 #3 同群限一場、#6 env host 白名單 §82/85 / 里程碑 M3 §75 / 成功條件 #3「非主辦人 `開團` 被拒；主辦人可完整走完開團→公告→報名」§11 / 關鍵使用者旅程 #1 §88 ・ 任務 T-008 ・ 設計 D-004
