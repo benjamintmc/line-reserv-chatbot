@@ -40,6 +40,7 @@
 - **（webhook 接線，M2/T-006）** `src/webhook/handler.ts` 目前仍是 M0 echo；D-003 時換用 `parseCommand` + exhaustive switch 分派，`unknown`→不回覆。architect-reviewer nit-3：handler 需從 `buildReplies` 純函式轉 async（profile fetch）並注入 repositories/lineClient（DI 或 module import 擇一），server.ts 事件 loop 需相應改動——列 T-006 實作範圍。
 - **（e2e，T-006 整合）** architect-reviewer nit-1：D-003 雖標 R1，因含授權（主辦 override）+ 刪除類（soft-delete），e2e 至少需涵蓋 AC-17（主辦跨 owner 代取消觸發 FIFO 遞補）此關鍵流程。**T-006 已 DONE，此為整合階段（M3+ 或發布前）e2e-tester 待辦，未阻擋 T-006。**
 - **（測試環境 flake，2026-07-31 unit-tester 回報）** `npm test` 首次冷跑偶發整批 FAIL（`Cannot read properties of undefined (reading 'config')`，better-sqlite3 原生模組在 vitest 平行 worker 冷載入的一次性 flake）；重跑即綠，非實作/測試缺陷。緩解選項：CI 加 retry、或 vitest `pool:'forks'` / `poolOptions.singleFork`。屬環境層。
+- **（部署，M5）** 部署方案與免費額度分析已寫入 `docs/deployment.md`：MVP 走 Fly.io+SQLite（最省力）；未來真免費走 **Cloud Run+Neon(PG)**（已定義移植計畫：repository 換 PG、`runImmediate`→`SELECT … FOR UPDATE`、serverless「先處理再回 200」、pooler 連線）。**訊息量非瓶頸**（bot 只用 reply，不吃 LINE 200 則 push 額度）。真正落實 PG 切換時開 **ADR-004**（architect）。
 - **（T-006 reviewer nit，備查非阻擋）** ①nit-2：`cancel` 的 `freedConfirmed` 取自交易外 candidates 快照而非交易內 `cancelByIds` 回傳；MVP 單實例（better-sqlite3 同步）安全，若未來多實例共用 SQLite 需改以「實際取消的 confirmed 列數」推導。②nit-3：`no_open_event` 時 list 有先 markProcessed、signup/cancel 未 mark，重送行為不對稱（皆無副作用，符各自設計）。③nit-4：`toLineMessage` 的 `{mN}` placeholder 對 display_name 含字面 `{`/`}` 理論上可能干擾 substitution，實務極少見，暫不處理。
 
 ## LINE 平台限制（2026-07-31 對照官方文件驗證 T-006 接線後記錄）
