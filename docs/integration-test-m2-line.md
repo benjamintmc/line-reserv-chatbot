@@ -8,7 +8,7 @@
 
 - [ ] 一個 **LINE Official Account** 並在 [LINE Developers Console](https://developers.line.biz/) 建立 **Messaging API channel**。
 - [ ] 取得 **Channel secret**（Basic settings）與 **Channel access token（long-lived）**（Messaging API 分頁 → Issue）。
-- [ ] 安裝 **ngrok**（`ngrok http 3000`）並登入（免費帳號即可）。
+- [x] **cloudflared**（Cloudflare Tunnel）— 已用 `winget install Cloudflare.cloudflared` 安裝，**免註冊帳號**。若當前終端找不到指令，開一個新的 PowerShell 視窗即可（PATH 需重載）。
 - [ ] 一個測試用 **LINE 群組**（可自己建、拉朋友或分身帳號進來測代報名/候補）。
 - [ ] 於 **LINE Official Account Manager**（manager.line.biz）→ 設定：
   - **Response settings**：關閉「自動回應訊息（Auto-reply）」與「加入好友的歡迎訊息」，開啟 **Webhook**。
@@ -28,7 +28,7 @@ DEBUG_WEBHOOK=1
 
 > `DEBUG_WEBHOOK=1` 讓 server 在 log 印出每個事件的 `groupId`/`userId`，第 3 步取 groupId 用。跨試完成後可設回空。
 
-## 2. 啟動 server + ngrok
+## 2. 啟動 server + cloudflared tunnel
 
 兩個終端機：
 
@@ -36,15 +36,21 @@ DEBUG_WEBHOOK=1
 # 終端 A：啟動 bot（tsx watch 熱重載）
 npm run dev
 
-# 終端 B：開通道，取得 https 對外網址
-ngrok http 3000
+# 終端 B：開通道，取得 https 對外網址（免帳號的 quick tunnel）
+cloudflared tunnel --url http://localhost:3000
 ```
 
-把 ngrok 顯示的 `https://xxxx.ngrok-free.app` 記下。
+cloudflared 輸出中會有一行類似：
+```
++--------------------------------------------------------+
+|  https://random-words-1234.trycloudflare.com           |
++--------------------------------------------------------+
+```
+把該 `https://xxxx.trycloudflare.com` 記下（下一步 Webhook URL 用）。
 
 ## 3. 設定 webhook 並取得 groupId / 你的 userId
 
-1. LINE Developers Console → Messaging API → **Webhook URL** 填 `https://xxxx.ngrok-free.app/webhook` → **Verify**（應回 200；server log 會看到請求）。
+1. LINE Developers Console → Messaging API → **Webhook URL** 填 `https://xxxx.trycloudflare.com/webhook` → **Verify**（應回 200；server log 會看到請求）。
 2. 確認 **Use webhook = Enabled**。
 3. 把 bot（官方帳號）**加入你的測試群組**。
 4. 在群組隨便發一則文字訊息（例如「hi」）。
@@ -96,13 +102,14 @@ npm run db:seed
 
 - 跨試完成後，`.env` 的 `DEBUG_WEBHOOK` 設回空（關閉事件 log）。
 - 測試資料在 `./data/golf.db`（已 gitignore）；要重來就刪掉該檔再 seed。
-- ngrok 免費網址每次重啟會變，變更後記得回 LINE Console 更新 Webhook URL。
+- cloudflared quick tunnel 網址每次重啟會變，變更後記得回 LINE Console 更新 Webhook URL。
 
 ## 疑難排解
 
 | 症狀 | 可能原因 / 處置 |
 |---|---|
-| Webhook Verify 失敗 / 401 | `LINE_CHANNEL_SECRET` 未填或錯；ngrok 未指向 3000；server 未啟動 |
+| Webhook Verify 失敗 / 401 | `LINE_CHANNEL_SECRET` 未填或錯；cloudflared 未指向 3000；server 未啟動 |
+| `cloudflared` 找不到指令 | MSI 剛裝好，PATH 未重載 → 開新的 PowerShell 視窗再跑 |
 | 指令有進 log 但 bot 不回 | LINE Official Account 的「自動回應」未關（會蓋掉）；或該指令設計上就靜默（`+99`、閒聊） |
 | `+1` 回「目前沒有開放報名的活動」 | 尚未 seed，或 seed 的 `GROUP_ID` 與實際群組不符（重看第 3 步 log） |
 | 新成員報名顯示「使用者」而非暱稱 | `getGroupMemberProfile` 取名失敗的 fallback；確認 access token 正確、bot 仍在群內 |
