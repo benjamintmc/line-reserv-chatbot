@@ -1,15 +1,37 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { validateSignature, type WebhookEvent } from '@line/bot-sdk';
 import { config } from './config';
-import { buildReplies } from './webhook/handler';
+import { openDb } from './db';
+import { runMigrations } from './db/migrate';
+import { UserRepository } from './db/repositories/user-repository';
+import { EventRepository } from './db/repositories/event-repository';
+import { RegistrationRepository } from './db/repositories/registration-repository';
+import { ProcessedEventRepository } from './db/repositories/processed-event-repository';
+import { RegistrationService } from './domain/registration-service';
+import { createWebhookHandler, type WebhookHandler } from './webhook/handler';
 import { lineClient } from './line/client';
 
 interface WebhookBody {
   events: WebhookEvent[];
 }
 
+/**
+ * 組裝 domain 依賴（DB → repositories → service → webhook handler）。
+ * 預設開啟 config.databasePath 並套用 migration；測試可注入自備的 handler。
+ */
+export function buildHandler(): WebhookHandler {
+  const db = openDb();
+  runMigrations(db);
+  const users = new UserRepository(db);
+  const events = new EventRepository(db);
+  const registrations = new RegistrationRepository(db);
+  const processed = new ProcessedEventRepository(db);
+  const service = new RegistrationService({ events, users, registrations, processed });
+  return createWebhookHandler({ service, users, profile: lineClient });
+}
+
 /** 建立 Fastify app（不啟動 listen，方便測試注入）。 */
-export function buildServer(): FastifyInstance {
+export function buildServer(handler: WebhookHandler = buildHandler()): FastifyInstance {
   const app = Fastify({ logger: true });
 
   // LINE 驗簽需要「原始 request body 字串」，因此保留 rawBody 再自行 JSON.parse。
@@ -46,7 +68,13 @@ export function buildServer(): FastifyInstance {
     const body = req.body as WebhookBody;
     await Promise.all(
       (body.events ?? []).map(async (event) => {
-        const messages = buildReplies(event);
+        let messages: Awaited<ReturnType<WebhookHandler['handleEvent']>> = [];
+        try {
+          messages = await handler.handleEvent(event);
+        } catch (err) {
+          app.log.error({ err }, 'handleEvent 失敗');
+          return;
+        }
         if (
           messages.length > 0 &&
           'replyToken' in event &&

@@ -104,6 +104,24 @@ export class RegistrationRepository {
       .all(eventId, ownerUserId, displayName) as RegistrationRow[];
   }
 
+  /**
+   * 跨 owner 定位某 event 下所有有效代報列（`kind='proxy'` 且 display_name 相符），依 seq 升冪。
+   *
+   * 用途（D-003 §3 / OP-2）：主辦人（`executor.id === event.host_user_id`）以 `-N 名字`
+   * 代取消**任一 owner** 代報的該名字名額；取消順序由 domain 再排（先候補後正取、組內高 seq 先）。
+   * 與 owner-scoped {@link findActiveProxy} 的差別＝**不限 owner**；純唯讀查詢原語（不涉寫入交易）。
+   */
+  findActiveProxyByName(eventId: number, displayName: string): RegistrationRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM registrations
+         WHERE event_id = ? AND kind = 'proxy'
+           AND display_name = ? AND cancelled_at IS NULL
+         ORDER BY seq`,
+      )
+      .all(eventId, displayName) as RegistrationRow[];
+  }
+
   /** FIFO 選取可遞補的有效候補列（僅 cancelled_at IS NULL；G10、AC-4）。 */
   pickWaitlistForPromotion(eventId: number, limit: number): RegistrationRow[] {
     return this.db
