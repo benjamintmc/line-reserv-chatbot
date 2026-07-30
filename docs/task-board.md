@@ -2,7 +2,7 @@
 
 > 擁有者：orchestrator。這是跨 session、跨模型的共同記憶，每次派工前後必須更新。
 
-## 目前階段：M2 T-006 DONE + LINE 接線已對照官方驗證；T-007 真實 LINE 跨試工具已備妥，待使用者執行（runbook：docs/integration-test-m2-line.md）
+## 目前階段：M2 完成並在真實 LINE 群組跨試通過（T-006 DONE + T-007 DONE，2026-07-31）— 下一步 M3 開團流程（D-004 設計，R2）
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
@@ -13,7 +13,7 @@
 | T-004 | M1 DB schema + migration | D-001（APPROVED） | R1 | backend-engineer | DONE | src/db/ | 2026-07-23 完成：build 綠、40 tests、AC 13/13、architect-reviewer Guardrails 零違反、unit-tester 真實覆蓋覆核。收尾項見 Backlog（.sql 複製、ADR-003） |
 | T-005 | M1 command parser（+N/-N/名單/開團） | D-002（APPROVED） | R1 | backend-engineer | DONE | src/commands/ | 2026-07-23 完成：build 綠、83 tests、AC 39/39、architect-reviewer 審 D-002 通過、unit-tester 獨立覆核無 bug（補 17 邊界測試） |
 | T-006 | M2 報名核心（signup/cancel/list domain + webhook 接線） | D-003（APPROVED） | R1 | backend-engineer | DONE | src/domain/, src/webhook/, src/db/repositories/registration-repository.ts, src/server.ts | 2026-07-31 完成：build 綠、124 tests 全綠、AC 58/58（AC-1~AC-19）、architect-reviewer 複審零 blocker G1~G11 逐條 PASS、unit-tester 獨立覆核未揪 bug（補 11 測試）。新增 findActiveProxyByName、domain 三檔、handler 改 async+DI。D-003 §4/§1.1 errata 已同步。e2e AC-17 待整合階段（見 Backlog） |
-| T-007 | M2 真實 LINE 跨試（ngrok，手動 seed open 活動） | – | R0（測試支援） | orchestrator + 使用者 | 待使用者執行 | scripts/seed-open-event.ts, docs/integration-test-m2-line.md | 2026-07-31 工具備妥：seed 腳本（`npm run db:seed`，實測建立/防呆皆綠）、DEBUG_WEBHOOK 事件 log（取 groupId）、.env.example 更新、逐步 runbook。build/lint/124 tests 全綠。待使用者備妥 LINE 憑證+ngrok 後照 runbook 跨試 +N/-N/名單/代報名/候補/@遞補 |
+| T-007 | M2 真實 LINE 跨試（cloudflared，手動 seed open 活動） | – | R0（測試支援） | orchestrator + 使用者 | DONE | scripts/seed-open-event.ts, docs/integration-test-m2-line.md | 2026-07-31 使用者於真實 LINE 群組跨試**全數通過**：名單/+N/整批候補/取消觸發 @遞補（textV2 mention 藍字可點）/代報名 +N名字/-N名字/+99 靜默/閒聊不回覆 皆符預期。通道用 cloudflared quick tunnel（免帳號）。踩雷紀錄見 LESSONS |
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
