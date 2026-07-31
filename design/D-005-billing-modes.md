@@ -55,7 +55,8 @@ D-005 為既有 MVP 的**計費擴充**：在「每人固定價（`per_person`�
 -- 既有列自動以 DEFAULT 回填（backfill 無需額外 UPDATE）。
 ALTER TABLE events ADD COLUMN price_mode TEXT NOT NULL DEFAULT 'per_person'
   CHECK (price_mode IN ('per_person', 'split_venue'));
-ALTER TABLE events ADD COLUMN venue_fee INTEGER;  -- nullable；split 時應用層保證 >0
+ALTER TABLE events ADD COLUMN venue_fee INTEGER
+  CHECK (venue_fee IS NULL OR venue_fee > 0);  -- 單欄 CHECK（architect N1，ADD COLUMN 允許）：攔 <=0 髒寫入；split 時應用層另保證非 NULL
 ALTER TABLE events ADD COLUMN settled_per_person INTEGER;  -- OP-3：關閉報名(split)時寫入最終攤額；否則 NULL
 ```
 
@@ -146,7 +147,7 @@ return { kind: 'ok', event: { ...active, status: 'closed' }, confirmedCount };
 ```
 
 - `CloseResult` 的 `ok` 分支加欄位 `confirmedCount: number` 與 `settledPerPerson: number | null`（供 formatter 顯示；per_person 為 null）。
-- **結算持久化（OP-3 裁決：存欄位）**：`關閉報名`(split) 於**同交易內**計算 `settledPerPerson = ceil(venue_fee / max(正取數,1))` 並 `events` 寫入 `settled_per_person`（新增 repo 原語 `EventRepository.updateSettledPerPerson(id, amount)`，或併入既有 updateStatus 的擴充——擇一，交 T-009，須維持交易原子）。formatClosed 以持久化值顯示。per_person 模式不寫（NULL）。此欄位供未來付款結算 phase 複用（G2 仍要求關閉前顯示標「暫估」）。
+- **結算持久化（OP-3 裁決：存欄位）**：`關閉報名`(split) 於**同交易內**計算 `settledPerPerson = ceil(venue_fee / max(正取數,1))` 並 `events` 寫入 `settled_per_person`。**新增專屬 repo 原語 `EventRepository.updateSettledPerPerson(id, amount)`（architect N2：不併入通用 `updateStatus`，避免狀態轉移與結算金額兩種關注點耦合）**。`CloseResult.ok` 帶 `settledPerPerson`，**formatClosed 只認此值為唯一真相來源（architect N3）**，不從 `event` spread 讀（該 spread 為 pre-close 快照、settled_per_person 仍 NULL）。per_person 模式不寫（NULL）、傳 null。此欄位供未來付款結算 phase 複用（G2 仍要求關閉前顯示標「暫估」）。
 - `per_person` 模式關閉時**不附結算列**（金額本即固定，維持 D-004 §8(E) 原文案，AC-8）。
 
 ---
@@ -169,8 +170,8 @@ split_venue： 場地費：3000 元，平均每人約 429 元（暫估，關閉�
   - `formatSignup`/`formatCancel`：透過 `eventHeader` 自動套用新費用列（無其他改動；報名/取消主流程不動）。
 - `src/domain/event-formatter.ts`：
   - `formatConfirmSummary(draft)`：確認摘要費用列依 draft 的計費模式顯示（每人 N 元 ／ 場地費 N 元，平均每人約 M 元（暫估））——需 `CreateEventDraft` 帶 `priceMode`/`venueFee` 與 draft 當下的預估正取數（建立前無正取，split 摘要以「主辦 1 人」為分母預估或標「開團後依報名人數均攤」；**建議摘要階段 split 只顯示場地費總額 + 「開團後依實際報名人數均攤」**，不硬算 M，避免建立前分母失真）。
-  - `formatOpenAnnouncement(event)`：開團公告費用列——split 顯示「場地費 N 元，將依報名人數均攤（暫估，關閉報名後結算）」；此時主辦已自動登記（正取=1），可顯示 `平均每人約 venue_fee 元（暫估）`。
-  - `formatClosed(event, confirmedCount?)`：split 追加最終結算列 `本場最終每人費用：M 元（場地費 N 元 ÷ 正取 K 人，無條件進位）`；per_person 維持原句（AC-7/AC-8）。
+  - `formatOpenAnnouncement(event)`：開團公告費用列——split **只顯示** `費用：場地費 N 元，將依報名人數均攤（暫估，關閉報名後結算）`，**不顯示每人估額**（design-reviewer B2：正取=1 時顯示「平均每人約 3000 元」即使標暫估仍造成價格錯覺）。另於公告或確認摘要明示主辦已佔第 1 正取（architect N4），例：公告尾附「（主辦已自動報名為第 1 位）」。
+  - `formatClosed(event, settledPerPerson)`：**參數改為 `settledPerPerson: number | null`（唯一真相來源，architect N3——不再從 `event` spread 讀可能為 NULL 的舊值）**。split 追加最終結算列（design-reviewer 結算 nit：補「多收不找零」）：`本場最終每人費用：M 元（場地費 N 元 ÷ 正取 K 人，除不盡無條件進位；多收部分不另找零）`；per_person 傳 `null`、維持原句不附結算列（AC-7/AC-8）。
   - `formatAlreadyActiveEntry(event)`：重複開團摘要費用列同步 mode-aware。
 
 #### 5.2 型別擴充
@@ -212,16 +213,19 @@ awaiting_price_mode ──「場地費」──► awaiting_venue_fee ──(合
 ```
 
 - `create-flow.ts`：`CreateState` 加 `'awaiting_price_mode'`、`'awaiting_venue_fee'`；`FIELD_ORDER` 於 `awaiting_capacity` 後插 `awaiting_price_mode`，其後分岔（`nextState` 依 payload.priceMode 決定進 `awaiting_price` 或 `awaiting_venue_fee`，二者皆前進 `awaiting_confirm`）。
-- `applyAnswer`：
-  - `awaiting_price_mode`：答案含「場地費/均攤」→ `priceMode='split_venue'`；含「每人」或（建議可容錯）純數字視為 per_person 引導重問→ 設 `priceMode`，前進對應 state。
-  - `awaiting_venue_fee`：`validateFee` split 分支（`>0`）→ `venueFee`。
-  - `awaiting_price`：沿用 `validatePrice`（per_person）。
+- `applyAnswer`（**design-reviewer B1：行為定死，無效答案一律停留重問，不容錯猜測**）：
+  - `awaiting_price_mode`：答案 trim 後**僅接受**「每人」→ `priceMode='per_person'` 前進 `awaiting_price`；「場地費」（或「均攤」同義）→ `priceMode='split_venue'` 前進 `awaiting_venue_fee`。**其餘任何輸入（含裸數字、其他字）→ 停留 `awaiting_price_mode` 重問 (見範本)**（不猜測、不當金額）。
+  - `awaiting_venue_fee`：`validateFee` split 分支（`>0`）→ `venueFee`；無效 → 停留重問。
+  - `awaiting_price`：沿用 `validatePrice`（per_person）；無效 → 停留重問。
 - `isComplete(draft)`：改為「per_person → date/time/location/capacity/price 齊備；split → date/time/location/capacity/venueFee 齊備且 priceMode 已定」。
 - `event-formatter` 新增對應提問範本（§7 (A) 擴充）：
   ```
-  awaiting_price_mode  → 請選擇計費方式：輸入「每人」固定每人費用，或「場地費」由場地費總額均攤
-  awaiting_venue_fee   → 請輸入場地費總額（元，例：3000；將依報名人數均攤）
+  awaiting_price_mode（提問）    → 請選擇計費方式：輸入「每人」固定每人費用，或「場地費」由場地費總額均攤
+  awaiting_price_mode（無效重問）→ 請輸入「每人」或「場地費」：「每人」設定固定每人費用，「場地費」由場地費總額均攤（過程中可輸入「取消」放棄開團）
+  awaiting_venue_fee（提問）     → 請輸入場地費總額（元，例：3000；將依報名人數均攤）
+  awaiting_venue_fee（無效重問） → 場地費需為正整數（元，例：3000），請重新輸入。
   ```
+  （design-reviewer B1：新增 state 一律同時交付「提問 + 無效答案重問範本 + 對應 AC」，比照 D-004 §8(C)；避免「輸入了卻無回覆」的靜默死角。）
 
 > §6 為 parser 層與 create-flow 擴充，**跨 D-002／D-004 兩份 APPROVED 文件**；依 D-004 OP-9 先例（commands validator 擴充納入實作任務），建議由 T-009 一併補上並過 architect/design review。**回報 Orchestrator 確認**。
 
@@ -235,13 +239,24 @@ awaiting_price_mode ──「場地費」──► awaiting_venue_fee ──(合
 |---|---|---|
 | `list-formatter.eventHeader` | `[X 球聚報名]` / `[X 球聚]` | `[X 球敘報名]` / `[X 球敘]` |
 | `event-formatter.formatFlowPrompt` awaiting_time | 請輸入**開球時間**（格式 HH:MM…） | 請輸入**時間**（格式 HH:MM…） |
-| `event-formatter.formatFlowPrompt` awaiting_location | 請輸入**球場地點**（例：東方球場） | 請輸入**場地**（例：東方高爾夫球場） |
+| `event-formatter.formatFlowPrompt` awaiting_location | 請輸入**球場地點**（例：東方球場） | 請輸入**場地**（例：○○球場） |
+| body 欄位標籤（list-formatter/event-formatter 各摘要） | `地點：東方球場` | `場地：東方球場`（**design-reviewer nit A：body 標籤與提問「場地」統一**，全 formatter 一致改「場地：」）|
 | `event-formatter.formatOpenAnnouncement` | `[X 球聚] 開團成功！` | `[X 球敘] 開團成功！` |
 | `event-formatter.formatClosed` | `「X」球聚已關閉報名…` | `「X」球敘已關閉報名…` |
 | `event-formatter.formatCancelled` | `「X」球聚已取消。` | `「X」球敘已取消。` |
-| `event-formatter.formatOnelineFormatHelp` (K) | 例：開團 … 東方**球場** … | 例：開團 … 東方**高爾夫球場** …（location 為範例地名，保留具體名稱即可；不含「球聚/開球」等專屬詞） |
+| `event-formatter.formatOnelineFormatHelp` (K) | 例：開團 … 東方**球場** … | **design-reviewer B3：(K) 須涵蓋兩種計費語法 + 範例去高爾夫（nit B）**，改為下方 (K′) 範本 |
 
-- **地點欄本身是使用者輸入的場地名稱**（如「東方高爾夫球場」），非系統用語——不改使用者輸入，只改**系統標籤/標題**（球聚/開球時間/球場地點 等）。
+- **地點欄本身是使用者輸入的場地名稱**（如「東方球場」），非系統用語——不改使用者輸入，只改**系統標籤/標題**（球聚/開球時間/球場地點 等）。
+
+**(K′) 一行式格式提示（design-reviewer B3：涵蓋兩種計費語法，取代 D-004 (K)）**
+```
+格式：開團 <日期> <時間> <地點> <人數> <費用>
+費用兩種寫法：
+・每人固定：直接寫金額，例 2200元（或 每人2200元）
+・場地費均攤：場地費+總額，例 場地費3000元
+範例：開團 2026/08/15 07:30 東方球場 16人 2200元
+　　　開團 2026/08/15 07:30 東方球場 16人 場地費3000元
+```
 - **跨文件協調點**：以上 code 文案與 **D-003 §8 / D-004 §8 的逐字範本**（design-reviewer 逐字對齊依據）將不一致。D-003/D-004 為 APPROVED 且非本文件所有——**須回報 Orchestrator**：由各 owner 補 errata、或明列「D-005 為此批文案的新權威來源」。本文件不私改 D-003/D-004。
 
 ---
@@ -330,6 +345,9 @@ awaiting_price_mode ──「場地費」──► awaiting_venue_fee ──(合
 - [ ] **[D-005 AC-14]（split 標「暫估」不呈現已定金額）**：`split_venue` 於 signup/名單/開團公告/確認摘要的每人金額字樣**必含**「暫估」與「關閉報名後結算」（或摘要階段「開團後依報名人數均攤」）；不得出現無標示的「每人 M 元」定型句。（驗證：unit test，formatter 逐字 / G2）
 - [ ] **[D-005 AC-15]（分母 max(,1) 不除零）**：`split_venue venue_fee=3000`、`confirmedCount=0`（防禦性極端，理論上主辦登記後不發生）→ `perPersonAmount=3000`（不 NaN/Infinity/throw）。（驗證：unit test，billing / G1）
 - [ ] **[D-005 AC-16]（守則回歸：報名核心不動、禁 any、domain 不下 SQL/不觸 LINE）**：diff 顯示 `registration-service.ts`/`roster.ts` 邏輯零改動；`billing.ts`/formatter/create-flow/event-service 無 `any`、無 SQL 字串、無 `@line/bot-sdk` import；主辦登記經 `insertSlot`（非裸 SQL）。（驗證：靜態審查 / grep / diff，G3/G5/G6）
+- [ ] **[D-005 AC-17]（新 state 無效答案重問，design-reviewer B1）**：`awaiting_price_mode` 輸入非「每人/場地費」（含裸數字 `2200`、其他字）→ 回無效重問範本、**停留 awaiting_price_mode、不前進、不猜測當金額**；`awaiting_venue_fee` 輸入非正整數 → 回重問、停留。皆單則、不迴圈。隨後輸入合法值正常前進。（驗證：unit test，create-flow / §6.2、G2/FR-5）
+- [ ] **[D-005 AC-18]（格式提示涵蓋計費語法，design-reviewer B3）**：一行式格式錯（`create_bad_*`）→ 回 (K′)，內容**同時含**「每人固定：…2200元」與「場地費均攤：…場地費3000元」兩種寫法範例。（驗證：unit test，event-formatter / §7）
+- [ ] **[D-005 AC-19]（開團公告不顯示每人估額，design-reviewer B2）**：`split_venue` 開團成立（正取=1）→ 公告費用列為 `費用：場地費 N 元，將依報名人數均攤（暫估，關閉報名後結算）`，**不含**「平均每人約 N 元」字樣；且明示主辦已佔第 1 正取。（驗證：unit test，event-formatter 逐字 / §5.1、G2、architect N4）
 
 ---
 
@@ -356,4 +374,14 @@ awaiting_price_mode ──「場地費」──► awaiting_venue_fee ──(合
 | 2026-07-31 | OP-3 最終攤額持久化 | **存欄位**（使用者裁決）：migration 0002 加 `settled_per_person`，close(split) 同交易寫入；供未來付款 phase |
 | 2026-07-31 | OP-4 venue_fee 一致性 DB CHECK | orchestrator 採 **MVP 應用層強制 + G4 + AC-13**；**DB 層 table-rebuild CHECK 交 architect-reviewer 審時裁定** |
 
-> **OP-1~OP-4 定案（2026-07-31）**。設計正文已據 OP-3 調整（settled_per_person 併入 0002、close 寫入）。待 R2 雙審通過即可 APPROVED。architect-reviewer 尚需裁定：(a) D-001 schema 擴充確認/errata、(b) OP-4 是否要 DB 層 table-rebuild CHECK、(c) 主辦自動登記於 DEFERRED confirm 交易插首列是否足夠。
+> **OP-1~OP-4 定案（2026-07-31）**。設計正文已據 OP-3 調整（settled_per_person 併入 0002、close 寫入）。
+
+### R2 雙審結果（2026-07-31）
+| reviewer | 結論 | 處置 |
+|---|---|---|
+| architect-reviewer | **建議 APPROVED（條件式）**，零改碼 blocker | 三裁定全過：schema 核可、OP-4 接受應用層強制（不 rebuild）、主辦登記 DEFERRED 足夠。**條件 A-B1（文件層）**：需補 **D-001 G2 carve-out errata**（write-first 交易內盲插首列為 IMMEDIATE 要求的合理例外）——APPROVED 後由 orchestrator 派 architect 補寫。nit 全採納：N1 venue_fee 單欄 CHECK（已加 §1.2）、N2 專屬 updateSettledPerPerson（已改 §4）、N3 formatClosed 唯一真相來源（已改 §4/§5.1）、N4 公告明示主辦佔首位（已加 §5.1）。 |
+| design-reviewer | **需修正（3 blocker）→ 已修正** | B1 新 state 無效重問範本（已補 §6.2 + AC-17）；B2 公告不顯示每人估額（已改 §5.1 + AC-19）；B3 (K′) 涵蓋計費語法（已補 §7 + AC-18）。nit 採納：結算補「多收不找零」（§4/AC-7）、body 標籤「地點→場地」統一（§7）、範例去高爾夫（§7）。 |
+
+> **兩 blocker 群已於設計正文補齊。** 待使用者最終 APPROVED 即派 T-009 實作。
+> **APPROVED 後 orchestrator 分派（errata 批次，不阻擋）**：①派 architect 補 D-001 errata（schema 三欄擴充 + G2 carve-out）②D-002/D-003/D-004 §8 文案由 D-005 §7 為新權威來源（各 owner 補一句指向 D-005 或 errata）。
+> **LESSONS 待登記**：新增對話 state 須同時交付「提問+無效重問範本+AC」（第 2 次，checklist 候選）、D-001 G2「IMMEDIATE 無條件」措辭過寬（區分 read-decide-write vs write-first 盲插）、APPROVED 文件反覆 errata 的治理（第 3 次）。
