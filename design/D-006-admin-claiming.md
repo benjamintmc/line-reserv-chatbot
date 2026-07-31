@@ -1,6 +1,6 @@
 # D-006: 授權簡化（開團人擁有 + super-admin 安全網）
 
-狀態：DRAFT
+狀態：APPROVED（2026-07-31）——R2 雙審通過（architect 零 blocker + design 3 blocker 已修）、OP-1~4 採建議、使用者最終核可。D-004 授權 errata（§五-1 全項）於 T-011 一併回寫。
 
 - 撰寫者：backend-engineer
 - 風險等級：R2（高）——生命週期授權模型變更（`關閉報名`/`取消活動` 授權來源改變）＋回改 D-004（APPROVED）授權。依 CLAUDE.md §5：強制 design-reviewer + architect-reviewer 雙審 + e2e，Guardrails ≥ 3（本文件列 6 條）。
