@@ -2,7 +2,7 @@
 
 > 擁有者：orchestrator。這是跨 session、跨模型的共同記憶，每次派工前後必須更新。
 
-## 目前階段：M4 授權簡化 T-011 DONE（2026-07-31，R2 三關通過）。授權模型：開團全開 + close/cancel 限建立者或 super-admin。下一步：M5 部署 / 真機跨試
+## 目前階段：M5 部署 = Cloud Run + Neon(PG)（使用者選 $0/月）。需 SQLite→PG 移植（R2）。架構設計中：ADR-004（決策）+ D-007（PG 移植+serverless 設計）→ APPROVED → T-012 實作 → 部署
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
@@ -18,6 +18,13 @@
 | T-010 | 逐步問答計費併為單題 awaiting_fee（真機跨試回饋；複用 validateFee、容忍空白） | D-005 §6.2 修訂 | R1 | backend-engineer | DONE | src/domain/create-flow.ts, event-formatter.ts, src/commands/validators.ts | 2026-07-31 完成：計費兩題併一題、validateFee 容忍空白、一行式零回歸。build 綠、214 tests、AC 99/99、lint 0 error。R1 兩關通過（unit-tester 無 bug 補 arity 守護、design-reviewer APPROVED）。採納 nit：提問換行分列 + 重問補「取消」 |
 | T-009 | 計費模式擴充實作（price_mode/venue_fee/settled_per_person + migration 0002、均攤估算/結算、主辦自動登記、文案中性化、開團計費語法） | D-005（APPROVED） | R2 | backend-engineer | DONE | src/db/, src/commands/, src/domain/, src/webhook/ | 2026-07-31 完成：build 綠、**211 tests 全綠**、AC 99/99、lint 0 error。**R2 三關全通過**（architect+design APPROVED 零 blocker、unit-tester 無 bug 補 3 測試）。文件校正：D-005 §5.1/D-004 AC-18 errata。e2e/真機跨試待整合階段 |
 | T-008 | M3 開團流程（開團/確認/關閉報名/取消活動 + event 狀態機 + host 白名單 + 逐步問答 conversation_states） | D-004（APPROVED） | R2 | backend-engineer | DONE | src/domain/, src/webhook/, src/commands/, src/db/tx.ts, src/server.ts | 2026-07-31 完成：build 綠、165 tests 全綠、AC 80/80（含 D-004 AC-1~22）、lint 0 error。**R2 三關全通過**：architect-reviewer 零 blocker（窄捕捉追認 PASS）、design-reviewer 零 blocker、unit-tester 無 bug（補 3 強化測試）。文件校正已套用（§4/§9）。e2e 留整合階段（AC-18 開團→報名銜接 + AC-17 主辦override） |
+
+## M5 部署（Cloud Run + Neon PG）任務
+| ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
+|---|---|---|---|---|---|
+| ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | 撰寫中 |
+| D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect→backend | 撰寫中 |
+| T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007 | R2 | backend-engineer | BLOCKED（等 D-007 APPROVED）|
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
