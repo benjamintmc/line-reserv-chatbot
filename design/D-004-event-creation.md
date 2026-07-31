@@ -1,6 +1,6 @@
 # D-004: 開團流程（Event Creation：建立 / 確認 / 關閉報名 / 取消活動 + 逐步問答 state machine）
 
-- 狀態：**APPROVED（2026-07-31）**——R2 雙審通過（architect-reviewer 零 blocker + design-reviewer 2 blocker 已修）、OP-1~OP-9 定案、使用者最終核可
+- 狀態：APPROVED（2026-07-31）——R2 雙審通過（architect-reviewer 零 blocker + design-reviewer 2 blocker 已修）、OP-1~OP-9 定案、使用者最終核可
 - 撰寫者：backend-engineer
 - 風險等級：**R2（高）**——含 host 授權（env 白名單）、event 狀態機轉移、刪除類「取消活動」。依 CLAUDE.md §5：強制 design-reviewer + architect-reviewer 雙審 + e2e，Guardrails ≥ 3（本文件列 10 條）。
 - 關聯：Brief FR-3 活動建立（主辦人限定）§34 / FR-4 主辦人管理 §35 / FR-5 訊息規範 §36 / 決策紀錄 #3 同群限一場、#6 env host 白名單 §82/85 / 里程碑 M3 §75 / 成功條件 #3「非主辦人 `開團` 被拒；主辦人可完整走完開團→公告→報名」§11 / 關鍵使用者旅程 #1 §88 ・ 任務 T-008 ・ 設計 D-004
@@ -393,7 +393,10 @@ close/cancel 無 active → 目前沒有進行中的活動。
 | `unknown` | **不回覆**（FR-5、G9） | — | 不 mark |
 
 - **`switch` 對 union 窮舉**（含 `default: never`），沿用 D-002 G7 / D-003：新增指令型別編譯期報錯。
-- **去重政策**：**有 DB 副作用的步驟**（conversation upsert / event INSERT / updateStatus / conversation delete）於交易內以 `markProcessed` 為第一步（G4）。**純拒絕回覆**（非白名單 (H)、無 active (J)、重複活動 (I)、格式提示 (K)）**無 DB 副作用 → 不 mark**（沿用 D-003 no_open_event 不 mark 的慣例；代價：重送同一拒絕訊息會重覆回覆一次，屬可接受的低度洗版，記 nit）。
+- **去重政策（architect-reviewer T-008 追認後校正，消除原分派表 vs 註記矛盾）**：
+  - **生命週期指令（`關閉報名`/`取消活動`/`確認`/`取消`）一旦進入交易即以 `markProcessed` 為第一步**（G4），故其**最終判定即使是拒絕**（no_active (J)、already_closed、confirm 時 already_active (L)）**仍消費 messageId**（重送 → `duplicate` → 不重複回覆；行為更冪等、無害）。此即實作採用之正解。
+  - **交易前的 early-return 拒絕不 mark**：非白名單 (H)、`開團` 入口重複活動 (I)、一行式格式提示 (K)、無流程 confirm/abort、unknown/invalid——這些在進交易前 return、無 DB 副作用，故不 mark（沿用 D-003 no_open_event 慣例；代價：重送同一拒絕會重覆回一次，低度洗版可接受）。
+  - 原文舊述「無 active (J) 不 mark」不精確（J 於 close/cancel 交易內、mark 之後才判定），已依實作與 architect 追認校正如上。「拒絕回覆的 mark 政策」通則之統一化已登記 `harness/LESSONS.md`（D-003 nit-3 + 本項，回寫候選）。
 
 ### 範圍內
 
@@ -497,7 +500,8 @@ close/cancel 無 active → 目前沒有進行中的活動。
   - 語意：以 better-sqlite3 `db.transaction(work)()` 包裹**跨 repo 的原子寫入**（`markProcessed` + `conversation.upsert`/`events.create`/`events.updateStatus`/`conversation.delete`），達成去重與狀態變更同成同敗（G4）。
   - 為何不直接複用 `RegistrationRepository.runImmediate`：後者語意屬「報名防超賣的 IMMEDIATE 鎖」，開團/生命週期寫入無超賣併發需求（同群唯一由 `ux_events_active_group` 保證），耦合 RegistrationRepository 不當。此原語為中性交易 runner。
   - **隔離級別：DEFERRED（architect-reviewer 2026-07-31 裁定，非 IMMEDIATE）**。理由：開團/生命週期寫入非「讀後寫防超賣」；同群唯一由 `ux_events_active_group` 於 INSERT 當下強制（§4 step 3 的 `findActiveByGroup` 讀僅 UX early-exit，非正確性機制）；且 `markProcessed`（寫）為交易第一步，DEFERRED 於首寫即取 RESERVED 鎖，write-first pattern 下行為近似 IMMEDIATE。與報名 IMMEDIATE 情境本質不同（後者無 DB 約束兜底，read-decide-write 須序列化）。
-  - **窄捕捉要求（architect 裁定 1，T-008 落實 + AC-12 驗）**：`確認` 的 `events.create` 撞約束時，catch **僅得捕捉 `SQLITE_CONSTRAINT_UNIQUE` 且命中 `ux_events_active_group`**（回 `already_active`）；**其餘任何錯誤一律 re-throw**，不得靜默吞掉半完成交易。
+  - **窄捕捉要求（architect 裁定 1，T-008 落實 + AC-12 驗 + architect-reviewer T-008 追認校正）**：`確認` 的 `events.create` 撞約束時，catch **僅得捕捉 `code==='SQLITE_CONSTRAINT_UNIQUE'` 且訊息以欄位簽章 `events.group_id` 唯一指涉 `ux_events_active_group`**（該欄為 events 表唯一的 unique 來源，見 migration 0001；相容 index 名 `ux_events_active_group` 以防未來 SQLite 版本變動）→ 回 `already_active`；**其餘任何錯誤一律 re-throw**（含 `SQLITE_CONSTRAINT_UNIQUE` 但訊息指向其他 column，如 `users.line_user_id`），不得靜默吞掉半完成交易（re-throw 使交易回滾、fail loud，AC-12 已雙向驗）。
+    - 註：better-sqlite3 對 **partial unique index** 撞約束時回報的是**欄位** `UNIQUE constraint failed: events.group_id`（不含 index 名），故以欄位簽章判別而非 index 名，是與實際運行時行為對齊。
 - **【協調 D-002 / commands 層】** 匯出 per-field 驗證純函式 `validateDate/validateTime/validateCapacity/validatePrice`（回傳 `{ ok:true, value }` | `{ ok:false, reason:InvalidReason }`），供 `create-flow` 逐欄驗證複用（OP-9、G7）。此非 repository 原語、屬 parser 層擴充，**需 Orchestrator 確認由本任務一併補上或另開子任務**。
 - **既有原語足夠**：`EventRepository.create`（可傳 `status:'open'`）、`getById`、`findActiveByGroup`、`updateStatus`；`ConversationRepository.get/upsert/delete`；`ProcessedEventRepository.markProcessed`；`UserRepository.upsert/getById` **皆已存在，足以支撐 M3**，除上述交易 runner 與（協調性的）field validator 外**無需新增 event/conversation repository 方法**。
 
@@ -518,6 +522,7 @@ close/cancel 無 active → 目前沒有進行中的活動。
 | 2026-07-31 | OP-8 日期業務校驗 | **沿用 D-002 範圍檢查**，不拒過去日期、不做閏年（orchestrator 採預設） |
 | 2026-07-31 | OP-9 欄位驗證器來源 | **由 commands 層匯出複用**（守 G7）；orchestrator 裁定**納入 T-008 範圍**由 backend 一併補 commands 匯出（parser 層擴充、非契約變更） |
 | 2026-07-31 | 交易 runner DEFERRED/IMMEDIATE | **交 architect-reviewer 裁定**（見「需新增原語」§；backend 傾向 DEFERRED，唯一約束為併發防線） |
+| 2026-07-31 | T-008 實作完成 + R2 品質關卡 | **三關全通過**：architect-reviewer APPROVED 零 blocker（窄捕捉追認 PASS、G1~G10 全 PASS）、design-reviewer APPROVED 零 blocker（範本 (A)–(M) 逐字對齊）、unit-tester 165 tests 全綠/AC 80/80/無 bug（補 3 強化測試含 UNIQUE-其他-column→re-throw、cancel 稽核欄保留）。文件校正已套用：§4/AC-12/需新增原語 窄捕捉措辭改「欄位簽章 events.group_id 指涉」、§9 去重政策收斂（生命週期交易內一律 mark、交易前 early-return 不 mark）。T-008 標 DONE，e2e 留整合階段。 |
 
 > **OP-1~OP-9 全數定案（2026-07-31）**，裁決與本文件設計內容一致，**無需改動設計正文**。architect-reviewer 需特別裁定：(a) 交易 runner DEFERRED vs IMMEDIATE、(b) 是否需 ADR、(c) 「不物化 draft」對 D-001 §7 狀態機的解讀是否需回寫 D-001 註記。
 

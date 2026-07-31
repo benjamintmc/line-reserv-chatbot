@@ -1,22 +1,34 @@
 // src/webhook/handler.ts
 //
-// D-003 §6：webhook 接線。從 LINE WebhookEvent 抽 groupId/userId/messageId/text →
-// parseCommand → 依 type 窮舉分派 → 取名（getGroupMemberProfile）→ 呼叫 service →
+// D-003 §6 / D-004 §9：webhook 接線。從 LINE WebhookEvent 抽 groupId/userId/messageId/text →
+// **先查 conversation_states 攔截進行中開團流程（D-004 §3.3，per-user 隔離）** →
+// 否則 parseCommand → 依 type 窮舉分派 → 取名（getGroupMemberProfile）→ 呼叫 service →
 // 呼叫 formatter → 組出 messagingApi.Message[]（含 mention）。
 //
-// **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any（G11）。
-// unknown 一律不回覆、不 markProcessed（G5）。
+// **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any（G6）。
+// unknown / 無流程 confirm·abort / 未攔截雜訊一律不回覆、不 markProcessed（G9）。
 
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { parseCommand } from '../commands';
 import type { RegistrationRow } from '../db/schema';
 import type { UserRepository } from '../db/repositories/user-repository';
+import type { ConversationRepository } from '../db/repositories/conversation-repository';
 import type {
   RegistrationService,
   SignupResult,
   CancelResult,
   ListResult,
 } from '../domain/registration-service';
+import type {
+  EventService,
+  CreateEntryResult,
+  ContinueFlowResult,
+  ConfirmResult,
+  AbortResult,
+  CloseResult,
+  CancelResult as EventCancelResult,
+  InvalidOnelineResult,
+} from '../domain/event-service';
 import {
   formatSignup,
   formatCancel,
@@ -27,6 +39,22 @@ import {
   type MessageDescriptor,
   type PromotionNotice,
 } from '../domain/list-formatter';
+import {
+  formatFlowPrompt,
+  formatConfirmSummary,
+  formatFieldError,
+  formatOpenAnnouncement,
+  formatClosed,
+  formatCancelled,
+  formatAborted,
+  formatNotAuthorized,
+  formatAlreadyActiveEntry,
+  formatAlreadyClosed,
+  formatNoActiveEvent,
+  formatOnelineFormatHelp,
+  formatRaceLost,
+  formatConfirmReprompt,
+} from '../domain/event-formatter';
 
 /**
  * 取群組成員顯示名的最小介面（結構相容 `messagingApi.MessagingApiClient.getGroupMemberProfile`）。
@@ -38,7 +66,9 @@ export interface GroupProfileClient {
 
 export interface WebhookHandlerDeps {
   service: RegistrationService;
+  eventService: EventService;
   users: UserRepository;
+  conversations: ConversationRepository;
   profile: GroupProfileClient;
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
@@ -108,6 +138,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     return { isProxy: false, displayName: row.display_name, ownerLineUserId };
   }
 
+  // ── D-003 render（不變） ─────────────────────────────────────────────
   function renderSignup(result: SignupResult): messagingApi.Message[] {
     switch (result.kind) {
       case 'no_open_event':
@@ -161,6 +192,131 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
+  // ── D-004 render ─────────────────────────────────────────────────────
+  function renderCreateEntry(result: CreateEntryResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'not_authorized':
+        return [toLineMessage(formatNotAuthorized())]; // (H)
+      case 'already_active':
+        return [toLineMessage(formatAlreadyActiveEntry(result.event))]; // (I)
+      case 'duplicate':
+        return [];
+      case 'flow_started':
+        return [toLineMessage(formatFlowPrompt(result.state))]; // (A)
+      case 'awaiting_confirm':
+        return [toLineMessage(formatConfirmSummary(result.draft))]; // (B)
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderContinue(result: ContinueFlowResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'noop':
+      case 'duplicate':
+        return [];
+      case 'field_error':
+        return [toLineMessage(formatFieldError(result.state))]; // (C)
+      case 'advanced':
+        return [toLineMessage(formatFlowPrompt(result.state))]; // (A)
+      case 'awaiting_confirm':
+        return [toLineMessage(formatConfirmSummary(result.draft))]; // (B)
+      case 'confirm_reprompt':
+        return [toLineMessage(formatConfirmReprompt())]; // (M)
+      case 'aborted':
+        return [toLineMessage(formatAborted())]; // (G)
+      case 'created':
+        return [toLineMessage(formatOpenAnnouncement(result.event))]; // (D)
+      case 'already_active':
+        return [toLineMessage(formatRaceLost())]; // (L)
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderConfirm(result: ConfirmResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'noop':
+      case 'duplicate':
+        return [];
+      case 'already_active':
+        return [toLineMessage(formatRaceLost())]; // (L)
+      case 'created':
+        return [toLineMessage(formatOpenAnnouncement(result.event))]; // (D)
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderAbort(result: AbortResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'noop':
+      case 'duplicate':
+        return [];
+      case 'aborted':
+        return [toLineMessage(formatAborted())]; // (G)
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderClose(result: CloseResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'not_authorized':
+        return [toLineMessage(formatNotAuthorized())]; // (H)
+      case 'duplicate':
+        return [];
+      case 'no_active':
+        return [toLineMessage(formatNoActiveEvent())]; // (J)
+      case 'already_closed':
+        return [toLineMessage(formatAlreadyClosed())]; // (J)
+      case 'ok':
+        return [toLineMessage(formatClosed(result.event))]; // (E)
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderCancelEvent(result: EventCancelResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'not_authorized':
+        return [toLineMessage(formatNotAuthorized())]; // (H)
+      case 'duplicate':
+        return [];
+      case 'no_active':
+        return [toLineMessage(formatNoActiveEvent())]; // (J)
+      case 'ok':
+        return [toLineMessage(formatCancelled(result.event))]; // (F)
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderInvalidOneline(result: InvalidOnelineResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'not_authorized':
+        return [toLineMessage(formatNotAuthorized())]; // (H)
+      case 'format_help':
+        return [toLineMessage(formatOnelineFormatHelp())]; // (K)
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
   async function handleEvent(event: WebhookEvent): Promise<messagingApi.Message[]> {
     // 僅處理群組來源的文字訊息事件；其餘一律忽略（不回覆、不 mark；沿用骨架）。
     if (event.type !== 'message' || event.message.type !== 'text') return [];
@@ -170,6 +326,21 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     if (userId === undefined) return [];
     const messageId = event.message.id;
     const text = event.message.text;
+
+    // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
+    // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。
+    const conv = deps.conversations.get(userId);
+    if (conv !== undefined) {
+      const hostDisplayName = await resolveDisplayName(groupId, userId);
+      const result = deps.eventService.continueFlow({
+        groupId,
+        executorLineUserId: userId,
+        messageId,
+        text,
+        hostDisplayName,
+      });
+      return renderContinue(result);
+    }
 
     const cmd = parseCommand(text);
     switch (cmd.type) {
@@ -201,19 +372,72 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         const result = deps.service.getListView({ groupId, messageId });
         return renderList(result);
       }
-      // M3 / D-004 開團流程；M4 我的ID → M2 一律 no-op（不回覆、不 mark）。
-      case 'create_event_oneline':
-      case 'create_event_start':
-      case 'confirm':
-      case 'abort':
-      case 'close_event':
-      case 'cancel_event':
+      // D-004 M3 開團流程 ─────────────────────────────────────────────
+      case 'create_event_oneline': {
+        const result = deps.eventService.handleOneline({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+          date: cmd.date,
+          time: cmd.time,
+          location: cmd.location,
+          capacity: cmd.capacity,
+          price: cmd.price,
+        });
+        return renderCreateEntry(result);
+      }
+      case 'create_event_start': {
+        const result = deps.eventService.startCreation({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+        });
+        return renderCreateEntry(result);
+      }
+      case 'confirm': {
+        // 走到此代表無進行中流程（有流程已於上方攔截）→ 靜默 no-op（G9）。
+        const result = deps.eventService.confirm({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+          hostDisplayName: '',
+        });
+        return renderConfirm(result);
+      }
+      case 'abort': {
+        // 同上：無流程 → 靜默 no-op（G9）。
+        const result = deps.eventService.abort({ executorLineUserId: userId, messageId });
+        return renderAbort(result);
+      }
+      case 'close_event': {
+        const result = deps.eventService.closeEvent({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+        });
+        return renderClose(result);
+      }
+      case 'cancel_event': {
+        const result = deps.eventService.cancelEvent({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+        });
+        return renderCancelEvent(result);
+      }
       case 'my_id':
+        // M4 我的ID → 仍 no-op。
         return [];
-      // invalid：signup/cancel 類靜默；create 類格式提示屬 M3（M2 no-op）。unknown 不回覆（G5）。
-      case 'invalid':
+      case 'invalid': {
+        // create_event 類 → 授權後格式提示 (K)／非白名單 (H)；signup/cancel 類 → 靜默（D-003 既定）。
+        if (cmd.command === 'create_event') {
+          const result = deps.eventService.handleInvalidOneline({ executorLineUserId: userId });
+          return renderInvalidOneline(result);
+        }
+        return [];
+      }
       case 'unknown':
-        return [];
+        return []; // G9：不回覆、不 mark。
       default: {
         const _exhaustive: never = cmd;
         return _exhaustive;

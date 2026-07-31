@@ -19,6 +19,7 @@
 | 2026-07-31 | orchestrator(T-007 跨試) | LINE **Verify 成功 ≠ 使用者訊息會送 webhook**：官方帳號 Response mode 須為 **Bot**（非 Chat）、且 OA Manager Webhook 開啟、自動回應關閉，訊息事件才會進 webhook。 | 1 | 觀察中 | 候選：runbook 疑難排解（已列） |
 | 2026-07-31 | orchestrator(T-007 跨試) | Windows 終端 console codepage 非 UTF-8 → Pino log 中文顯示亂碼（僅顯示層，JS 字串/DB/回覆正常）；`chcp 65001` 可解。 | 1 | 觀察中 | 候選：runbook 註記 |
 | 2026-07-31 | orchestrator(T-006 驗證) | LINE `getGroupMemberProfile`（單一成員 profile）所有帳號可用；但「取成員 ID 清單」需 verified/premium。設計只用單一 profile（userId 來自 webhook）故不受限——未來若做「@全員/列未報名者」需列舉成員則需 verified 帳號。 | 1 | 觀察中 | 候選：M4 規劃 / project-brief non-goals |
+| 2026-07-31 | backend(T-008) | **設計文件「狀態行」加 markdown 粗體會使 `check_ac_coverage.py` 漏檢**：其 regex `狀態[:：]\s*(\w+)` 認不出 `狀態：**APPROVED**`，導致該設計的 AC 不納入覆蓋 → 假綠（D-004 22 條 AC 一度未計，顯示 58/58 實應 80/80）。狀態行請純文字 `狀態：APPROVED（日期）…`，勿加 `**` 粗體。 | 1 | 觀察中 | 候選：harness check 放寬 regex 容許粗體 / 或 CLAUDE.md §2 文件契約註記狀態行格式 |
 | 2026-07-31 | architect+design reviewer(D-004) | **「拒絕回覆」的去重 mark 政策不對稱**：純拒絕回覆（no_open_event / 非白名單 / 無 active / 重複開團）不 markProcessed → 重送同一拒絕會重覆回一次；有副作用步驟才 mark。D-003 T-006 nit-3（list 有 mark、signup/cancel 無）與 D-004 §9 同型。 | **2（回寫候選）** | 觀察中→**達 2 次，提案回寫** | 建議：立一則通則「拒絕回覆是否消費 messageId」的統一去重政策（落 CLAUDE.md §4 或 handler 設計指引），供後續 handler 沿用，免每設計各自處理。**下次階段回報向使用者提案。** |
 
 ## 已回寫紀錄（harness 演進史）

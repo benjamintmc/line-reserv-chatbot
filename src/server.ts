@@ -2,12 +2,15 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { validateSignature, type WebhookEvent } from '@line/bot-sdk';
 import { config } from './config';
 import { openDb } from './db';
+import { createTransactionRunner } from './db/tx';
 import { runMigrations } from './db/migrate';
 import { UserRepository } from './db/repositories/user-repository';
 import { EventRepository } from './db/repositories/event-repository';
 import { RegistrationRepository } from './db/repositories/registration-repository';
+import { ConversationRepository } from './db/repositories/conversation-repository';
 import { ProcessedEventRepository } from './db/repositories/processed-event-repository';
 import { RegistrationService } from './domain/registration-service';
+import { EventService } from './domain/event-service';
 import { createWebhookHandler, type WebhookHandler } from './webhook/handler';
 import { lineClient } from './line/client';
 
@@ -16,7 +19,7 @@ interface WebhookBody {
 }
 
 /**
- * 組裝 domain 依賴（DB → repositories → service → webhook handler）。
+ * 組裝 domain 依賴（DB → repositories → services → webhook handler）。
  * 預設開啟 config.databasePath 並套用 migration；測試可注入自備的 handler。
  */
 export function buildHandler(): WebhookHandler {
@@ -25,9 +28,26 @@ export function buildHandler(): WebhookHandler {
   const users = new UserRepository(db);
   const events = new EventRepository(db);
   const registrations = new RegistrationRepository(db);
+  const conversations = new ConversationRepository(db);
   const processed = new ProcessedEventRepository(db);
+  const runInTransaction = createTransactionRunner(db);
   const service = new RegistrationService({ events, users, registrations, processed });
-  return createWebhookHandler({ service, users, profile: lineClient });
+  // 開團 domain：注入 repos、tx runner、以 config.adminUserIds 為 host 白名單（G1；OP-1）。
+  const eventService = new EventService({
+    events,
+    users,
+    conversations,
+    processed,
+    runInTransaction,
+    hostUserIds: config.adminUserIds,
+  });
+  return createWebhookHandler({
+    service,
+    eventService,
+    users,
+    conversations,
+    profile: lineClient,
+  });
 }
 
 /** 建立 Fastify app（不啟動 listen，方便測試注入）。 */

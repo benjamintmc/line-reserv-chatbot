@@ -2,7 +2,9 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
-import { createWebhookHandler, type GroupProfileClient } from './handler';
+import { EventService } from '../domain/event-service';
+import { createTransactionRunner } from '../db/tx';
+import { createWebhookHandler, type GroupProfileClient, type WebhookHandler } from './handler';
 
 /** 建立群組文字訊息事件（測試用最小 shape）。 */
 function groupTextEvent(
@@ -27,6 +29,33 @@ function makeService(t: TestDb): RegistrationService {
   });
 }
 
+function makeEventService(t: TestDb, hostUserIds: string[] = []): EventService {
+  return new EventService({
+    events: t.events,
+    users: t.users,
+    conversations: t.conversations,
+    processed: t.processed,
+    runInTransaction: createTransactionRunner(t.db),
+    hostUserIds,
+    logError: () => {},
+  });
+}
+
+/** 組裝 handler（D-003 分派測試預設不需 host 白名單；D-004 測試另傳）。 */
+function makeHandler(
+  t: TestDb,
+  opts: { service?: RegistrationService; profile: GroupProfileClient; hostUserIds?: string[] },
+): WebhookHandler {
+  const service = opts.service ?? makeService(t);
+  return createWebhookHandler({
+    service,
+    eventService: makeEventService(t, opts.hostUserIds ?? []),
+    users: t.users,
+    conversations: t.conversations,
+    profile: opts.profile,
+  });
+}
+
 function profileReturning(name: string): GroupProfileClient {
   return { getGroupMemberProfile: vi.fn().mockResolvedValue({ displayName: name }) };
 }
@@ -45,7 +74,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const service = makeService(t);
     const signupSpy = vi.spyOn(service, 'signup');
     const profile = profileReturning('任何人');
-    const handler = createWebhookHandler({ service, users: t.users, profile });
+    const handler = makeHandler(t, { service, profile });
 
     const out = await handler.handleEvent(groupTextEvent('今天天氣真好', { messageId: 'mx' }));
     expect(out).toEqual([]);
@@ -58,7 +87,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
     seedEvent(t, { capacity: 4, groupId: 'G' });
     const service = makeService(t);
     const signupSpy = vi.spyOn(service, 'signup');
-    const handler = createWebhookHandler({ service, users: t.users, profile: profileReturning('X') });
+    const handler = makeHandler(t, { service, profile: profileReturning('X') });
 
     const out = await handler.handleEvent(groupTextEvent('+99', { messageId: 'mv' }));
     expect(out).toEqual([]);
@@ -68,9 +97,8 @@ describe('webhook handler（D-003 §6 分派）', () => {
 
   it('[D-003 AC-19] 以 getGroupMemberProfile 取群組顯示名並存為快照（非 getProfile）', async () => {
     const { event } = seedEvent(t, { capacity: 4, groupId: 'G' });
-    const service = makeService(t);
     const profile = profileReturning('群組顯示名');
-    const handler = createWebhookHandler({ service, users: t.users, profile });
+    const handler = makeHandler(t, { profile });
 
     await handler.handleEvent(groupTextEvent('+1', { userId: 'U-new', messageId: 'm1' }));
     expect(profile.getGroupMemberProfile).toHaveBeenCalledWith('G', 'U-new');
@@ -87,7 +115,14 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const failing: GroupProfileClient = {
       getGroupMemberProfile: vi.fn().mockRejectedValue(new Error('404 not friend')),
     };
-    const handler = createWebhookHandler({ service, users: t.users, profile: failing, logError: () => {} });
+    const handler = createWebhookHandler({
+      service,
+      eventService: makeEventService(t),
+      users: t.users,
+      conversations: t.conversations,
+      profile: failing,
+      logError: () => {},
+    });
 
     // 既有快照存在 → 用之。
     t.users.upsert('U-known', '舊名快照');
@@ -102,8 +137,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
 
   it('[D-003 AC-14] 取消觸發遞補 → 追加 textV2 訊息、substitution 含被遞補者 userId', async () => {
     seedEvent(t, { capacity: 1, groupId: 'G' }); // host = U-host
-    const service = makeService(t);
-    const handler = createWebhookHandler({ service, users: t.users, profile: profileReturning('報名者') });
+    const handler = makeHandler(t, { profile: profileReturning('報名者') });
 
     // A 佔滿唯一正取，W 進候補。
     await handler.handleEvent(groupTextEvent('+1', { userId: 'U-a', messageId: 'ma' }));
@@ -123,8 +157,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
   });
 
   it('[D-003 AC-10] 非群組來源 / 非文字事件一律忽略', async () => {
-    const service = makeService(t);
-    const handler = createWebhookHandler({ service, users: t.users, profile: profileReturning('X') });
+    const handler = makeHandler(t, { profile: profileReturning('X') });
     const sticker = { type: 'message', message: { type: 'sticker', id: '1' }, source: { type: 'group', groupId: 'G', userId: 'U' }, replyToken: 'rt' } as unknown as WebhookEvent;
     const oneToOne = { type: 'message', message: { type: 'text', id: '2', text: '+1' }, source: { type: 'user', userId: 'U' }, replyToken: 'rt' } as unknown as WebhookEvent;
     expect(await handler.handleEvent(sticker)).toEqual([]);
@@ -133,8 +166,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
 
   it('signup 正常回覆為單一文字訊息（含活動摘要與名單）', async () => {
     seedEvent(t, { capacity: 16, groupId: 'G' });
-    const service = makeService(t);
-    const handler = createWebhookHandler({ service, users: t.users, profile: profileReturning('王小明') });
+    const handler = makeHandler(t, { profile: profileReturning('王小明') });
     const out = await handler.handleEvent(groupTextEvent('+3', { userId: 'U-wang', messageId: 'm1' }));
     expect(out).toHaveLength(1);
     const msg = out[0]!;
@@ -146,8 +178,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
 
   it('list 重送（相同 message_id）→ 第二次不回覆（唯讀去重）', async () => {
     seedEvent(t, { capacity: 4, groupId: 'G' });
-    const service = makeService(t);
-    const handler = createWebhookHandler({ service, users: t.users, profile: profileReturning('X') });
+    const handler = makeHandler(t, { profile: profileReturning('X') });
     const first = await handler.handleEvent(groupTextEvent('名單', { messageId: 'ml' }));
     const second = await handler.handleEvent(groupTextEvent('名單', { messageId: 'ml' }));
     expect(first).toHaveLength(1);
