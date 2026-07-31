@@ -1,6 +1,6 @@
 # D-005: 計費模式（Billing Modes：每人固定 / 場地費均攤 + 主辦自動登記 + 關閉結算 + 文案中性化）
 
-- 狀態：DRAFT
+- 狀態：APPROVED（2026-07-31）——R2 雙審通過（architect 條件式 APPROVED 零改碼 blocker + design 3 blocker 已修）、OP-1~4 定案、使用者最終核可。條件（D-001 G2 carve-out errata）APPROVED 後由 architect 補寫。
 - 撰寫者：backend-engineer
 - 風險等級：**R2（高）**——含 **schema migration（0002，events 加欄位）**、金額顯示語意（均攤暫估 vs 最終結算）、以及**影響報名核心的開團自動登記**（於 event 建立交易內插入報名列）。依 CLAUDE.md §5：強制 design-reviewer + architect-reviewer 雙審 + e2e、Guardrails ≥ 3（本文件列 8 條）。
 - 關聯：Brief「範圍」FR-3 活動建立 §34 / FR-2 名單查詢（每人價格、預估總金額）§33 / 決策紀錄 #3 同群限一場 §82 ・ 任務 T-009 ・ 設計 D-005

@@ -2,7 +2,7 @@
 
 > 擁有者：orchestrator。這是跨 session、跨模型的共同記憶，每次派工前後必須更新。
 
-## 目前階段：M3 完成（T-008 DONE）。新擴充 D-005（計費模式：每人固定/場地費均攤 + 文案中性化 + 主辦自動登記）設計中，R2；APPROVED 後 T-009 實作，接真機跨試（使用者將提供 2 群組各測一種計費）
+## 目前階段：D-005 計費模式 APPROVED（2026-07-31，R2 雙審通過）— T-009 實作 IN_PROGRESS + D-001 errata 補寫中。接真機跨試（2 群組×2 計費）
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
@@ -14,7 +14,7 @@
 | T-005 | M1 command parser（+N/-N/名單/開團） | D-002（APPROVED） | R1 | backend-engineer | DONE | src/commands/ | 2026-07-23 完成：build 綠、83 tests、AC 39/39、architect-reviewer 審 D-002 通過、unit-tester 獨立覆核無 bug（補 17 邊界測試） |
 | T-006 | M2 報名核心（signup/cancel/list domain + webhook 接線） | D-003（APPROVED） | R1 | backend-engineer | DONE | src/domain/, src/webhook/, src/db/repositories/registration-repository.ts, src/server.ts | 2026-07-31 完成：build 綠、124 tests 全綠、AC 58/58（AC-1~AC-19）、architect-reviewer 複審零 blocker G1~G11 逐條 PASS、unit-tester 獨立覆核未揪 bug（補 11 測試）。新增 findActiveProxyByName、domain 三檔、handler 改 async+DI。D-003 §4/§1.1 errata 已同步。e2e AC-17 待整合階段（見 Backlog） |
 | T-007 | M2 真實 LINE 跨試（cloudflared，手動 seed open 活動） | – | R0（測試支援） | orchestrator + 使用者 | DONE | scripts/seed-open-event.ts, docs/integration-test-m2-line.md | 2026-07-31 使用者於真實 LINE 群組跨試**全數通過**：名單/+N/整批候補/取消觸發 @遞補（textV2 mention 藍字可點）/代報名 +N名字/-N名字/+99 靜默/閒聊不回覆 皆符預期。通道用 cloudflared quick tunnel（免帳號）。踩雷紀錄見 LESSONS |
-| T-009 | 計費模式擴充實作（price_mode/venue_fee + migration、均攤估算/結算、主辦自動登記、文案中性化、開團計費語法） | D-005（撰寫中） | R2 | backend-engineer | BLOCKED | src/db/, src/commands/, src/domain/, src/webhook/ | 等 D-005 APPROVED；完成後接真機跨試（2 群組 × 2 計費模式）|
+| T-009 | 計費模式擴充實作（price_mode/venue_fee/settled_per_person + migration 0002、均攤估算/結算、主辦自動登記、文案中性化、開團計費語法） | D-005（APPROVED） | R2 | backend-engineer | IN_PROGRESS | src/db/, src/commands/, src/domain/, src/webhook/ | 2026-07-31 D-005 APPROVED 解阻，已派工。完成後 R2 三關 + 真機跨試（2 群組 × 2 計費模式）|
 | T-008 | M3 開團流程（開團/確認/關閉報名/取消活動 + event 狀態機 + host 白名單 + 逐步問答 conversation_states） | D-004（APPROVED） | R2 | backend-engineer | DONE | src/domain/, src/webhook/, src/commands/, src/db/tx.ts, src/server.ts | 2026-07-31 完成：build 綠、165 tests 全綠、AC 80/80（含 D-004 AC-1~22）、lint 0 error。**R2 三關全通過**：architect-reviewer 零 blocker（窄捕捉追認 PASS）、design-reviewer 零 blocker、unit-tester 無 bug（補 3 強化測試）。文件校正已套用（§4/§9）。e2e 留整合階段（AC-18 開團→報名銜接 + AC-17 主辦override） |
 
 ## 設計文件狀態
@@ -24,7 +24,7 @@
 | D-002 | 指令解析 command parser（+N/-N/名單/開團；全形/上限/邊界） | backend-engineer | APPROVED（2026-07-23，reviewer 通過 + errata + 使用者核可） |
 | D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版/webhook 接線） | backend-engineer | **APPROVED（2026-07-31）** — architect-reviewer 通過 + nit-2/5 採納 + 使用者最終核可（OP-1~4 已裁決；風險 R1） |
 | D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 2 blocker 已修）、OP-1~9 定案、使用者核可 |
-| D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | IN_DISCUSSION（2026-07-31）— **R2 雙審完成**：architect 條件式 APPROVED（零改碼 blocker；條件＝D-001 G2 carve-out errata，APPROVED 後補）、design 3 blocker（新 state 重問/公告誤導/(K) 缺語法）**已修**（+AC-17~19）。OP-1~4 定案。**待使用者最終 APPROVED** 即派 T-009 |
+| D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 條件式零 blocker + design 3 blocker 已修）、OP-1~4 定案、使用者核可。D-001 errata 由 architect 補寫中 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
