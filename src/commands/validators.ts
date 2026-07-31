@@ -69,7 +69,7 @@ export function validatePrice(tok: string): ValidationResult<number> {
 
 /**
  * 場地費（split_venue）驗證（D-005 §6.1 / OP-2）：去可選前綴 `場地費`/`均攤`、去尾綴 `元`；
- * 須為 `> 0` 的整數；失敗回 `create_bad_venue_fee`。供逐步問答 awaiting_venue_fee 直接使用。
+ * 須為 `> 0` 的整數；失敗回 `create_bad_venue_fee`。
  */
 export function validateVenueFee(tok: string): ValidationResult<number> {
   const noPrefix = stripPrefixAny(tok, ['場地費', '均攤']);
@@ -85,19 +85,24 @@ export function validateVenueFee(tok: string): ValidationResult<number> {
 }
 
 /**
- * 一行式開團第 5 欄「費用」驗證（D-005 §6.1）：依前綴關鍵字判定計費模式。
+ * 費用驗證（D-005 §6.1 一行式第 5 欄 + §6.2 逐步問答單題 awaiting_fee 共用）：依前綴關鍵字判計費模式。
  * - `場地費N` / `均攤N` → split_venue，`venue_fee=N`（>0，reason create_bad_venue_fee）。
  * - `每人N` / 裸 `N`（無前綴，回歸 D-002）→ per_person，`price_per_person=N`（>=0）。
+ *
+ * 容錯：**去除所有空白**後再判定，容忍關鍵字與數字間空白（「場地費 3000」「每人 2200」「場地費 3000元」）。
+ * 一行式 token 於切分後本無內部空白，故此容錯對一行式解析為 no-op（AC-9 零回歸）；
+ * 逐步問答單題整串為答案、可能含空白，故此容錯為必要（D-005 §6.2 修訂）。
  */
 export function validateFee(
   tok: string,
 ): ValidationResult<{ mode: PriceMode; amount: number }> {
-  if (tok.startsWith('場地費') || tok.startsWith('均攤')) {
-    const r = validateVenueFee(tok);
+  const compact = tok.replace(/\s+/g, '');
+  if (compact.startsWith('場地費') || compact.startsWith('均攤')) {
+    const r = validateVenueFee(compact);
     if (!r.ok) return { ok: false, reason: r.reason };
     return { ok: true, value: { mode: 'split_venue', amount: r.value } };
   }
-  const noPrefix = stripPrefixAny(tok, ['每人']);
+  const noPrefix = stripPrefixAny(compact, ['每人']);
   const r = validatePrice(noPrefix);
   if (!r.ok) return { ok: false, reason: r.reason };
   return { ok: true, value: { mode: 'per_person', amount: r.value } };

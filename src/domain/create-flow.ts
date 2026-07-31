@@ -4,17 +4,17 @@
 // 欄位驗證複用 commands 層 validator（單一 source of truth，G7/AC-22）；
 // 不在此重新硬編一套 date/time/capacity/price regex。
 //
-// D-005：在 awaiting_capacity 後插入計費方式提問 awaiting_price_mode，據答案分岔至
-// awaiting_price（每人固定）或 awaiting_venue_fee（場地費均攤），二者皆前進 awaiting_confirm。
+// D-005 §6.2（修訂 2026-07-31，真機跨試回饋）：計費併為單一題 awaiting_fee。
+// awaiting_capacity 後接 awaiting_fee，整串答案交 validateFee（與一行式同一 source of truth），
+// 依前綴關鍵字判 mode（每人固定 / 場地費均攤），合法即前進 awaiting_confirm。
 
 import type { PriceMode } from '../db/schema';
 import {
   normalizeWhitelist,
   validateCapacity,
   validateDate,
-  validatePrice,
+  validateFee,
   validateTime,
-  validateVenueFee,
 } from '../commands';
 
 /** conversation_states.state 的合法值（D-004 §3.1 + D-005 §6.2；schema 只存字串、不在 DB 強制列舉）。 */
@@ -23,9 +23,7 @@ export type CreateState =
   | 'awaiting_time'
   | 'awaiting_location'
   | 'awaiting_capacity'
-  | 'awaiting_price_mode'
-  | 'awaiting_price'
-  | 'awaiting_venue_fee'
+  | 'awaiting_fee'
   | 'awaiting_confirm';
 
 /** 逐步問答首個 state（`開團` 觸發後的第一問）。 */
@@ -64,15 +62,7 @@ export type ApplyResult =
   | { ok: true; payload: CreateEventDraft; nextState: CreateState }
   | { ok: false; state: CreateState };
 
-/** 逐步問答計費方式答案接受詞（D-005 §6.2；OP-2 關鍵字 `場地費`，均攤為同義）。 */
-const PER_PERSON_WORDS = ['每人'];
-const SPLIT_WORDS = ['場地費', '均攤'];
-
-/**
- * 某 state 成功填答後前進到的下一 state（線性部分 + 分岔匯流）。
- * 注意：awaiting_price_mode 的實際分岔（→ awaiting_price / awaiting_venue_fee）由 applyAnswer
- * 依所選 priceMode 明確決定，不經此函式（此處回線性預設 awaiting_price 供防禦）。
- */
+/** 某 state 成功填答後前進到的下一 state（線性；D-005 §6.2 修訂後計費為單題，無分岔）。 */
 export function nextState(state: CreateState): CreateState {
   switch (state) {
     case 'awaiting_date':
@@ -82,12 +72,8 @@ export function nextState(state: CreateState): CreateState {
     case 'awaiting_location':
       return 'awaiting_capacity';
     case 'awaiting_capacity':
-      return 'awaiting_price_mode';
-    case 'awaiting_price_mode':
-      return 'awaiting_price';
-    case 'awaiting_price':
-      return 'awaiting_confirm';
-    case 'awaiting_venue_fee':
+      return 'awaiting_fee';
+    case 'awaiting_fee':
       return 'awaiting_confirm';
     case 'awaiting_confirm':
       return 'awaiting_confirm';
@@ -119,8 +105,8 @@ export function isComplete(payload: CreateEventDraft): payload is CompleteDraft 
  * 驗證失敗 → 停留同一 state（`{ ok:false, state }`），呼叫端重問、不前進、不 INSERT（§3.2）。
  * location 可含空白（逐步問答特例，§3.1/AC-5）；空白/空字串視為無效。
  *
- * D-005 §6.2（design-reviewer B1）：awaiting_price_mode **僅接受**「每人」/「場地費（均攤）」，
- * 其餘任何輸入（含裸數字、其他字）一律停留重問、不猜測、不當金額（AC-17）。
+ * D-005 §6.2（修訂）：awaiting_fee 整串答案交 validateFee 依前綴判 mode（每人 / 場地費均攤）；
+ * validateFee 容忍關鍵字與數字間空白（「場地費 3000」「每人 2200」皆可）。無效停留重問（AC-17）。
  */
 export function applyAnswer(
   state: CreateState,
@@ -156,41 +142,22 @@ export function applyAnswer(
       if (!r.ok) return { ok: false, state };
       return { ok: true, payload: { ...payload, capacity: r.value }, nextState: nextState(state) };
     }
-    case 'awaiting_price_mode': {
-      // 僅接受計費方式關鍵字；其餘（含裸數字）一律停留重問（B1/AC-17，不猜測）。
-      if (PER_PERSON_WORDS.includes(trimmed)) {
-        return {
-          ok: true,
-          payload: { ...payload, priceMode: 'per_person' },
-          nextState: 'awaiting_price',
-        };
-      }
-      if (SPLIT_WORDS.includes(trimmed)) {
-        return {
-          ok: true,
-          payload: { ...payload, priceMode: 'split_venue' },
-          nextState: 'awaiting_venue_fee',
-        };
-      }
-      return { ok: false, state };
-    }
-    case 'awaiting_price': {
-      const r = validatePrice(trimmed);
+    case 'awaiting_fee': {
+      // 單題整串答案交 validateFee（依前綴判 mode；容忍關鍵字與數字間空白）。
+      const r = validateFee(trimmed);
       if (!r.ok) return { ok: false, state };
+      if (r.value.mode === 'split_venue') {
+        // split：venueFee 為場地費總額；price 語意為 0（不適用）。
+        return {
+          ok: true,
+          payload: { ...payload, priceMode: 'split_venue', venueFee: r.value.amount, price: 0 },
+          nextState: 'awaiting_confirm',
+        };
+      }
       // per_person：price 為每人金額；venue_fee 不適用（保持 undefined，一致性由 repo 邊界層 G4 兜底）。
       return {
         ok: true,
-        payload: { ...payload, price: r.value },
-        nextState: 'awaiting_confirm',
-      };
-    }
-    case 'awaiting_venue_fee': {
-      const r = validateVenueFee(trimmed);
-      if (!r.ok) return { ok: false, state };
-      // split：venueFee 為場地費總額；price 語意為 0（不適用）。
-      return {
-        ok: true,
-        payload: { ...payload, venueFee: r.value, price: 0 },
+        payload: { ...payload, priceMode: 'per_person', price: r.value.amount },
         nextState: 'awaiting_confirm',
       };
     }

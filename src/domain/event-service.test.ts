@@ -28,11 +28,11 @@ function nextMid(): string {
 
 /**
  * 逐步走完至 awaiting_confirm（不含 `確認`；每步 message_id 全域唯一）。
- * D-005 §6.2：capacity 後加「每人」選計費方式，再輸入每人費用。
+ * D-005 §6.2（修訂）：capacity 後為單一計費題 awaiting_fee，整串答案 `2200` → per_person。
  */
 function walkToConfirm(svc: EventService, userId = HOST): void {
   svc.startCreation({ groupId: G, executorLineUserId: userId, messageId: nextMid() });
-  for (const text of ['2026/08/15', '07:30', '東方球場', '16', '每人', '2200']) {
+  for (const text of ['2026/08/15', '07:30', '東方球場', '16', '2200']) {
     svc.continueFlow({
       groupId: G,
       executorLineUserId: userId,
@@ -82,7 +82,7 @@ describe('EventService（D-004 / D-005）', () => {
     expect(t.conversations.get(HOST)).toBeUndefined(); // 流程清除
   });
 
-  it('[D-004 AC-3] 逐步問答完整走完 → 確認 → open（欄位＝依序輸入值）', () => {
+  it('[D-004 AC-3 / D-005 AC-10] 逐步問答完整走完（單題計費）→ 確認 → open', () => {
     const svc = makeSvc(t);
     const start = svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 's0' });
     expect(start.kind).toBe('flow_started');
@@ -92,8 +92,7 @@ describe('EventService（D-004 / D-005）', () => {
       ['2026/08/15', 's1', 'awaiting_time'],
       ['07:30', 's2', 'awaiting_location'],
       ['東方球場', 's3', 'awaiting_capacity'],
-      ['16', 's4', 'awaiting_price_mode'],
-      ['每人', 's5', 'awaiting_price'],
+      ['16', 's4', 'awaiting_fee'],
     ];
     for (const [text, mid, next] of seq) {
       const r = svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: mid, text, hostDisplayName: '主辦人' });

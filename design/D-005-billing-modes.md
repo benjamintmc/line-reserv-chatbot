@@ -203,6 +203,16 @@ split_venue： 場地費：3000 元，平均每人約 429 元（暫估，關閉�
 
 #### 6.2 逐步問答（`create-flow` state machine）
 
+> **修訂（2026-07-31，真機跨試回饋，取代原兩題設計）**：逐步問答的計費**併為單一題** `awaiting_fee`（不再拆「計費方式」+「金額」兩題）。單題整串答案交 `validateFee`（與一行式同一 source of truth），依前綴關鍵字判 mode：
+> - `awaiting_capacity` ──► **`awaiting_fee`** ──(合法)──► `awaiting_confirm`
+> - 提問：`請輸入費用：每人固定請直接輸入金額（例：2200 或 每人2200），場地費均攤請輸入「場地費」+總額（例：場地費3000）（過程中可輸入「取消」放棄開團）`
+> - 無效重問（單則）：`費用格式不正確。每人固定：直接輸入金額（例：2200）；場地費均攤：場地費+總額（例：場地費3000）。請重新輸入。`
+> - `applyAnswer(awaiting_fee, answer)` → `validateFee`（**須容忍關鍵字與數字間的空白**，如「場地費 3000」「每人 2200」皆可）→ 設 `priceMode` + `price`(per_person) 或 `venueFee`(split)；無效 → 停留重問。
+> - `CreateState` 移除 `awaiting_price_mode`/`awaiting_venue_fee`/（逐步用的）`awaiting_price`，改單一 `awaiting_fee`；`FIELD_ORDER` 於 `awaiting_capacity` 後接 `awaiting_fee`。`isComplete`：date/time/location/capacity + priceMode 已定且對應金額（per_person→price、split→venueFee）齊備。
+> - AC-10 對應改為「逐步問答單題費用：答『場地費3000』→ split/venueFee=3000；答『2200』或『每人2200』→ per_person/price=2200；無效答案停留重問」；AC-17 對應調整為單一 `awaiting_fee` 的無效重問。
+>
+> 以下原兩題設計（`awaiting_price_mode` + `awaiting_venue_fee`）**作廢**，保留供對照：
+
 在 `awaiting_price` 前插入**計費方式提問** `awaiting_price_mode`（並據答案分流至 `awaiting_price` 或 `awaiting_venue_fee`）：
 
 ```

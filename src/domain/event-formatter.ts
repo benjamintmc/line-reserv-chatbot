@@ -6,6 +6,7 @@
 // D-005：費用列依 price_mode 顯示（split 標「暫估」，G2；開團公告不顯示每人估額，B2/AC-19）；
 // 關閉報名(split) 顯示最終攤額（formatClosed 以傳入 settledPerPerson 為唯一真相來源，architect N3）；
 // 文案中性化（球聚→球敘、開球時間→時間、球場地點→場地、body 標籤 地點→場地，§7）。
+// D-005 §6.2（修訂）：計費併為單一題 awaiting_fee（提問/無效重問各一則）。
 
 import type { EventRow } from '../db/schema';
 import type { CreateState, CreateEventDraft } from './create-flow';
@@ -29,14 +30,14 @@ export function formatFlowPrompt(state: CreateState): MessageDescriptor {
       return text('請輸入場地（例：○○球場）');
     case 'awaiting_capacity':
       return text('請輸入人數上限（正整數，例：16）');
-    case 'awaiting_price_mode':
+    case 'awaiting_fee':
+      // D-005 §6.2（修訂）：單題費用，換行分列兩種寫法 + 「取消」逃生口（design-reviewer T-010 nit-1）。
       return text(
-        '請選擇計費方式：輸入「每人」固定每人費用，或「場地費」由場地費總額均攤',
+        '請輸入費用（兩種寫法）：\n' +
+          '・每人固定：直接輸入金額，例 2200（或 每人2200）\n' +
+          '・場地費均攤：輸入「場地費」+總額，例 場地費3000\n' +
+          '（過程中可輸入「取消」放棄開團）',
       );
-    case 'awaiting_price':
-      return text('請輸入每人費用（元，例：2200；免費請輸入 0）');
-    case 'awaiting_venue_fee':
-      return text('請輸入場地費總額（元，例：3000；將依報名人數均攤）');
     case 'awaiting_confirm':
       // 進 awaiting_confirm 時應以確認摘要 (B) 回覆，不走此提問；防禦回重新提示 (M)。
       return formatConfirmReprompt();
@@ -81,16 +82,12 @@ export function formatFieldError(state: CreateState): MessageDescriptor {
       return text('場地不可為空，請輸入場地（例：○○球場）');
     case 'awaiting_capacity':
       return text('人數需為正整數（例：16）');
-    case 'awaiting_price_mode':
-      // B1/AC-17：無效答案（含裸數字）重問；不猜測、不當金額。
+    case 'awaiting_fee':
+      // D-005 §6.2（修訂）：單題費用無效重問（單則，涵蓋兩種寫法 + 取消提示）；AC-17、nit-2/3。
       return text(
-        '請輸入「每人」或「場地費」：「每人」設定固定每人費用，「場地費」由場地費總額均攤' +
-          '（過程中可輸入「取消」放棄開團）',
+        '費用格式不正確。每人固定：直接輸入金額（例：2200 或 每人2200）；' +
+          '場地費均攤：場地費+總額（例：場地費3000）。請重新輸入（或輸入「取消」放棄）。',
       );
-    case 'awaiting_price':
-      return text('費用需為 0 或正整數（免費請輸入 0，例：2200）');
-    case 'awaiting_venue_fee':
-      return text('場地費需為正整數（元，例：3000），請重新輸入。');
     case 'awaiting_confirm':
       return formatConfirmReprompt();
     default: {

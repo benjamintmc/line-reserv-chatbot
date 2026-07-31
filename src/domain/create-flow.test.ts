@@ -9,17 +9,16 @@ import {
   type CreateEventDraft,
 } from './create-flow';
 
-/** D-004 §3 逐步問答 state machine 純邏輯（不觸 DB / LINE）。D-005 §6.2：加計費方式分支。 */
+/** D-004 §3 逐步問答 state machine 純邏輯（不觸 DB / LINE）。D-005 §6.2（修訂）：計費併為單一題 awaiting_fee。 */
 describe('create-flow 純狀態機（D-004 §3 / D-005 §6.2）', () => {
-  it('nextState 逐欄前進：capacity 後為 awaiting_price_mode，price/venue_fee 後為 awaiting_confirm', () => {
+  it('nextState 逐欄前進：capacity 後為 awaiting_fee，fee 後為 awaiting_confirm', () => {
     expect(FIRST_STATE).toBe('awaiting_date');
     expect(nextState('awaiting_date')).toBe('awaiting_time');
     expect(nextState('awaiting_time')).toBe('awaiting_location');
     expect(nextState('awaiting_location')).toBe('awaiting_capacity');
-    // D-005：capacity 後插入計費方式提問。
-    expect(nextState('awaiting_capacity')).toBe('awaiting_price_mode');
-    expect(nextState('awaiting_price')).toBe('awaiting_confirm');
-    expect(nextState('awaiting_venue_fee')).toBe('awaiting_confirm');
+    // D-005（修訂）：capacity 後接單一計費題 awaiting_fee，其後 awaiting_confirm。
+    expect(nextState('awaiting_capacity')).toBe('awaiting_fee');
+    expect(nextState('awaiting_fee')).toBe('awaiting_confirm');
   });
 
   it('[D-004 AC-4] awaiting_date 非法日期 → 停留同一 state、payload 不含 date', () => {
@@ -35,11 +34,11 @@ describe('create-flow 純狀態機（D-004 §3 / D-005 §6.2）', () => {
     expect(ok.nextState).toBe('awaiting_time');
   });
 
-  it('[D-004 AC-4] 各欄非法輸入皆停留該 state 重問（time/capacity/price）', () => {
+  it('[D-004 AC-4] 各欄非法輸入皆停留該 state 重問（time/capacity/fee）', () => {
     expect(applyAnswer('awaiting_time', { date: 'd' }, '25:00').ok).toBe(false);
     expect(applyAnswer('awaiting_capacity', {}, '0').ok).toBe(false);
     expect(applyAnswer('awaiting_capacity', {}, 'abc').ok).toBe(false);
-    expect(applyAnswer('awaiting_price', {}, '-1').ok).toBe(false);
+    expect(applyAnswer('awaiting_fee', {}, '-1').ok).toBe(false);
   });
 
   it('[D-004 AC-5] awaiting_location 可含空白，僅去頭尾、保留內部空白', () => {
@@ -57,10 +56,11 @@ describe('create-flow 純狀態機（D-004 §3 / D-005 §6.2）', () => {
     expect(r.state).toBe('awaiting_location');
   });
 
-  it('awaiting_price 免費 0 → 前進 awaiting_confirm', () => {
-    const r = applyAnswer('awaiting_price', {}, '0');
+  it('[D-005 AC-10] awaiting_fee 免費 0（per_person）→ 前進 awaiting_confirm', () => {
+    const r = applyAnswer('awaiting_fee', {}, '0');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
+    expect(r.payload.priceMode).toBe('per_person');
     expect(r.payload.price).toBe(0);
     expect(r.nextState).toBe('awaiting_confirm');
   });

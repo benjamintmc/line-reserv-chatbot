@@ -40,16 +40,19 @@ describe('event-formatter 計費 + 中性化（D-005 §5 / §7）', () => {
     expect(formatFlowPrompt('awaiting_location').text).not.toContain('球場地點');
   });
 
-  it('[D-005 AC-10] 新 state 提問範本存在：awaiting_price_mode / awaiting_venue_fee', () => {
-    expect(formatFlowPrompt('awaiting_price_mode').text).toContain('請選擇計費方式');
-    expect(formatFlowPrompt('awaiting_venue_fee').text).toContain('請輸入場地費總額');
+  it('[D-005 AC-10] 單題費用提問範本：含每人/場地費兩種寫法 + 取消逃生口', () => {
+    const p = formatFlowPrompt('awaiting_fee').text;
+    expect(p).toContain('請輸入費用');
+    expect(p).toContain('每人');
+    expect(p).toContain('場地費');
+    expect(p).toContain('取消');
   });
 
-  it('[D-005 AC-17] 無效重問範本：price_mode 提示「每人」「場地費」；venue_fee 提示正整數', () => {
-    const pm = formatFieldError('awaiting_price_mode').text;
-    expect(pm).toContain('每人');
-    expect(pm).toContain('場地費');
-    expect(formatFieldError('awaiting_venue_fee').text).toContain('場地費需為正整數');
+  it('[D-005 AC-17] 單題費用無效重問範本：含兩種寫法範例', () => {
+    const fe = formatFieldError('awaiting_fee').text;
+    expect(fe).toContain('費用格式不正確');
+    expect(fe).toContain('2200');
+    expect(fe).toContain('場地費3000');
   });
 
   it('[D-005 AC-14] 確認摘要 split 標暫估、不硬算每人', () => {
