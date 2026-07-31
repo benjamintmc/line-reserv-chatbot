@@ -224,3 +224,7 @@ CMD ["node", "dist/index.js"]
 | 日期 | 議題 | 裁決 |
 |---|---|---|
 | 2026-07-31 | D-007 DRAFT 產出 | 待 architect-reviewer + design-reviewer（R2 雙審）與使用者對 OP-1~7 裁決後標 APPROVED，解鎖 T-012 |
+| 2026-07-31 | OP-1 路線 | **PG-only**（使用者裁決）：全環境 Postgres、單一併發實作；本機測試用 docker postgres、手動 LINE 跨試可直連 Neon。移除 better-sqlite3（prod）。 |
+| 2026-07-31 | OP-2~7（技術，orchestrator 採 architect 建議） | OP-2 驅動 `pg`；OP-3 自建 async migration runner + postbuild copy（併解 §6）；OP-4 時間欄維持 TEXT ISO；OP-5 測試用 docker-compose postgres；OP-6 migration 部署時一次性執行（非每實例 startup）；OP-7 is_host 維持 SMALLINT 0/1。 |
+
+> **OP-1~7 全數定案（2026-07-31）**，設計正文與裁決一致。送 R2 雙審；architect-reviewer 為主審（併發正確性/連線一致性/migration 方言），design-reviewer 審「移植後使用者體驗無退化」（回覆不漏送、訊息範本不變）。雙審通過即待使用者最終 APPROVED，解鎖 T-012。
