@@ -13,9 +13,9 @@ MVP 以 SQLite（better-sqlite3）+ 常駐機為資料與運算模型（D-001、
 
 ## 決策
 
-1. **資料庫**：由 SQLite（better-sqlite3，本機檔 + 持久磁碟）移植至 **Neon Postgres**，以 **pooled 連線字串**存取，驅動採 `pg`（node-postgres，純 JS）。
+1. **資料庫**：由 SQLite（better-sqlite3，本機檔 + 持久磁碟）移植至 **Neon Postgres**，以 **pooled 連線字串**存取（migrate 例外走直連），驅動採 `pg`（node-postgres，純 JS）。
 2. **運算**：由常駐 Fastify 進程改為 **Cloud Run 容器**（`min-instances=0`，serverless）。
-3. **併發防超賣**：由 SQLite `BEGIN IMMEDIATE` 全域序列化，改為 PG 交易內 **`SELECT … FROM events WHERE id=? FOR UPDATE`** 鎖住該活動列（只序列化同一場活動的併發報名，跨活動可平行 → 併發性更佳，正確性等義）。
+3. **併發防超賣**：由 SQLite `BEGIN IMMEDIATE` 全域序列化，改為 PG 交易內 **`SELECT … FROM events WHERE id=? FOR UPDATE`** 鎖住該活動列（只序列化同一場活動的併發報名，跨活動可平行 → 併發性更佳，正確性等義）。**連線一致性**由「交易 runner 注入 client-bound repository 束（D-007 路線 A）」保證。
 4. **serverless 時序**：webhook 由「回 200 後才 `await` 處理 + `replyMessage`」改為「**先 `await` 完整處理（含 `replyMessage`）再回 200**」（Cloud Run 於回應送出後可能凍結／回收實例，舊時序會漏送回覆）。
 5. **驅動移除**：prod 不再需要 better-sqlite3 native 相依（cold start 更快、無 native build）。
 
@@ -36,12 +36,13 @@ MVP 以 SQLite（better-sqlite3）+ 常駐機為資料與運算模型（D-001、
 
 - **正面**：達成 $0/月；無持久磁碟依賴；PG 行鎖只序列化同場報名 → 併發性優於 SQLite 全域鎖；managed 備份／時間點還原／跨區；prod 移除 native addon → cold start 快、Dockerfile 精簡。
 - **負面／風險**：
-  - **repository 需重寫**為 PG（對外方法名／參數／回傳語意**不變**，但 better-sqlite3 同步 → `pg` 非同步，**全層 sync→async 機械傳播**至 domain 與測試——邏輯與 AC 期望值不變，僅加 `async`/`await`）。此範圍較 deployment.md §5.2「domain 零改」的樂觀措辭為大，D-007 已據實界定。
-  - **併發正確性陷阱**：pool 模式下若交易內各查詢落在不同連線，`FOR UPDATE` 失效 → **靜默超賣**。D-007 以「交易內所有查詢綁同一 checked-out client」為 Guardrail 強制。
-  - **serverless 時序**：未改為「先處理再回 200」會漏送回覆。
+  - **repository 需重寫**為 PG（對外方法名／參數／回傳語意**不變**，但 better-sqlite3 同步 → `pg` 非同步，**全層 sync→async 機械傳播**至 domain 與測試——邏輯與 AC 期望值不變，僅加 `async`/`await`）。**外加一項結構性改動**：交易閉包改用注入的 client-bound repository 束（D-007 路線 A，見下）。此範圍較 deployment.md §5.2「domain 零改」的樂觀措辭為大，D-007 已據實界定。
+  - **併發正確性陷阱**：pool 模式下若交易內各查詢落在不同連線，`FOR UPDATE` 失效 → **靜默超賣**。D-007 **定案路線 A**：交易 runner checkout 一個 client、於其上建構 client-bound repository 束（`TxRepos`）並傳入交易 `work`，domain 交易閉包一律經 `repos.*` 查詢（編譯器強制同連線）；**拒斥 AsyncLocalStorage 隱式傳遞**（逸出 `als.run` 作用域/client 洩漏 → 靜默 fallback 到 pool → 跨連線超賣，單測難攔）。以此作為 G1/G2 Guardrail 強制。
+  - **整數主鍵解析陷阱（B2）**：`pg` 預設把 int8（BIGINT，OID 20）解析為 JS **string**（避免 >2^53 精度流失）。若代理主鍵/FK 用 BIGINT，會使 `schema.ts` 宣告的 `id: number`/FK 執行期實為 string（型別謊言、破壞 Row `number` 前提）。D-007 **定案採 `INTEGER GENERATED ALWAYS AS IDENTITY`（int4）**：`pg` 天然回 `number`、schema.ts 不動、免全域 parser（MVP 值域永不觸 int4 ~21 億上限）。放棄替代「BIGINT + `pg.types.setTypeParser(20, parseInt)`」（行程級全域副作用、隱式依賴）。此為相對 D-001 §0（BIGINT）的刻意小偏離，D-007 §6/§五 已記錄。
+  - **serverless 時序 + 冷啟窗口**：未改為「先處理再回 200」會漏送回覆。改後仍存一既有窗口：`min-instances=0` 首擊冷啟（容器 ~1–3s + Neon 喚醒）可能撞 LINE webhook 逾時 → 重送；因 `markProcessed` 已於交易內提交、重送被去重略過 → **該則回覆遺失**（副作用不重複）。MVP 接受此權衡、以去重為安全網（D-007 §4/§5）。
   - **連線爆炸**：多實例 × 每實例連線需以 Neon pooler + 小 pool（max ≤2）防治。
 
 ## 與既有 ADR 的關係
 
-- **延伸 ADR-002（防超賣併發策略）**：ADR-002 的目標（報名寫入序列化、防超賣、取消觸發遞補同受交易保護）不變；**僅機制由 SQLite `BEGIN IMMEDIATE` 換為 PG 交易 + `SELECT … FOR UPDATE` 該 event 列**。D-001 §二 G2 早已預留「IMMEDIATE（SQLite）/ 列鎖 `FOR UPDATE`（PostgreSQL）」雙軌措辭；本 ADR 使 PG 軌成為 prod 的實際實作。G2 carve-out（主辦自動登記首列在 DEFERRED 交易內盲插）於 PG 對應 `BEGIN … COMMIT`（無 FOR UPDATE），其「event 提交前不存在、無並行 signup」的論證在 PG 同樣成立，carve-out 保留。
-- **收斂 ADR-003（better-sqlite3 版本 pin）**：ADR-003 僅約束 SQLite 路徑的 native 二進位相容性。走本 ADR（PG-only prod）後，**better-sqlite3 不再適用於 production**；`pg` 為純 JS、無 native ABI 問題，其版本策略另議、不受 ADR-003 約束。若採 D-007 OP-1 的 dual-driver（本機/測試保留 SQLite），ADR-003 仍約束該本機路徑；若採 PG-only，ADR-003 對 prod 失效、僅為歷史紀錄。
+- **延伸 ADR-002（防超賣併發策略）**：ADR-002 的目標（報名寫入序列化、防超賣、取消觸發遞補同受交易保護）不變；**僅機制由 SQLite `BEGIN IMMEDIATE` 換為 PG 交易 + `SELECT … FOR UPDATE` 該 event 列**，並以 D-007 路線 A 保證交易內查詢同連線。D-001 §二 G2 早已預留「IMMEDIATE（SQLite）/ 列鎖 `FOR UPDATE`（PostgreSQL）」雙軌措辭；本 ADR 使 PG 軌成為 prod 的實際實作。G2 carve-out（主辦自動登記首列在 DEFERRED 交易內盲插）於 PG 對應 `BEGIN … COMMIT`（無 FOR UPDATE），其「event 提交前不存在、無並行 signup」的論證在 PG 同樣成立，carve-out 保留。
+- **收斂 ADR-003（better-sqlite3 版本 pin）**：ADR-003 僅約束 SQLite 路徑的 native 二進位相容性。走本 ADR（PG-only prod）後，**better-sqlite3 不再適用於 production**；`pg` 為純 JS、無 native ABI 問題，其版本策略另議、不受 ADR-003 約束。採 D-007 OP-1 **PG-only**（已裁），ADR-003 對 prod 失效、僅為歷史紀錄。

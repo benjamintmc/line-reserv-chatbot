@@ -23,7 +23,7 @@
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
 |---|---|---|---|---|---|
 | ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | DRAFT 完成 |
-| D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | 修訂中（OP-1~7 定案）— design APPROVED；**architect 2 blocker**：B1 交易連線一致性機制未定案（路線 A 注入 vs B AsyncLocalStorage；否則靜默超賣）、B2 BIGINT 主鍵 pg 回 string 破壞 Row number（改 INTEGER 或加 type parser）。修訂後複審 |
+| D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | **R2 雙審通過，待使用者最終 APPROVED**（OP-1~7 定案）— **B1 路線 A**（交易 runner 注入 client-bound `TxRepos` 束、拒斥 ALS）、**B2 int4 IDENTITY**（pg 天然回 number）兩 blocker 已封閉；architect-reviewer 逐一核對閉包 repo 全落 `TxRepos` 五束、nextSeq=COALESCE(MAX(seq),0)+1、D-001 §0 偏離走 errata 不私改。design + architect reviewer 皆 APPROVED、零新 blocker。2 則 nit（N-new-1 交易外 user upsert 措辭、N-new-2 pool-bound repo 寫方法硬化）併 T-012 待辦 |
 | T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007 | R2 | backend-engineer | BLOCKED（等 D-007 APPROVED）|
 
 ## 設計文件狀態
