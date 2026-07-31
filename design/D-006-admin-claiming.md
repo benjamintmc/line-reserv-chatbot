@@ -96,7 +96,7 @@ closeEvent(input):                      // cancelEvent 同型
 
 `my_id` **已存在於 `ParsedCommand` union**（`src/commands/types.ts:65`）且 D-002 §3 已解析 `我的id`（case-fold）。現 handler 為 no-op（`handler.ts:433`）。本文件**僅接線**：回覆傳訊人自身 `userId`（供設 env `ADMIN_USER_IDS` 成為 super-admin，或告知系統管理員）。
 
-- **回覆通道**：**群回**（單則，`replyToken` 可達；push 私訊對未加 bot 好友者會失敗）。訊息 (F) 沿用舊 D-006 文案，附「可提供給系統管理員」說明（見 §5、OP-3）。
+- **回覆通道**：**群回**（單則，`replyToken` 可達；push 私訊對未加 bot 好友者會失敗）。訊息 (MyID)（§5），附「可提供給系統管理員」說明（見 OP-3）。
 - **無 DB 副作用、不 mark**（唯讀、無狀態變更；同 `list`）。
 
 ### 4. webhook 分派（`src/webhook/handler.ts`）
@@ -107,7 +107,7 @@ closeEvent(input):                      // cancelEvent 同型
 |---|---|---|---|
 | `create_event_oneline` / `create_event_start` | 直接呼叫 `eventService.handleOneline`/`startCreation`（**不再前置/回傳授權**；render 移除 `not_authorized` 分支） | 無（開團全開） | 承 D-004 |
 | `close_event` / `cancel_event` | 呼叫 `eventService.closeEvent`/`cancelEvent`；service 內 `canManageEvent` 判定；非授權 → (H′) | service 內判（host_user_id ∪ super-admin） | 承 D-004（授權通過後交易內 mark） |
-| `my_id` | **接線**：`return [toLineMessage(formatMyId(userId))]` → (F)（現為 no-op） | 無 | 不 mark（唯讀、無副作用） |
+| `my_id` | **接線**：`return [toLineMessage(formatMyId(userId))]` → (MyID)（現為 no-op） | 無 | 不 mark（唯讀、無副作用） |
 | `invalid`（`command==='create_event'`） | `eventService.handleInvalidOneline` → 恆 (K′) 格式提示（**移除非授權 (H) 分支**） | 無 | 不 mark |
 | 其餘（signup/cancel/list/confirm/abort/invalid 其他/unknown） | 不變（D-003/D-004） | — | — |
 
@@ -118,15 +118,16 @@ closeEvent(input):                      // cancelEvent 同型
 
 **(H′) 非建立者、非 super-admin 試 `關閉報名`/`取消活動`**（取代 D-004 (H) 文案；見 §五 errata）
 ```
-只有開團的人可以關閉報名／取消活動（或由系統管理員處理）。
+只有開團的人（或系統管理員）可以關閉報名／取消活動。
 ```
+（design-reviewer N1：兩授權主體並列、句式順化。）
 （`formatNotAuthorized()` 文案由 D-004 原 (H)「只有主辦人可以開團／管理活動。」更新為上式。**開團已全開，故無「非授權開團」訊息**——`create_*` 不再產生 not_authorized。此 formatter 僅剩 close/cancel 使用。）
 
-**(F) 我的ID**（沿用舊 D-006 (F)）
+**(MyID) 我的ID**（design-reviewer B1/B2：標籤改 (MyID) 避免與 D-004 (F) 取消回覆碰撞；繁中化、移除英文 super-admin、順循環語意）
 ```
-你的 LINE userId：
+你的 LINE 使用者 ID：
 {userId}
-（可提供給系統管理員設定為 super-admin。）
+（可提供給系統管理員，加入管理權限設定。）
 ```
 
 ### 6. 模組影響清單（零 schema、零 migration、零新指令）
@@ -136,10 +137,11 @@ closeEvent(input):                      // cancelEvent 同型
 | 檔案 | 類型 | 說明 |
 |---|---|---|
 | `src/domain/event-service.ts` | 修改 | `hostUserIds`→`superAdminUserIds` 正名；移除 `create_*` 授權（含 `CreateEntryResult.not_authorized`、`InvalidOnelineResult` 收斂）；`isAuthorized`→`canManageEvent`（唯讀 `getByLineUserId` ∪ super-admin）；close/cancel 授權前置——**D-004 errata，回報** |
-| `src/domain/event-formatter.ts` | 修改 | `formatNotAuthorized` 文案 → (H′)；新增 `formatMyId(userId)` → (F)——(H) 文案屬 D-004 errata，回報 |
+| `src/domain/event-formatter.ts` | 修改 | `formatNotAuthorized` 文案 → (H′)；新增 `formatMyId(userId)` → (MyID)——(H) 文案屬 D-004 errata，回報 |
 | `src/webhook/handler.ts` | 修改 | `my_id` 接線 (F)；`create_*`/`invalid` render 移除 `not_authorized` 分支 |
 | `src/server.ts` | 修改 | `EventService` 注入 `superAdminUserIds`（仍為 `config.adminUserIds`；僅參數名變更） |
 | `.env.example` | 修改 | `ADMIN_USER_IDS` 註解語意更新為「super-admin（跨群安全網、可救援任何卡住的活動；**非開團白名單**，開團全開）」 |
+| `src/index.ts`（啟動警告） | 修改 | **（architect-reviewer 裁定點 2 緩解）** 啟動時若 `config.adminUserIds` 為空，`app.log.warn` 提示「未設 super-admin，卡住的活動將無法救援（除 DB 手術）」——把安全網存在性從隱性假設變顯性守門（比照 `missingLineCredentials` 警告模式）。 |
 
 **明確不動（零回歸）**：
 
@@ -181,14 +183,14 @@ closeEvent(input):                      // cancelEvent 同型
 ## 三、Acceptance Checks（每條可轉測試；標記 `[D-006 AC-n]`）
 
 - [ ] **[D-006 AC-1]（任何人開團成功）**：非 super-admin、群內任一成員 X `開團 …`（一行式）→ 回確認摘要 (B)、寫 conversation(`awaiting_confirm`)；`確認` → 建立 open event（`host_user_id = X.id`）、無 `not_authorized`。逐步 `開團` 亦同（回首問 (A)）。（驗證：unit/整合 test / G1、§1.1）
-- [ ] **[D-006 AC-2]（建立者可關閉）**：建立者 X 於自建 open 活動 `關閉報名` → `updateStatus(closed)`、回 (E)。（驗證：unit test / G2、§2）
-- [ ] **[D-006 AC-3]（建立者可取消）**：建立者 X `取消活動` → `updateStatus(cancelled)`、回 (F)。（驗證：unit test / G2、§2）
+- [ ] **[D-006 AC-2]（建立者可關閉）**：建立者 X 於自建 open 活動 `關閉報名` → `updateStatus(closed)`、回 **D-004 (E)** 關閉回覆。（驗證：unit test / G2、§2）
+- [ ] **[D-006 AC-3]（建立者可取消）**：建立者 X `取消活動` → `updateStatus(cancelled)`、回 **D-004 (F)** 取消回覆。（驗證：unit test / G2、§2）
 - [ ] **[D-006 AC-4]（非建立者非 super-admin 關閉被拒，無 DB 變更）**：成員 Y（≠ host、非 super-admin）於 X 建立的 open 活動 `關閉報名` → 回 (H′)、**event 狀態不變、無 markProcessed、`users` 無新增 Y 列**。（驗證：unit test / G2、AC 對應「無 DB 變更」）
 - [ ] **[D-006 AC-5]（非建立者非 super-admin 取消被拒，無 DB 變更）**：成員 Y `取消活動` → 回 (H′)、**event 狀態不變、無任何 DB 寫入**。（驗證：unit test / G2）
-- [ ] **[D-006 AC-6]（super-admin 跨建立者取消，安全網）**：super-admin S（`line_user_id ∈ superAdminUserIds`、非該活動 host、S 於 `users` 甚至可無列）於他人建立的 active 活動 `取消活動` → `updateStatus(cancelled)`、回 (F)。（驗證：unit test / G2、G3、§0 安全網）
-- [ ] **[D-006 AC-7]（super-admin 亦可關閉）**：super-admin S 於他人 open 活動 `關閉報名` → `updateStatus(closed)`、回 (E)。（驗證：unit test / G2、G3）
+- [ ] **[D-006 AC-6]（super-admin 跨建立者取消，安全網）**：super-admin S（`line_user_id ∈ superAdminUserIds`、非該活動 host、S 於 `users` 甚至可無列）於他人建立的 active 活動 `取消活動` → `updateStatus(cancelled)`、回 **D-004 (F)** 取消回覆。（驗證：unit test / G2、G3、§0 安全網）
+- [ ] **[D-006 AC-7]（super-admin 亦可關閉）**：super-admin S 於他人 open 活動 `關閉報名` → `updateStatus(closed)`、回 **D-004 (E)** 關閉回覆。（驗證：unit test / G2、G3）
 - [ ] **[D-006 AC-8]（取消不刪 registrations）**：open 活動有若干 registrations（含 soft-delete 列），建立者或 super-admin `取消活動` → cancelled、**registrations 列數不變**、稽核欄保留。（驗證：unit/整合 test / G6、沿用 D-004 G10）
-- [ ] **[D-006 AC-9]（我的ID 回覆）**：成員 `我的ID`/`我的id` → 回 (F) 含該傳訊人自身 `userId`、**不 mark、無 DB 副作用**。（驗證：unit test，handler+formatter / §3、FR-4）
+- [ ] **[D-006 AC-9]（我的ID 回覆）**：成員 `我的ID`/`我的id` → 回 **D-006 (MyID)** 含該傳訊人自身 `userId`、**不 mark、無 DB 副作用**。（驗證：unit test，handler+formatter / §3、FR-4）
 - [ ] **[D-006 AC-10]（confirm/abort 不受授權影響）**：無流程時任一成員 `確認`/`取消` → 靜默 no-op（不回覆、不 mark）；有流程時由該流程擁有者自身推進（per-user PK），不因授權模型改變。（驗證：unit test / §4、承 D-004 §3.4）
 - [ ] **[D-006 AC-11]（開團後 M2 報名銜接）**：任一成員開團 `確認` 建立 open 後，群內成員 `+2` → D-003 `signup` 正常（名單自主辦起算，含主辦 seat 1）。（驗證：整合 test / 與 D-003/D-005 銜接）
 - [ ] **[D-006 AC-12]（canManageEvent 判定正確）**：對同一 open 活動，`canManageEvent` 對「建立者 line_user_id」回 true、「super-admin line_user_id」回 true、「其他成員 line_user_id」回 false；且 executor 解析走**唯讀** `getByLineUserId`（不 upsert）。（驗證：unit test / §1.2、G2）
@@ -220,7 +222,10 @@ closeEvent(input):                      // cancelEvent 同型
    - **§9 分派表**：`create_*` 授權欄「白名單」→「無」；`close/cancel` 授權欄「白名單」→「canManageEvent」。
    - **G1**（授權只認注入白名單）：重寫為模型 B（開團無授權；close/cancel＝host_user_id ∪ super-admin、非授權無副作用）。
    - **AC-10**（非白名單拒絕）：語意變更——`開團` 不再被拒（全開）；改為「非建立者非 super-admin `關閉/取消` 被拒、無 DB 變更」。
-   - **訊息 (H)**：文案「只有主辦人可以開團／管理活動。」→ (H′)「只有開團的人可以關閉報名／取消活動（或由系統管理員處理）。」
+   - **訊息 (H)**：文案「只有主辦人可以開團／管理活動。」→ (H′)「只有開團的人（或系統管理員）可以關閉報名／取消活動。」
+   - **（architect-reviewer 追加，必補）§9「去重政策」散文**：現載「生命週期指令…最終判定即使是拒絕（no_active…）仍消費 messageId」。模型 B 下 **close/cancel 的 `no_active` 前移至交易外 early-return、不再 mark** → §9 散文須同步改為「close/cancel 的 no_active 於交易前 early-return、不 mark」，否則 D-004 §9 分派表（已列）與散文自相矛盾。
+   - **（architect-reviewer 追加）D-004 全文「白名單 host 開團」措辭**：§範圍內與 AC-1/2/3/6/11 等前提「白名單 host `開團…`」在開團全開下失真 → 加總括 errata「D-004 凡『白名單 host 開團』一律改為『任一群成員開團』」。
+   - **（design-reviewer B3 追加）訊息 (I) 用詞統一**：D-004 (I)「（…請**主辦人**先輸入『取消活動』…）」與 (H′)「開團的人」指同一角色 → (I) 改「（如需另開新團，請**開團的人**先輸入『取消活動』結束目前活動。）」，避免使用者可見詞彙不一致。
    - **D-004 為 APPROVED，須走 errata 流程**（design-reviewer + architect-reviewer 追認）；由 Orchestrator 決定回寫 D-004 正文或以 D-006 §2 為權威。**回報，不私改 D-004。**
 2. **D-002（APPROVED）**：**無新指令**。`my_id` 已存在於 `ParsedCommand` 且已解析，本文件僅 handler 接線。parser 零改動。僅供追認。
 3. **D-005（APPROVED）**：**無影響**。`確認` 主辦自動登記（seat 1）依 `host_user_id`，來源/時機不變；split 結算不變。僅供追認。
@@ -236,3 +241,12 @@ closeEvent(input):                      // cancelEvent 同型
 | 2026-07-31 | OP-1~OP-4（技術/文案性質，orchestrator 採納 backend 建議） | OP-1 唯讀 `getByLineUserId`（不 upsert，避免為未授權者寫列）；OP-2 (H′) 文案採建議；OP-3 `我的ID` 群回不遮罩；OP-4 `formatMyId` 併入 event-formatter。皆為技術/文案預設，無需使用者裁決。 |
 
 > **OP 全採建議、設計正文與模型 B 一致。** 送 R2 雙審（design-reviewer + architect-reviewer）；architect 需追認 D-004 授權 errata 清單（§五-1）。雙審通過即待使用者最終 APPROVED。
+
+### R2 雙審結果（2026-07-31）
+| reviewer | 結論 | 處置 |
+|---|---|---|
+| architect-reviewer | **建議 APPROVED（設計零 blocker）**，Guardrails 6/6 PASS | 授權時機/唯讀不 upsert/super-admin 救援皆驗證正確；不需 ADR。**D-004 errata 清單補 2 項**（§9 去重散文、全文「白名單 host 開團」措辭，已補入 §五-1）。緩解：super-admin 空時啟動警告（已入 §6）。nit：多行程 TOCTOU（MVP 不需，未來 PG 加 `active.id===active0.id` 防禦，記 backlog）。 |
+| design-reviewer | **需修正 3 blocker → 已修** | B1 (F) 英文 super-admin → 繁中「系統管理員」+ 循環語意順化；B2 標籤 (F) 碰撞 → 我的ID 改 (MyID)、AC-2/3/6/7/9 標註引用來源；B3 (I) 主辦人→開團的人（已入 §五-1 errata）。nit N1 (H′) 句式順化已採。 |
+
+> **兩 blocker 群已於設計正文補齊、architect 零 blocker。** 待使用者最終 APPROVED 即派 T-011。
+> **APPROVED 後 orchestrator 分派 D-004 errata 批次**（§五-1 全項，含 architect 追加 2 項 + design B3）。LESSONS 待登記：拒絕回覆 mark 政策第 3 次（推進回寫）、跨文件部分改名致 user-facing 詞彙不一致。

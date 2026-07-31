@@ -27,7 +27,7 @@
 | D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版/webhook 接線） | backend-engineer | **APPROVED（2026-07-31）** — architect-reviewer 通過 + nit-2/5 採納 + 使用者最終核可（OP-1~4 已裁決；風險 R1） |
 | D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 2 blocker 已修）、OP-1~9 定案、使用者核可 |
 | D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 條件式零 blocker + design 3 blocker 已修）、OP-1~4 定案、使用者核可。D-001 errata 已補 |
-| D-006 | 授權簡化（開團全開 + 關閉/取消限建立者 host_user_id 或 super-admin；作廢管理人認領方案） | backend-engineer | 改寫中（2026-07-31 使用者定案模型 B；R2，無新 schema/無新指令；回改 D-004 授權 errata） |
+| D-006 | 授權簡化（開團全開 + 關閉/取消限建立者 host_user_id 或 super-admin；作廢管理人認領方案） | backend-engineer | IN_DISCUSSION（2026-07-31）— **R2 雙審完成**：architect 零 blocker（Guardrails 6/6，不需 ADR，D-004 errata 補 2 項）、design 3 blocker（super-admin 英文/標籤碰撞/主辦人詞彙）**已修**。**待使用者最終 APPROVED** 即派 T-011 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |

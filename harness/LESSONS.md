@@ -24,7 +24,8 @@
 | 2026-07-31 | architect-reviewer(D-005) | **MVP 範圍文件（D-001/D-002/D-004）持續被後續 design 增量擴充 + 事後 errata**（D-004 兩次、D-005 對四份文件）。治理成本累積。 | **3** | 觀察中→**達 3 次，提案回寫** | 建議：確立「輕量 errata 協定」，或設計階段主動盤點「本設計會改動哪些既有文件的 AC/範例」預列 errata 清單（架構 R2 跨多文件功能尤需）；下次階段回報向使用者提案。 |
 | 2026-07-31 | architect-reviewer(T-009) | **設計文件的 formatter/函式簽名未涵蓋其 AC 所需全部顯示欄位**：D-005 §5.1 `formatClosed(event, settledPerPerson)` 但 AC-7 需顯示「正取 K 人」→ 實作被迫擴為三參數 + errata。 | 1 | 觀察中 | 候選：design review checklist 加「formatter 簽名須涵蓋其 AC 要顯示的全部欄位」。 |
 | 2026-07-31 | backend(T-008) | **設計文件「狀態行」加 markdown 粗體會使 `check_ac_coverage.py` 漏檢**：其 regex `狀態[:：]\s*(\w+)` 認不出 `狀態：**APPROVED**`，導致該設計的 AC 不納入覆蓋 → 假綠（D-004 22 條 AC 一度未計，顯示 58/58 實應 80/80）。狀態行請純文字 `狀態：APPROVED（日期）…`，勿加 `**` 粗體。 | 1 | 觀察中 | 候選：harness check 放寬 regex 容許粗體 / 或 CLAUDE.md §2 文件契約註記狀態行格式 |
-| 2026-07-31 | architect+design reviewer(D-004) | **「拒絕回覆」的去重 mark 政策不對稱**：純拒絕回覆（no_open_event / 非白名單 / 無 active / 重複開團）不 markProcessed → 重送同一拒絕會重覆回一次；有副作用步驟才 mark。D-003 T-006 nit-3（list 有 mark、signup/cancel 無）與 D-004 §9 同型。 | **2（回寫候選）** | 觀察中→**達 2 次，提案回寫** | 建議：立一則通則「拒絕回覆是否消費 messageId」的統一去重政策（落 CLAUDE.md §4 或 handler 設計指引），供後續 handler 沿用，免每設計各自處理。**下次階段回報向使用者提案。** |
+| 2026-07-31 | architect+design reviewer(D-004,D-006) | **「拒絕回覆」的去重 mark 政策不對稱**：純拒絕回覆（no_open_event / 非白名單 / 無 active / 重複開團）不 markProcessed → 重送同一拒絕會重覆回一次；有副作用步驟才 mark。D-003 T-006 nit-3、D-004 §9、**D-006（close/cancel no_active 前移交易外 early-return 不 mark）** 同型。 | **3（回寫候選，升級）** | 觀察中→**達 3 次，強烈建議回寫** | 建議：立一則通則「拒絕回覆是否消費 messageId」的統一去重政策（落 CLAUDE.md §4 或 handler 設計指引），供後續 handler 沿用。**下次階段回報向使用者提案回寫。** |
+| 2026-07-31 | design-reviewer(D-006) | **跨文件部分改名造成使用者可見詞彙不一致**：D-006 (H′) 改「主辦人→開團的人」但 D-004 (I) 仍「主辦人」（同角色）；另訊息標籤 (F) 於 D-006 與 D-004 碰撞。設計改動涉及既有 user-facing 範本時，未全域掃描同義詞/標籤。 | 1 | 觀察中 | 候選：design review checklist 加「改既有 user-facing 範本時，全域掃描同義詞與標籤碰撞」。 |
 
 ## 已回寫紀錄（harness 演進史）
 | 日期 | 回寫內容摘要 | 落點 | 版本 |
