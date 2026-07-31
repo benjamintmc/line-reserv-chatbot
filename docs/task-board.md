@@ -22,8 +22,8 @@
 ## M5 部署（Cloud Run + Neon PG）任務
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
 |---|---|---|---|---|---|
-| ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | 撰寫中 |
-| D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect→backend | 撰寫中 |
+| ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | DRAFT 完成 |
+| D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | IN_DISCUSSION（7 Guardrails/11 AC/7 OP；OP-2~7 採建議，OP-1 待使用者）；重要發現：sync→async 全層機械傳播 |
 | T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007 | R2 | backend-engineer | BLOCKED（等 D-007 APPROVED）|
 
 ## 設計文件狀態
