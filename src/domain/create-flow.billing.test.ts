@@ -15,7 +15,7 @@ function makeSvc(t: TestDb): EventService {
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
-    hostUserIds: [HOST],
+    superAdminUserIds: [HOST],
     logError: () => {},
   });
 }

@@ -11,6 +11,23 @@
 
 ---
 
+## errata（2026-07-31，來源 D-006 決策 #7「開團人擁有 + super-admin 安全網」；不改本文件 APPROVED 狀態）
+
+> D-006（APPROVED）以更精簡的「模型 B」取代本文件的「env 白名單單軌」授權。**授權判定的權威來源改以 D-006 §1–§2 為準**；本文件下列散文/表格/範本/G/AC 在授權面向已被 D-006 覆寫，errata 逐項標註如下（實作見 T-011）：
+
+1. **§1 host 授權（整段授權模型）**：「誰能開團＝env 白名單」→ **開團全開（群內任一成員皆可開團，移除 `create_*` 授權）**；`關閉報名`/`取消活動` 授權 = **該活動 `event.host_user_id`（開團的人）∪ super-admin（env `ADMIN_USER_IDS`）**（`canManageEvent`）。報名 override（`-N 名字`）仍認 `host_user_id`（不變）。
+2. **§5.2 close/cancel 授權段**：「handler 先做白名單檢查」→ **service 內 `canManageEvent`（進交易前判定，非授權 early-return 不 mark、無 DB 變更）**；且 **`no_active` 判定前移至交易外 early-return**（授權需先 `findActiveByGroup` 讀 `host_user_id`），不再於交易內 mark 之後判定。
+3. **§7 型別/模組**：`EventServiceDeps.hostUserIds` → **`superAdminUserIds`**（仍由 server.ts 以 `config.adminUserIds` 注入）；`CreateEntryResult` 移除 `not_authorized`；`InvalidOnelineResult` 收斂為單一 `{ kind:'format_help' }`；handler/server 授權欄相應調整（handler 不再前置白名單、`my_id` 由 no-op 接線）。
+4. **§9 分派表授權欄**：`create_event_oneline`/`create_event_start`/`invalid(create_event)` 授權欄「白名單」→ **「無（開團全開）」**；`close_event`/`cancel_event` 授權欄「白名單」→ **「canManageEvent（host_user_id ∪ super-admin）」**；`my_id` 由「no-op」→ **接線回 (MyID)**。
+5. **§9 去重政策散文**：原載「生命週期指令…最終判定即使是拒絕（no_active…）仍消費 messageId」——模型 B 下 **`close/cancel` 的 `no_active`（與 `not_authorized`）已前移至交易外 early-return、不再 mark**（授權需先讀 active）。其餘交易內拒絕（`already_closed`、`確認` 撞約束 (L)、`duplicate`）仍於交易內 mark（不變）。
+6. **G1（授權只認注入白名單）**：重寫為模型 B——**開團不得含任何授權 gate（全開）**；`close/cancel` 授權**只得**依 `canManageEvent = superAdminUserIds.has(lineUserId) ∨ (getByLineUserId(lineUserId).id === event.host_user_id)`，非授權者不得改狀態/不得 mark/**不得 upsert 寫任何 users 列（唯讀解析）**。等同 D-006 G1+G2+G3。
+7. **AC-10 語意**：由「非白名單 `開團`/`關閉`/`取消` 被拒」→ **`開團` 不再被拒（全開）；改為「非建立者非 super-admin `關閉報名`/`取消活動` 被拒、無 DB 變更（含 users 無新列）」**（對應 D-006 AC-1/4/5）。
+8. **訊息 (H)→(H′)**：「只有主辦人可以開團／管理活動。」→ **「只有開團的人（或系統管理員）可以關閉報名／取消活動。」**（開團已全開，無「非授權開團」訊息；此 formatter 僅剩 close/cancel 使用）。
+9. **訊息 (I) 用詞**：「（…請**主辦人**先輸入『取消活動』…）」→ **「（…請**開團的人**先輸入『取消活動』…）」**，與 (H′) 用詞一致（design-reviewer B3）。
+10. **全文「白名單 host 開團」措辭總括**：§範圍內與 AC-1/2/3/6/11 等前提所述「白名單 host `開團…`」，在開團全開下一律改讀為 **「任一群成員開團」**（建立者即 `host_user_id`）。
+
+---
+
 ## 一、設計內容
 
 ### 0. 定位與前提
@@ -27,7 +44,7 @@ D-004 實作 **M3 開團流程 domain 邏輯 + webhook 接線**：把 D-002 解�
 
 ### 1. host 授權（R2 核心）
 
-**「誰能開團」＝環境變數白名單**（決策 #6、D-001 Q1：授權只認環境變數，不用 `users.is_host`）。實作上以 `config.adminUserIds`（env `ADMIN_USER_IDS`，比對傳訊人 `line_user_id`）為白名單來源。**domain 不得讀 `process.env`**：白名單以 DI 注入（`hostUserIds: ReadonlyArray<string>`，由 `server.ts` 從 `config.adminUserIds` 傳入），維持 domain 純度（G1、沿用 D-003 domain 不觸 env 慣例）。
+**「誰能開團」＝環境變數白名單**（決策 #6、D-001 Q1：授權只認環境變數，不用 `users.is_host`）。實作上以 `config.adminUserIds`（env `ADMIN_USER_IDS`，比對傳訊人 `line_user_id`）為白名單來源。 _**errata(2026-07-31，來源 D-006 決策 #7)：本段作廢——開團全開（無白名單），`config.adminUserIds` 改作 `superAdminUserIds`（close/cancel 安全網），詳見本文件頂部 errata 與 D-006 §1–§2。**_ **domain 不得讀 `process.env`**：白名單以 DI 注入（`hostUserIds: ReadonlyArray<string>`，由 `server.ts` 從 `config.adminUserIds` 傳入），維持 domain 純度（G1、沿用 D-003 domain 不觸 env 慣例）。
 
 **受授權保護的「生命週期入口」指令**（傳訊人須在白名單，否則不得改狀態）：
 
@@ -212,6 +229,7 @@ runInTransaction(() => {
 
 - **`取消活動` 是狀態轉移，不刪 registrations**（D-001 §7 註、G10）：報名/取消稽核軌跡一併保留（`cancelled_at`/`cancelled_by_user_id`）。轉 `cancelled` 後該 group 的 active 集合清空 → 可再 `開團`。
 - **授權**：close/cancel 於呼叫 service 前，handler 先做白名單檢查（§1）；非白名單 → 依 OP-2 政策回覆（不進交易、不改狀態）。
+  - **errata(2026-07-31，來源 D-006 決策 #7)**：改為 **service 內 `canManageEvent`（進交易前判定）**——handler 不再前置白名單。授權需先 `findActiveByGroup` 讀 `host_user_id`，故 **`no_active` 與 `not_authorized` 皆於交易外 early-return、不 mark、無 DB 變更**；交易內權威重讀 active 後才做狀態合法性判定與 `updateStatus`（結算不變）。
 
 ### 6. 同群一場 active 約束（對接 `ux_events_active_group`）
 
@@ -338,6 +356,7 @@ awaiting_price   → 請輸入每人費用（元，例：2200；免費請輸入 
 ```
 只有主辦人可以開團／管理活動。
 ```
+> **errata(D-006)**：開團已全開 → 無「非授權開團」訊息。此範本更新為 **(H′)「只有開團的人（或系統管理員）可以關閉報名／取消活動。」**，僅 `close_event`/`cancel_event` 非授權時使用（`formatNotAuthorized`）。
 
 **(I) 已有進行中活動（重複開團）**
 ```
@@ -348,6 +367,7 @@ awaiting_price   → 請輸入每人費用（元，例：2200；免費請輸入 
 （如需另開新團，請主辦人先輸入「取消活動」結束目前活動。）
 ```
 （N2：重開只需「取消活動」一步即釋出 active 名額；`關閉報名`(open→closed) 不釋放名額，故不必先關閉。欄位補 `每人費用` 與 (B)/(D) 一致。）
+> **errata(D-006 B3)**：「請主辦人先輸入」→「請**開團的人**先輸入」，與 (H′) 用詞統一。
 
 **(J) 生命週期指令但狀態不符**
 ```
@@ -375,6 +395,8 @@ close/cancel 無 active → 目前沒有進行中的活動。
 
 ### 9. webhook 分派表（`src/webhook/handler.ts` 修改後）
 
+> **⚠️ errata(D-006) 指標**：下表「授權欄／去重欄」及 §7 的 `hostUserIds` 已被頂部 errata #3/#4/#5 覆寫——`create_*` 授權「白名單」→「無（開團全開）」；`close/cancel` 授權「白名單」→「canManageEvent（host_user_id ∪ super-admin）」、`no_active`/`not_authorized` 去重「交易內 mark」→「交易外 early-return 不 mark」；`my_id` no-op → 接線 (MyID)。以頂部 errata 為準。
+
 前置：`event.type==='message' && event.message.type==='text'` 且 `source.type==='group'`，抽 `text/messageId/userId/groupId`。**先查 conversation_states 攔截（§3.3）**；否則 `parseCommand` → 下表分派。
 
 | 情境 / `ParsedCommand.type` | handler 行為 | 授權 | 去重 |
@@ -395,6 +417,7 @@ close/cancel 無 active → 目前沒有進行中的活動。
 - **`switch` 對 union 窮舉**（含 `default: never`），沿用 D-002 G7 / D-003：新增指令型別編譯期報錯。
 - **去重政策（architect-reviewer T-008 追認後校正，消除原分派表 vs 註記矛盾）**：
   - **生命週期指令（`關閉報名`/`取消活動`/`確認`/`取消`）一旦進入交易即以 `markProcessed` 為第一步**（G4），故其**最終判定即使是拒絕**（no_active (J)、already_closed、confirm 時 already_active (L)）**仍消費 messageId**（重送 → `duplicate` → 不重複回覆；行為更冪等、無害）。此即實作採用之正解。
+    - **errata(2026-07-31，來源 D-006 決策 #7 / architect 追加)**：模型 B 下 **`close_event`/`cancel_event` 的 `no_active` 與 `not_authorized` 已前移至交易外 early-return、不再 mark**（授權需先讀 active 取 `host_user_id`）。故上句「no_active 仍消費 messageId」僅適用 `確認`（confirm）殘留情境；`close/cancel` 的 `no_active`/`not_authorized` 屬「交易前 early-return 不 mark」類（重送同一拒絕會再回一次，低度洗版可接受）。`already_closed`、confirm 撞約束 (L)、`duplicate` 仍於交易內 mark（不變）。
   - **交易前的 early-return 拒絕不 mark**：非白名單 (H)、`開團` 入口重複活動 (I)、一行式格式提示 (K)、無流程 confirm/abort、unknown/invalid——這些在進交易前 return、無 DB 副作用，故不 mark（沿用 D-003 no_open_event 慣例；代價：重送同一拒絕會重覆回一次，低度洗版可接受）。
   - 原文舊述「無 active (J) 不 mark」不精確（J 於 close/cancel 交易內、mark 之後才判定），已依實作與 architect 追認校正如上。「拒絕回覆的 mark 政策」通則之統一化已登記 `harness/LESSONS.md`（D-003 nit-3 + 本項，回寫候選）。
 
@@ -428,6 +451,7 @@ close/cancel 無 active → 目前沒有進行中的活動。
 ## 二、Guardrails（Must NOT，reviewer 可逐條客觀判定）
 
 - **G1（授權只認注入白名單）**：`開團`/`關閉報名`/`取消活動` 的授權**只得依注入的 `hostUserIds`（來源 env `ADMIN_USER_IDS`）** 判定；domain **不得讀 `process.env`**、不得以 `users.is_host` 或其他來源作生命週期授權依據（D-001 Q1）。非白名單者的生命週期指令**不得產生任何 DB 狀態變更**（不得寫 conversation_states、不得 INSERT/updateStatus events）。
+  - **errata(D-006)**：本 G1 已被 D-006 G1/G2/G3 取代——**開團全開（無授權 gate）**；`close/cancel` 授權 = `canManageEvent`（`superAdminUserIds` ∪ `event.host_user_id`，唯讀 `getByLineUserId` 不 upsert）；`superAdminUserIds` 注入、domain 不讀 env（不變）。
 - **G2（狀態轉移合法性）**：**不得寫入非法轉移**。合法集合僅：（概念）draft→open（`確認` INSERT open）、open→closed（`關閉報名`）、open/closed→cancelled（`取消活動`）。domain **必須先讀當前 status 判定合法後**才呼叫 `updateStatus`/`create`；`cancelled`/`done` 為終態不得再轉移；`closed→open` 不得發生（MVP）。（`updateStatus` 不自校驗，合法性責任在 domain。）
 - **G3（同群一場 active 不可違反）**：**不得**讓同一 `group_id` 同時存在 > 1 場 active（open/closed）。`開團` 入口須 `findActiveByGroup` 拒絕重複；`確認` INSERT open 須倚賴 `ux_events_active_group`，撞唯一約束時**必須 catch 並回 `already_active`**，不得讓例外外洩/crash、不得繞過唯一約束（如先刪既有 active 再插）。
 - **G4（交易 + 去重原子）**：有 DB 副作用的步驟（conversation upsert、event INSERT、updateStatus、conversation delete）**不得在交易外執行**，且**必須以 `processed.markProcessed(messageId)` 為交易第一步**；重送（回 false）**必須中止不重複副作用**。不得僅靠記憶體去重（NFR-2）。
@@ -452,6 +476,7 @@ close/cancel 無 active → 目前沒有進行中的活動。
 - [ ] **[D-004 AC-8]（open→closed）**：已有 open 活動，白名單 host `關閉報名` → `updateStatus(closed)`、回 (E)；再 `關閉報名` → 回「活動已關閉報名」(J)、狀態不變。（驗證：unit test / G2、§5.1）
 - [ ] **[D-004 AC-9]（open/closed→cancelled，且不刪 registrations）**：open 活動且有若干 registrations（含已 soft-delete 列），白名單 host `取消活動` → `updateStatus(cancelled)`、回 (F)；**registrations 列數不變**（無 DELETE）、稽核欄保留；closed 活動亦可 `取消活動`→cancelled。（驗證：unit/整合 test / G2、G10、D-001 §7 註）
 - [ ] **[D-004 AC-10]（非白名單拒絕，無副作用）**：非白名單成員 B `開團 …` / `關閉報名` / `取消活動` → 回 (H) 或靜默（依 OP-2 裁決）、**無任何 DB 變更**（無 conversation、無 event 狀態改變）。（驗證：unit test，handler + 注入白名單 / G1、成功條件 #3、FR-5）
+  - **errata(2026-07-31，來源 D-006 決策 #7)**：`開團` 不再被拒（開團全開）。本 AC 語意改為 **「非建立者非 super-admin `關閉報名`/`取消活動` 被拒（(H′)）、無 DB 變更（不 mark、event 狀態不變、`users` 無新列——唯讀解析不 upsert）」**；`開團` 全開由 D-006 AC-1 覆蓋。實作測試已依此更新（見 `event-service.test.ts` [D-004 AC-10 errata]、`event-service.claiming.test.ts` [D-006 AC-4/5]）。
 - [ ] **[D-004 AC-11]（重複開團拒絕）**：同 group 已有 open（或 closed）活動，白名單 host `開團 …` → 回 (I)「已有進行中活動」+ 現有摘要、**不寫 conversation、不 INSERT**。（驗證：unit test / G3、§6、決策 #3）
 - [ ] **[D-004 AC-12]（確認撞唯一約束安全網 + 窄捕捉）**：模擬同 group 於 `確認` INSERT open 時已存在 active（先行插入一場 open）→ `確認` 交易內 INSERT 撞 `ux_events_active_group` → **catch（僅 UNIQUE）→ 回 `already_active`（formatter (L)）、清該 host conversation**，不 crash；**且**注入非唯一約束錯誤（模擬其他 SQLITE error）時**必須向上拋、不得被當作 `already_active`**（窄捕捉，architect 裁定 1）。（驗證：unit/整合 test / G3、§4）
 - [ ] **[D-004 AC-13]（去重：確認重送）**：相同 `message_id` 的 `確認` 連續處理兩次 → 第二次交易內 markProcessed 回 false 中止 → **只建立 1 場 event、只回覆一次**。（驗證：unit/整合 test / G4、NFR-2）

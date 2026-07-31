@@ -137,7 +137,7 @@ closeEvent(input):                      // cancelEvent 同型
 | 檔案 | 類型 | 說明 |
 |---|---|---|
 | `src/domain/event-service.ts` | 修改 | `hostUserIds`→`superAdminUserIds` 正名；移除 `create_*` 授權（含 `CreateEntryResult.not_authorized`、`InvalidOnelineResult` 收斂）；`isAuthorized`→`canManageEvent`（唯讀 `getByLineUserId` ∪ super-admin）；close/cancel 授權前置——**D-004 errata，回報** |
-| `src/domain/event-formatter.ts` | 修改 | `formatNotAuthorized` 文案 → (H′)；新增 `formatMyId(userId)` → (MyID)——(H) 文案屬 D-004 errata，回報 |
+| `src/domain/event-formatter.ts` | 修改 | `formatNotAuthorized` 文案 → (H′)；新增 `formatMyId(userId)` → (MyID)；**(I) `formatAlreadyActiveEntry` 「主辦人」→「開團的人」**（忠實實作 D-004 errata B3 的 user-facing 一致性，程式字串一併改，orchestrator 追認）——(H)/(I) 文案屬 D-004 errata，回報 |
 | `src/webhook/handler.ts` | 修改 | `my_id` 接線 (F)；`create_*`/`invalid` render 移除 `not_authorized` 分支 |
 | `src/server.ts` | 修改 | `EventService` 注入 `superAdminUserIds`（仍為 `config.adminUserIds`；僅參數名變更） |
 | `.env.example` | 修改 | `ADMIN_USER_IDS` 註解語意更新為「super-admin（跨群安全網、可救援任何卡住的活動；**非開團白名單**，開團全開）」 |
@@ -250,3 +250,9 @@ closeEvent(input):                      // cancelEvent 同型
 
 > **兩 blocker 群已於設計正文補齊、architect 零 blocker。** 待使用者最終 APPROVED 即派 T-011。
 > **APPROVED 後 orchestrator 分派 D-004 errata 批次**（§五-1 全項，含 architect 追加 2 項 + design B3）。LESSONS 待登記：拒絕回覆 mark 政策第 3 次（推進回寫）、跨文件部分改名致 user-facing 詞彙不一致。
+
+### T-011 實作 + R2 三關結果（2026-07-31）
+- **architect-reviewer APPROVED（零 blocker）**：Guardrails 6/6 PASS、D-004 errata 忠實無自相矛盾（§9 散文已一致）、(I) 程式改動正確、不需 ADR。nit：D-004 §9/§7 表補 inline 指標（已補）。
+- **design-reviewer APPROVED（零 blocker）**：(H′)/(MyID)/(I) 逐字一致、無英文/舊詞殘留、無標籤碰撞。nit：(D)「主辦已自動報名」描述性稱謂（可選統一，記 backlog）。
+- **unit-tester 通過（無 bug）**：234 tests、AC 114/114；DB 層驗 AC-4/5 非授權零 DB 變更、AC-6/7 super-admin 無 users 列救援；補 canManageEvent false 分支（已報名成員試 close/cancel 被拒）+ 稽核欄。
+- **T-011 DONE**。D-004 errata 回寫完整 + inline 指標；順帶修 vitest flake（`fileParallelism:false`，LESSONS 反覆 flake 已解）。

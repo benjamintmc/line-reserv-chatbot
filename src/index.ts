@@ -10,6 +10,14 @@ if (missing.length > 0) {
   );
 }
 
+// D-006 §6：super-admin 空時顯性警告（比照 missingLineCredentials）。無 super-admin →
+// 建立者落跑/亂開時，卡住的活動將無法跨群救援（除 DB 手術）。
+if (config.adminUserIds.length === 0) {
+  app.log.warn(
+    '未設定 ADMIN_USER_IDS（super-admin），卡住的活動將無法救援（除 DB 手術）。開團與 close/cancel 由開團的人自理。',
+  );
+}
+
 app
   .listen({ port: config.port, host: '0.0.0.0' })
   .then((address) => {

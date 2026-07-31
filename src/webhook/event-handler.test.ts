@@ -25,7 +25,7 @@ function profileReturning(name: string): GroupProfileClient {
   return { getGroupMemberProfile: vi.fn().mockResolvedValue({ displayName: name }) };
 }
 
-function makeHandler(t: TestDb, hostUserIds: string[] = [HOST]): WebhookHandler {
+function makeHandler(t: TestDb, superAdminUserIds: string[] = [HOST]): WebhookHandler {
   const service = new RegistrationService({
     events: t.events,
     users: t.users,
@@ -40,7 +40,7 @@ function makeHandler(t: TestDb, hostUserIds: string[] = [HOST]): WebhookHandler 
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
-    hostUserIds,
+    superAdminUserIds,
     logError: () => {},
   });
   return createWebhookHandler({
@@ -76,10 +76,10 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(t.processed.has('m1')).toBe(false);
   });
 
-  it('[D-004 AC-2] 非白名單「開團 缺欄位」→ (H) 只有主辦人可以開團', async () => {
-    const handler = makeHandler(t, [HOST]);
+  it('[D-004 AC-2 errata(2026-07-31 D-006 #7)] 非 super-admin「開團 缺欄位」→ 格式提示 (K′)（開團全開，無非授權分支）', async () => {
+    const handler = makeHandler(t, []); // 無 super-admin：開團仍全開
     const out = await handler.handleEvent(groupTextEvent('開團 只有一個參數', { userId: 'U-bad', messageId: 'm1' }));
-    expect(textOf(out)).toContain('只有主辦人可以開團');
+    expect(textOf(out)).toContain('格式：開團');
   });
 
   it('[D-004 AC-15] mid-flow per-user 隔離：host 開團中，成員 +1 照走 D-003（不被當作答案）', async () => {

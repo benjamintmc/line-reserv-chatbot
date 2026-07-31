@@ -32,7 +32,8 @@ export function buildHandler(): WebhookHandler {
   const processed = new ProcessedEventRepository(db);
   const runInTransaction = createTransactionRunner(db);
   const service = new RegistrationService({ events, users, registrations, processed });
-  // 開團 domain：注入 repos、tx runner、以 config.adminUserIds 為 host 白名單（G1；OP-1）。
+  // 開團 domain（D-006）：開團全開；close/cancel 授權 = canManageEvent（host_user_id ∪ super-admin）。
+  // super-admin 集合以 config.adminUserIds（env ADMIN_USER_IDS）注入（跨群安全網、domain 不讀 env，G3）。
   // D-005 §3：注入 registrations 供主辦自動登記（confirm）與關閉重查正取數（closeEvent）。
   const eventService = new EventService({
     events,
@@ -41,7 +42,7 @@ export function buildHandler(): WebhookHandler {
     conversations,
     processed,
     runInTransaction,
-    hostUserIds: config.adminUserIds,
+    superAdminUserIds: config.adminUserIds,
   });
   return createWebhookHandler({
     service,

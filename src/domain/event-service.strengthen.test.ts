@@ -22,7 +22,7 @@ function makeSvc(t: TestDb, hostIds: string[] = [HOST]): EventService {
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
-    hostUserIds: hostIds,
+    superAdminUserIds: hostIds,
     logError: () => {},
   });
 }

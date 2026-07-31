@@ -14,7 +14,7 @@ function makeSvc(t: TestDb, hostIds: string[] = [HOST]): EventService {
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
-    hostUserIds: hostIds,
+    superAdminUserIds: hostIds,
     logError: () => {},
   });
 }
@@ -223,17 +223,23 @@ describe('EventService（D-004 / D-005）', () => {
     if (cancel2.kind === 'ok') expect(cancel2.event.status).toBe('cancelled');
   });
 
-  it('[D-004 AC-10] 非白名單生命週期指令 → not_authorized、零 DB 副作用', () => {
-    const svc = makeSvc(t, [HOST]); // 白名單只有 HOST
+  it('[D-004 AC-10 errata(2026-07-31 D-006 #7)] 開團全開 + 非建立者非 super-admin close/cancel 被拒（無 DB 變更）', () => {
+    // D-006 授權 errata：開團不再受授權保護（全開）；close/cancel 改 canManageEvent。
+    const svc = makeSvc(t, []); // 無 super-admin
     const B = 'U-bad';
-    expect(svc.startCreation({ groupId: G, executorLineUserId: B, messageId: 'b1' }).kind).toBe('not_authorized');
-    expect(svc.handleOneline({ groupId: G, executorLineUserId: B, messageId: 'b2', date: '2026-08-15', time: '07:30', location: 'X', capacity: 4, price: 0, priceMode: 'per_person' }).kind).toBe('not_authorized');
+    // 開團全開：非 super-admin B 亦可啟動開團（不再 not_authorized）。
+    expect(svc.startCreation({ groupId: 'G-open', executorLineUserId: B, messageId: 'bs' }).kind).toBe('flow_started');
+
+    // HOST 於 G 建一場 open（host_user_id = upsert(HOST).id）。
+    const host = t.users.upsert(HOST, '主辦人');
+    t.events.create({ groupId: G, hostUserId: host.id, eventDate: '2026-08-15', eventTime: '07:30', location: 'X', capacity: 4, status: 'open' });
+
+    // B（非 host、非 super-admin）close/cancel → not_authorized、零 DB 變更。
     expect(svc.closeEvent({ groupId: G, executorLineUserId: B, messageId: 'b3' }).kind).toBe('not_authorized');
     expect(svc.cancelEvent({ groupId: G, executorLineUserId: B, messageId: 'b4' }).kind).toBe('not_authorized');
-    // 零副作用：無 conversation、無 event、messageId 未 mark。
-    expect(t.conversations.get(B)).toBeUndefined();
-    expect(t.events.findActiveByGroup(G)).toBeUndefined();
-    for (const m of ['b1', 'b2', 'b3', 'b4']) expect(t.processed.has(m)).toBe(false);
+    expect(t.events.findActiveByGroup(G)?.status).toBe('open'); // 狀態不變
+    expect(t.users.getByLineUserId(B)).toBeUndefined(); // 唯讀判定：未為 B upsert 寫列
+    for (const m of ['b3', 'b4']) expect(t.processed.has(m)).toBe(false); // 未 mark
   });
 
   it('[D-004 AC-11] 已有 active（open/closed）時再 開團 → already_active、不寫 conversation', () => {

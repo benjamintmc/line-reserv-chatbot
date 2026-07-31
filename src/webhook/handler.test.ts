@@ -29,14 +29,14 @@ function makeService(t: TestDb): RegistrationService {
   });
 }
 
-function makeEventService(t: TestDb, hostUserIds: string[] = []): EventService {
+function makeEventService(t: TestDb, superAdminUserIds: string[] = []): EventService {
   return new EventService({
     events: t.events,
     users: t.users,
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
-    hostUserIds,
+    superAdminUserIds,
     logError: () => {},
   });
 }
@@ -44,12 +44,12 @@ function makeEventService(t: TestDb, hostUserIds: string[] = []): EventService {
 /** 組裝 handler（D-003 分派測試預設不需 host 白名單；D-004 測試另傳）。 */
 function makeHandler(
   t: TestDb,
-  opts: { service?: RegistrationService; profile: GroupProfileClient; hostUserIds?: string[] },
+  opts: { service?: RegistrationService; profile: GroupProfileClient; superAdminUserIds?: string[] },
 ): WebhookHandler {
   const service = opts.service ?? makeService(t);
   return createWebhookHandler({
     service,
-    eventService: makeEventService(t, opts.hostUserIds ?? []),
+    eventService: makeEventService(t, opts.superAdminUserIds ?? []),
     users: t.users,
     conversations: t.conversations,
     profile: opts.profile,

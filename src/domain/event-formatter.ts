@@ -1,12 +1,12 @@
 // src/domain/event-formatter.ts
 //
-// D-004 §8 / D-005 §5–§7：把開團 domain 結果組版為繁體中文 MessageDescriptor（純文字，mentionees:[]）。
-// 純函式：對 LINE SDK 零耦合、可純測（G5/G6）。嚴禁 any；不觸 DB。
+// D-004 §8 / D-005 §5–§7 / D-006 §5：把開團 domain 結果組版為繁體中文 MessageDescriptor（純文字，mentionees:[]）。
+// 純函式：對 LINE SDK 零耦合、可純測（D-006 G4）。嚴禁 any；不觸 DB。
 //
-// D-005：費用列依 price_mode 顯示（split 標「暫估」，G2；開團公告不顯示每人估額，B2/AC-19）；
-// 關閉報名(split) 顯示最終攤額（formatClosed 以傳入 settledPerPerson 為唯一真相來源，architect N3）；
-// 文案中性化（球聚→球敘、開球時間→時間、球場地點→場地、body 標籤 地點→場地，§7）。
-// D-005 §6.2（修訂）：計費併為單一題 awaiting_fee（提問/無效重問各一則）。
+// D-005：費用列依 price_mode 顯示（split 標「暫估」；開團公告不顯示每人估額，B2/AC-19）；
+// 關閉報名(split) 顯示最終攤額（formatClosed 以傳入 settledPerPerson 為唯一真相來源）；
+// 文案中性化（球聚→球敘、開球時間→時間、球場地點→場地）。
+// D-006：(H′) close/cancel 非授權文案（開團已全開，無「非授權開團」訊息）；(MyID) 我的ID。
 
 import type { EventRow } from '../db/schema';
 import type { CreateState, CreateEventDraft } from './create-flow';
@@ -150,12 +150,25 @@ export function formatAborted(): MessageDescriptor {
   return text('已取消開團。');
 }
 
-// (H) 非白名單（政策 OP-2：回一句提示）。
+// (H′) 非建立者、非 super-admin 試 `關閉報名`/`取消活動`（D-006 §5；取代 D-004 (H)）。
+// 開團已全開 → 無「非授權開團」訊息；此 formatter 僅剩 close/cancel 使用。
 export function formatNotAuthorized(): MessageDescriptor {
-  return text('只有主辦人可以開團／管理活動。');
+  return text('只有開團的人（或系統管理員）可以關閉報名／取消活動。');
+}
+
+// (MyID) 我的ID（D-006 §5 / §3）：回傳傳訊人自身 LINE userId，供設 super-admin 或告知系統管理員。
+export function formatMyId(userId: string): MessageDescriptor {
+  return text(
+    [
+      '你的 LINE 使用者 ID：',
+      userId,
+      '（可提供給系統管理員，加入管理權限設定。）',
+    ].join('\n'),
+  );
 }
 
 // (I) 已有進行中活動（重複開團；附現有活動摘要）。
+// D-006 §五-1（D-004 errata B3）：「主辦人」→「開團的人」，與 (H′) 用詞一致。
 export function formatAlreadyActiveEntry(event: EventRow): MessageDescriptor {
   return text(
     [
@@ -163,7 +176,7 @@ export function formatAlreadyActiveEntry(event: EventRow): MessageDescriptor {
       `日期：${event.event_date} ${event.event_time}`,
       `場地：${event.location}`,
       eventFeeLine(event),
-      '（如需另開新團，請主辦人先輸入「取消活動」結束目前活動。）',
+      '（如需另開新團，請開團的人先輸入「取消活動」結束目前活動。）',
     ].join('\n'),
   );
 }

@@ -1,11 +1,14 @@
 // src/webhook/handler.ts
 //
-// D-003 §6 / D-004 §9 / D-005 §9：webhook 接線。從 LINE WebhookEvent 抽 groupId/userId/messageId/text →
-// **先查 conversation_states 攔截進行中開團流程（D-004 §3.3，per-user 隔離）** →
+// D-003 §6 / D-004 §9 / D-005 §9 / D-006 §4：webhook 接線。從 LINE WebhookEvent 抽
+// groupId/userId/messageId/text → **先查 conversation_states 攔截進行中開團流程（per-user 隔離）** →
 // 否則 parseCommand → 依 type 窮舉分派 → 取名（getGroupMemberProfile）→ 呼叫 service →
 // 呼叫 formatter → 組出 messagingApi.Message[]（含 mention）。
 //
-// **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any（G6）。
+// D-006：開團全開（create_* 不再產生 not_authorized）；close/cancel 授權於 service 內 canManageEvent
+// 判定（非授權回 (H′)）；`my_id` 由 no-op 接線回 (MyID)。
+//
+// **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any。
 // unknown / 無流程 confirm·abort / 未攔截雜訊一律不回覆、不 markProcessed（G9）。
 
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
@@ -48,6 +51,7 @@ import {
   formatCancelled,
   formatAborted,
   formatNotAuthorized,
+  formatMyId,
   formatAlreadyActiveEntry,
   formatAlreadyClosed,
   formatNoActiveEvent,
@@ -192,11 +196,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  // ── D-004 render ─────────────────────────────────────────────────────
+  // ── D-004 / D-006 render ─────────────────────────────────────────────
   function renderCreateEntry(result: CreateEntryResult): messagingApi.Message[] {
+    // D-006：開團全開 → CreateEntryResult 無 not_authorized 成員。
     switch (result.kind) {
-      case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())]; // (H)
       case 'already_active':
         return [toLineMessage(formatAlreadyActiveEntry(result.event))]; // (I)
       case 'duplicate':
@@ -271,7 +274,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   function renderClose(result: CloseResult): messagingApi.Message[] {
     switch (result.kind) {
       case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())]; // (H)
+        return [toLineMessage(formatNotAuthorized())]; // (H′) 非建立者非 super-admin
       case 'duplicate':
         return [];
       case 'no_active':
@@ -293,7 +296,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   function renderCancelEvent(result: EventCancelResult): messagingApi.Message[] {
     switch (result.kind) {
       case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())]; // (H)
+        return [toLineMessage(formatNotAuthorized())]; // (H′) 非建立者非 super-admin
       case 'duplicate':
         return [];
       case 'no_active':
@@ -308,13 +311,12 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   }
 
   function renderInvalidOneline(result: InvalidOnelineResult): messagingApi.Message[] {
+    // D-006：開團全開 → InvalidOnelineResult 收斂為單一 format_help。
     switch (result.kind) {
-      case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())]; // (H)
       case 'format_help':
         return [toLineMessage(formatOnelineFormatHelp())]; // (K′)
       default: {
-        const _exhaustive: never = result;
+        const _exhaustive: never = result.kind;
         return _exhaustive;
       }
     }
@@ -375,7 +377,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         const result = deps.service.getListView({ groupId, messageId });
         return renderList(result);
       }
-      // D-004 M3 開團流程 ─────────────────────────────────────────────
+      // D-004 M3 開團流程（D-006：開團全開，無授權前置） ────────────────
       case 'create_event_oneline': {
         const result = deps.eventService.handleOneline({
           groupId,
@@ -415,6 +417,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return renderAbort(result);
       }
       case 'close_event': {
+        // D-006：service 內 canManageEvent 判定；非授權回 (H′)。
         const result = deps.eventService.closeEvent({
           groupId,
           executorLineUserId: userId,
@@ -423,6 +426,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return renderClose(result);
       }
       case 'cancel_event': {
+        // D-006：service 內 canManageEvent 判定；非授權回 (H′)。
         const result = deps.eventService.cancelEvent({
           groupId,
           executorLineUserId: userId,
@@ -431,12 +435,12 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return renderCancelEvent(result);
       }
       case 'my_id':
-        // M4 我的ID → 仍 no-op。
-        return [];
+        // D-006 §3：接線回 (MyID)——傳訊人自身 userId（群回、唯讀、不 mark）。
+        return [toLineMessage(formatMyId(userId))];
       case 'invalid': {
-        // create_event 類 → 授權後格式提示 (K′)／非白名單 (H)；signup/cancel 類 → 靜默（D-003 既定）。
+        // create_event 類 → 格式提示 (K′)（D-006：開團全開，無非授權分支）；signup/cancel 類 → 靜默。
         if (cmd.command === 'create_event') {
-          const result = deps.eventService.handleInvalidOneline({ executorLineUserId: userId });
+          const result = deps.eventService.handleInvalidOneline();
           return renderInvalidOneline(result);
         }
         return [];

@@ -18,7 +18,7 @@ function makeServices(t: TestDb): { evt: EventService; reg: RegistrationService 
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
-    hostUserIds: [HOST],
+    superAdminUserIds: [HOST],
     logError: () => {},
   });
   const reg = new RegistrationService({

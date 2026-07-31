@@ -1,15 +1,16 @@
 // src/domain/event-service.ts
 //
-// D-004 §1–§6 / D-005 §3–§4：開團 domain。組合 D-001 repository 原語 + create-flow 純邏輯，
-// 完成 host 授權（注入白名單，G1）、狀態轉移合法性（G2）、同群一場 active（G3）、
-// 交易 + 去重（G4）、host_user_id=建立者（G8）、取消活動不刪 registrations（G10）。
+// D-004 §1–§6 / D-005 §3–§4 / D-006 §1–§2：開團 domain。組合 D-001 repository 原語 + create-flow 純邏輯。
+// D-006（授權簡化）：開團全開（無授權，G1）；`關閉報名`/`取消活動` 授權 = canManageEvent
+// （event.host_user_id ∪ super-admin，唯讀 getByLineUserId，非授權零副作用，G2）；狀態轉移合法性（G2）、
+// 同群一場 active（G3）、交易 + 去重（G4）、host_user_id=建立者（G8）、取消活動不刪 registrations（G6/D-004 G10）。
 //
-// D-005：`確認` 建立 open event 後於同交易插入主辦第 1 正取（§3、G3 走既有 insertSlot）；
-// `關閉報名`(split) 於同交易計算 ceil 最終攤額並持久化 settled_per_person（§4、OP-3、G1）。
+// D-005：`確認` 建立 open event 後於同交易插入主辦第 1 正取（§3、走既有 insertSlot）；
+// `關閉報名`(split) 於同交易計算 ceil 最終攤額並持久化 settled_per_person（§4、OP-3）。
 //
-// 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測（G5）。
-// 嚴禁 any（G6）；不得出現 SQL 字串或直接存取 db（G5）——一律經 repository / tx runner。
-// 授權只認注入的 hostUserIds、不讀 process.env（G1）。
+// 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測。
+// 嚴禁 any（D-006 G4）；不得出現 SQL 字串或直接存取 db（D-006 G4）——一律經 repository / tx runner。
+// super-admin 集合只認注入的 superAdminUserIds、不讀環境變數（由 server.ts 注入，D-006 G3）。
 
 import { parseCommand } from '../commands';
 import type { EventRow, PriceMode } from '../db/schema';
@@ -30,18 +31,17 @@ import {
   type CreateState,
 } from './create-flow';
 
-// ── 結果物件型別（D-004 §7.1；嚴禁 any） ─────────────────────────────────
+// ── 結果物件型別（D-004 §7.1 / D-006 §2；嚴禁 any） ─────────────────────
 
-/** `開團`（一行式 / 逐步）入口結果。 */
+/** `開團`（一行式 / 逐步）入口結果。D-006：開團全開，移除 not_authorized。 */
 export type CreateEntryResult =
-  | { kind: 'not_authorized' }
   | { kind: 'already_active'; event: EventRow }
   | { kind: 'duplicate' }
   | { kind: 'flow_started'; state: CreateState }
   | { kind: 'awaiting_confirm'; draft: CreateEventDraft };
 
-/** 一行式格式畸形（invalid create_event）結果。 */
-export type InvalidOnelineResult = { kind: 'not_authorized' } | { kind: 'format_help' };
+/** 一行式格式畸形（invalid create_event）結果。D-006：開團全開，收斂為單一 format_help。 */
+export type InvalidOnelineResult = { kind: 'format_help' };
 
 /** 進行中流程收到一則訊息的結果（confirm/abort/答案/重問）。 */
 export type ContinueFlowResult =
@@ -68,6 +68,7 @@ export type AbortResult = { kind: 'noop' } | { kind: 'duplicate' } | { kind: 'ab
 /**
  * `關閉報名`（close_event）結果。
  * D-005 §4：ok 帶 confirmedCount（凍結正取數）與 settledPerPerson（split 最終攤額；per_person 為 null）。
+ * D-006：not_authorized（非建立者非 super-admin）於進交易前 early-return。
  */
 export type CloseResult =
   | { kind: 'not_authorized' }
@@ -107,10 +108,6 @@ export interface OnelineInput {
   venueFee?: number;
 }
 
-export interface InvalidOnelineInput {
-  executorLineUserId: string;
-}
-
 export interface ContinueFlowInput {
   groupId: string;
   executorLineUserId: string;
@@ -146,8 +143,8 @@ export interface EventServiceDeps {
   conversations: ConversationRepository;
   processed: ProcessedEventRepository;
   runInTransaction: TransactionRunner;
-  /** host 授權白名單（來源 env ADMIN_USER_IDS，由 server.ts 注入；domain 不讀 env，G1）。 */
-  hostUserIds: ReadonlyArray<string>;
+  /** super-admin 集合（來源 env ADMIN_USER_IDS，由 server.ts 注入；跨群安全網、domain 不讀 env，D-006 G3）。 */
+  superAdminUserIds: ReadonlyArray<string>;
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -175,7 +172,7 @@ export class EventService {
   private readonly conversations: ConversationRepository;
   private readonly processed: ProcessedEventRepository;
   private readonly tx: TransactionRunner;
-  private readonly hostUserIds: ReadonlySet<string>;
+  private readonly superAdmins: ReadonlySet<string>;
   private readonly logError: (msg: string, meta?: Record<string, unknown>) => void;
 
   constructor(deps: EventServiceDeps) {
@@ -185,7 +182,7 @@ export class EventService {
     this.conversations = deps.conversations;
     this.processed = deps.processed;
     this.tx = deps.runInTransaction;
-    this.hostUserIds = new Set(deps.hostUserIds);
+    this.superAdmins = new Set(deps.superAdminUserIds);
     this.logError =
       deps.logError ??
       ((msg, meta): void => {
@@ -193,15 +190,20 @@ export class EventService {
       });
   }
 
-  /** 授權：只認注入白名單（G1）。 */
-  private isAuthorized(lineUserId: string): boolean {
-    return this.hostUserIds.has(lineUserId);
+  /**
+   * D-006 §1.2：生命週期管理授權（`關閉報名`/`取消活動`）。
+   * = super-admin（注入，跨群、純 line_user_id 比對、不查 DB）
+   *   ∨ 該活動建立者（executor 經**唯讀** getByLineUserId 解析出的 user.id === event.host_user_id）。
+   * **唯讀不 upsert**：對非授權者不寫任何 users 列 → 滿足「非授權者無 DB 變更」（G2）。
+   */
+  private canManageEvent(event: EventRow, executorLineUserId: string): boolean {
+    if (this.superAdmins.has(executorLineUserId)) return true;
+    const executor = this.users.getByLineUserId(executorLineUserId);
+    return executor !== undefined && executor.id === event.host_user_id;
   }
 
-  // ── `開團`（逐步問答入口，§3） ──────────────────────────────────────
+  // ── `開團`（逐步問答入口，§3；D-006 §1.1 開團全開） ──────────────────
   startCreation(input: StartCreationInput): CreateEntryResult {
-    if (!this.isAuthorized(input.executorLineUserId)) return { kind: 'not_authorized' };
-
     // 入口先查（§6 fail fast）：已有 active（draft/open/closed）→ 拒絕、不寫 conversation。
     const active = this.events.findActiveByGroup(input.groupId);
     if (active !== undefined) return { kind: 'already_active', event: active };
@@ -218,10 +220,8 @@ export class EventService {
     });
   }
 
-  // ── `開團 <欄位…>`（一行式入口，§2 / D-005 §6.1） ──────────────────
+  // ── `開團 <欄位…>`（一行式入口，§2 / D-005 §6.1；D-006 §1.1 開團全開） ──
   handleOneline(input: OnelineInput): CreateEntryResult {
-    if (!this.isAuthorized(input.executorLineUserId)) return { kind: 'not_authorized' };
-
     const active = this.events.findActiveByGroup(input.groupId);
     if (active !== undefined) return { kind: 'already_active', event: active };
 
@@ -247,10 +247,9 @@ export class EventService {
     });
   }
 
-  // ── invalid（create_event 格式畸形；§9 (K)/(H)） ───────────────────
-  handleInvalidOneline(input: InvalidOnelineInput): InvalidOnelineResult {
-    // 純拒絕/引導，無 DB 副作用、不 mark（§9 註）。
-    if (!this.isAuthorized(input.executorLineUserId)) return { kind: 'not_authorized' };
+  // ── invalid（create_event 格式畸形；§9 (K′)；D-006 §1.1 開團全開，恆回 format_help） ──
+  handleInvalidOneline(): InvalidOnelineResult {
+    // 純引導、無 DB 副作用、不 mark（§9 註）。開團全開 → 無授權分支。
     return { kind: 'format_help' };
   }
 
@@ -332,7 +331,7 @@ export class EventService {
         return { kind: 'already_active' };
       }
 
-      // G8：host_user_id = 建立者（白名單使用者）的 user.id。
+      // G8：host_user_id = 建立者（任一群成員，D-006 開團全開）的 user.id。
       const host = this.users.upsert(input.executorLineUserId, input.hostDisplayName);
 
       let event: EventRow;
@@ -385,24 +384,28 @@ export class EventService {
     });
   }
 
-  // ── `關閉報名`（close_event，§5.2 / D-005 §4） ─────────────────────
+  // ── `關閉報名`（close_event，§5.2 / D-005 §4 / D-006 §1.2·§2） ───────
   closeEvent(input: LifecycleInput): CloseResult {
-    if (!this.isAuthorized(input.executorLineUserId)) return { kind: 'not_authorized' };
+    // D-006 §2：授權需先讀 active 取 host_user_id → no_active 與 not_authorized 皆於**進交易前**
+    // early-return（不 mark、無 DB 變更，G2）。
+    const active0 = this.events.findActiveByGroup(input.groupId);
+    if (active0 === undefined) return { kind: 'no_active' };
+    if (!this.canManageEvent(active0, input.executorLineUserId)) return { kind: 'not_authorized' };
 
     return this.tx<CloseResult>(() => {
       if (!this.processed.markProcessed(input.messageId)) return { kind: 'duplicate' };
-      const active = this.events.findActiveByGroup(input.groupId);
+      const active = this.events.findActiveByGroup(input.groupId); // 交易內權威重讀（D-004 §5.2）
       if (active === undefined) return { kind: 'no_active' };
       if (active.status === 'closed') return { kind: 'already_closed' };
       if (active.status !== 'open') return { kind: 'no_active' }; // draft 未物化，其餘非法
       // G2：open → closed（讀當前 status 判定合法後才寫）。
       this.events.updateStatus(active.id, 'closed');
 
-      // D-005 §4：凍結正取數（有效正取，G6 過濾），split 計算並持久化最終攤額。
+      // D-005 §4：凍結正取數（有效正取），split 計算並持久化最終攤額。
       const confirmedCount = this.registrations.countConfirmed(active.id);
       const closed: EventRow = { ...active, status: 'closed' };
       if (active.price_mode === 'split_venue') {
-        // G1：ceil + 分母 max(,1)（perPersonAmount 已保底）。同交易寫 settled_per_person（OP-3、architect N2）。
+        // ceil + 分母 max(,1)（perPersonAmount 已保底）。同交易寫 settled_per_person（OP-3）。
         const settled = perPersonAmount(closed, confirmedCount);
         this.events.updateSettledPerPerson(active.id, settled);
         return {
@@ -417,17 +420,20 @@ export class EventService {
     });
   }
 
-  // ── `取消活動`（cancel_event，§5.2；刪除類 R2） ────────────────────
+  // ── `取消活動`（cancel_event，§5.2；刪除類 R2 / D-006 §1.2·§2） ──────
   cancelEvent(input: LifecycleInput): CancelResult {
-    if (!this.isAuthorized(input.executorLineUserId)) return { kind: 'not_authorized' };
+    // D-006 §2：授權於進交易前判定（不 mark、無 DB 變更，G2）。
+    const active0 = this.events.findActiveByGroup(input.groupId);
+    if (active0 === undefined) return { kind: 'no_active' };
+    if (!this.canManageEvent(active0, input.executorLineUserId)) return { kind: 'not_authorized' };
 
     return this.tx<CancelResult>(() => {
       if (!this.processed.markProcessed(input.messageId)) return { kind: 'duplicate' };
-      const active = this.events.findActiveByGroup(input.groupId);
+      const active = this.events.findActiveByGroup(input.groupId); // 交易內權威重讀
       if (active === undefined) return { kind: 'no_active' };
       // open 或 closed 皆可取消；draft 未物化（防禦）。
       if (active.status !== 'open' && active.status !== 'closed') return { kind: 'no_active' };
-      // G2：open/closed → cancelled（終態）。G10：僅狀態轉移，不刪 registrations。
+      // G2：open/closed → cancelled（終態）。G6：僅狀態轉移，不刪 registrations。
       this.events.updateStatus(active.id, 'cancelled');
       return { kind: 'ok', event: { ...active, status: 'cancelled' } };
     });
