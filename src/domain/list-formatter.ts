@@ -1,13 +1,17 @@
 // src/domain/list-formatter.ts
 //
-// D-003 §8：把 domain 結果物件組版為繁體中文文字 + LINE-agnostic mention 描述子。
-// 純函式：對 LINE SDK 零耦合、可純測（AC-8/AC-14）。嚴禁 any（G11）；不觸 DB（G10）。
+// D-003 §8 / D-005 §5：把 domain 結果物件組版為繁體中文文字 + LINE-agnostic mention 描述子。
+// 純函式：對 LINE SDK 零耦合（AC-8/AC-14）。嚴禁 any（G11/G6）；不觸 DB（G10）。
+//
+// D-005：費用列依 price_mode 顯示（split_venue 標「暫估，關閉報名後結算」，G2）；
+// 文案中性化（球聚→球敘、body 標籤 地點→場地，§7）；均攤金額走 billing.perPersonAmount（G1）。
 //
 // 輸出型別 MessageDescriptor 由 webhook handler 轉為實際 LINE 訊息
 // （純文字 → TextMessage；含 mention → TextMessageV2 + substitution）。
 
 import type { EventRow, RegistrationRow } from '../db/schema';
 import { buildRoster } from './roster';
+import { estimatedTotal, perPersonAmount } from './billing';
 import type { RegistrationView, SignupResult, CancelResult } from './registration-service';
 
 /** LINE-agnostic mention 描述子（AC-14）：mention 顯示文字在 text 中的位置與被 @ 者 line_user_id。 */
@@ -43,13 +47,27 @@ type CancelOk = Extract<CancelResult, { kind: 'ok' }>;
 
 // ── 共用區塊 ─────────────────────────────────────────────────────────
 
-function eventHeader(event: EventRow, forSignup: boolean): string {
-  const title = forSignup ? `[${event.location} 球聚報名]` : `[${event.location} 球聚]`;
+/**
+ * 費用列（D-005 §5.1；供 header 複用）。依 price_mode：
+ * - per_person：`每人費用：N 元`
+ * - split_venue：`場地費：N 元，平均每人約 M 元（暫估，關閉報名後結算）`（M=ceil，分母=正取數，G1/G2）
+ */
+export function feeLine(event: EventRow, confirmedCount: number): string {
+  if (event.price_mode === 'split_venue') {
+    const fee = event.venue_fee ?? 0;
+    const per = perPersonAmount(event, confirmedCount);
+    return `場地費：${fee} 元，平均每人約 ${per} 元（暫估，關閉報名後結算）`;
+  }
+  return `每人費用：${event.price_per_person} 元`;
+}
+
+function eventHeader(event: EventRow, forSignup: boolean, confirmedCount: number): string {
+  const title = forSignup ? `[${event.location} 球敘報名]` : `[${event.location} 球敘]`;
   return [
     title,
     `日期：${event.event_date} ${event.event_time}`,
-    `地點：${event.location}`,
-    `每人費用：${event.price_per_person} 元`,
+    `場地：${event.location}`,
+    feeLine(event, confirmedCount),
   ].join('\n');
 }
 
@@ -108,7 +126,7 @@ export function formatNothingToCancel(proxyName?: string): MessageDescriptor {
 /** +N 報名成功（正取 / 整批候補）（§8 (A)/(B)）。 */
 export function formatSignup(result: SignupOk): MessageDescriptor {
   const { view } = result;
-  const parts: string[] = [eventHeader(view.event, true), ''];
+  const parts: string[] = [eventHeader(view.event, true, view.confirmedCount), ''];
   if (result.outcome === 'confirmed') {
     parts.push(`已為「${result.subjectDisplayName}」報名 ${result.requested} 位（正取）。`);
   } else {
@@ -126,21 +144,26 @@ export function formatSignup(result: SignupOk): MessageDescriptor {
 /** -N 取消成功（更新名單）（§8(C)）。 */
 export function formatCancel(result: CancelOk): MessageDescriptor {
   const { view } = result;
-  const parts: string[] = [eventHeader(view.event, true), ''];
+  const parts: string[] = [eventHeader(view.event, true, view.confirmedCount), ''];
   parts.push(`已為「${result.subjectDisplayName}」取消 ${result.cancelled} 位。`);
   parts.push('');
   parts.push(...bodyRoster(view));
   return { text: parts.join('\n'), mentionees: [] };
 }
 
-/** 名單查詢（§8(E)）：名單 + 剩餘名額 + 預估總金額。 */
+/** 名單查詢（§8(E) / D-005 §5.1）：名單 + 剩餘名額 + 預估總金額（mode-aware）。 */
 export function formatList(view: RegistrationView): MessageDescriptor {
-  const parts: string[] = [eventHeader(view.event, false), ''];
+  const parts: string[] = [eventHeader(view.event, false, view.confirmedCount), ''];
   parts.push(...bodyRoster(view));
-  const total = view.confirmedCount * view.event.price_per_person;
-  parts.push(
-    `預估總金額：${view.confirmedCount} × ${view.event.price_per_person} = ${total} 元`,
-  );
+  if (view.event.price_mode === 'split_venue') {
+    // split：總額固定 = venue_fee，與正取數無關（AC-2/AC-14）。
+    parts.push(`預估總金額：場地費 ${estimatedTotal(view.event, view.confirmedCount)} 元（固定，暫估）`);
+  } else {
+    const total = estimatedTotal(view.event, view.confirmedCount);
+    parts.push(
+      `預估總金額：${view.confirmedCount} × ${view.event.price_per_person} = ${total} 元`,
+    );
+  }
   return { text: parts.join('\n'), mentionees: [] };
 }
 

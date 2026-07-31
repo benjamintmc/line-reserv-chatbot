@@ -7,6 +7,7 @@
 // 輸入契約：token 已完成白名單字元正規化（見 normalize.ts；parse.ts 於整串正規化後呼叫，
 // create-flow 於逐欄答案 normalizeWhitelist + trim 後呼叫），故此處僅做格式/範圍判定與零填充輸出。
 
+import type { PriceMode } from '../db/schema';
 import type { InvalidReason } from './types';
 import { MAX_CAPACITY } from './types';
 
@@ -57,7 +58,7 @@ export function validateCapacity(tok: string): ValidationResult<number> {
   return { ok: true, value };
 }
 
-/** 去尾綴 `元`；須為 `price >= 0` 的整數。 */
+/** 去尾綴 `元`；須為 `price >= 0` 的整數（per_person 每人金額）。 */
 export function validatePrice(tok: string): ValidationResult<number> {
   const digits = stripSuffix(tok, '元');
   if (!/^\d+$/.test(digits)) {
@@ -66,9 +67,53 @@ export function validatePrice(tok: string): ValidationResult<number> {
   return { ok: true, value: Number(digits) };
 }
 
+/**
+ * 場地費（split_venue）驗證（D-005 §6.1 / OP-2）：去可選前綴 `場地費`/`均攤`、去尾綴 `元`；
+ * 須為 `> 0` 的整數；失敗回 `create_bad_venue_fee`。供逐步問答 awaiting_venue_fee 直接使用。
+ */
+export function validateVenueFee(tok: string): ValidationResult<number> {
+  const noPrefix = stripPrefixAny(tok, ['場地費', '均攤']);
+  const digits = stripSuffix(noPrefix, '元');
+  if (!/^\d+$/.test(digits)) {
+    return { ok: false, reason: 'create_bad_venue_fee' };
+  }
+  const value = Number(digits);
+  if (value <= 0) {
+    return { ok: false, reason: 'create_bad_venue_fee' };
+  }
+  return { ok: true, value };
+}
+
+/**
+ * 一行式開團第 5 欄「費用」驗證（D-005 §6.1）：依前綴關鍵字判定計費模式。
+ * - `場地費N` / `均攤N` → split_venue，`venue_fee=N`（>0，reason create_bad_venue_fee）。
+ * - `每人N` / 裸 `N`（無前綴，回歸 D-002）→ per_person，`price_per_person=N`（>=0）。
+ */
+export function validateFee(
+  tok: string,
+): ValidationResult<{ mode: PriceMode; amount: number }> {
+  if (tok.startsWith('場地費') || tok.startsWith('均攤')) {
+    const r = validateVenueFee(tok);
+    if (!r.ok) return { ok: false, reason: r.reason };
+    return { ok: true, value: { mode: 'split_venue', amount: r.value } };
+  }
+  const noPrefix = stripPrefixAny(tok, ['每人']);
+  const r = validatePrice(noPrefix);
+  if (!r.ok) return { ok: false, reason: r.reason };
+  return { ok: true, value: { mode: 'per_person', amount: r.value } };
+}
+
 /** 若字串以 `suffix` 結尾則去除該單一尾綴，否則原樣回傳。 */
 function stripSuffix(s: string, suffix: string): string {
   return s.endsWith(suffix) ? s.slice(0, -suffix.length) : s;
+}
+
+/** 去除首個命中的前綴（依序嘗試）；皆不符則原樣回傳。 */
+function stripPrefixAny(s: string, prefixes: string[]): string {
+  for (const p of prefixes) {
+    if (s.startsWith(p)) return s.slice(p.length);
+  }
+  return s;
 }
 
 /** 整數零填充為兩位字串。 */

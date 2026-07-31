@@ -17,6 +17,13 @@ export interface UserRow {
 /** events.status 合法值（D-001 §7 狀態機）。 */
 export type EventStatus = 'draft' | 'open' | 'closed' | 'cancelled' | 'done';
 
+/**
+ * events.price_mode 合法值（D-005 §1；DB CHECK 強制）。
+ * - `per_person`：每人固定價（price_per_person 為金額、venue_fee=NULL）。
+ * - `split_venue`：固定場地費總額均攤（venue_fee>0、price_per_person=0；每人金額由應用層 ceil 動態算）。
+ */
+export type PriceMode = 'per_person' | 'split_venue';
+
 /** active 集合：受 ux_events_active_group 約束（G3）。 */
 export const ACTIVE_EVENT_STATUSES: ReadonlyArray<EventStatus> = ['draft', 'open', 'closed'];
 
@@ -31,8 +38,14 @@ export interface EventRow {
   event_time: string;
   location: string;
   capacity: number;
-  /** 整數新台幣元。 */
+  /** 整數新台幣元。split_venue 模式恆為 0（不適用，見 D-005 §1.1）。 */
   price_per_person: number;
+  /** 計費模式（D-005 §1）；migration 0002 對既有列 backfill 為 'per_person'。 */
+  price_mode: PriceMode;
+  /** 場地費總額（元）；split_venue 時 >0、per_person 時 NULL（D-005 §1）。 */
+  venue_fee: number | null;
+  /** 關閉報名(split)時快照的最終每人攤額（元）；未關閉或 per_person 為 NULL（OP-3）。 */
+  settled_per_person: number | null;
   status: EventStatus;
   created_at: string;
   updated_at: string;

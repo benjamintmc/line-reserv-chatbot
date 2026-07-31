@@ -9,15 +9,17 @@ import {
   type CreateEventDraft,
 } from './create-flow';
 
-/** D-004 §3 逐步問答 state machine 純邏輯（不觸 DB / LINE）。 */
-describe('create-flow 純狀態機（D-004 §3）', () => {
-  it('nextState 逐欄前進，price 後為 awaiting_confirm', () => {
+/** D-004 §3 逐步問答 state machine 純邏輯（不觸 DB / LINE）。D-005 §6.2：加計費方式分支。 */
+describe('create-flow 純狀態機（D-004 §3 / D-005 §6.2）', () => {
+  it('nextState 逐欄前進：capacity 後為 awaiting_price_mode，price/venue_fee 後為 awaiting_confirm', () => {
     expect(FIRST_STATE).toBe('awaiting_date');
     expect(nextState('awaiting_date')).toBe('awaiting_time');
     expect(nextState('awaiting_time')).toBe('awaiting_location');
     expect(nextState('awaiting_location')).toBe('awaiting_capacity');
-    expect(nextState('awaiting_capacity')).toBe('awaiting_price');
+    // D-005：capacity 後插入計費方式提問。
+    expect(nextState('awaiting_capacity')).toBe('awaiting_price_mode');
     expect(nextState('awaiting_price')).toBe('awaiting_confirm');
+    expect(nextState('awaiting_venue_fee')).toBe('awaiting_confirm');
   });
 
   it('[D-004 AC-4] awaiting_date 非法日期 → 停留同一 state、payload 不含 date', () => {
@@ -63,12 +65,24 @@ describe('create-flow 純狀態機（D-004 §3）', () => {
     expect(r.nextState).toBe('awaiting_confirm');
   });
 
-  it('[D-004 AC-20] isComplete：缺欄位為 false；price=0 齊備為 true', () => {
-    const partial: CreateEventDraft = { date: 'd', time: 't', location: 'l', capacity: 16 };
-    expect(isComplete(partial)).toBe(false); // 缺 price
-    const full: CreateEventDraft = { date: 'd', time: 't', location: 'l', capacity: 16, price: 0 };
-    expect(isComplete(full)).toBe(true); // price=0 仍齊備
-    expect(isComplete({ ...full, location: '' })).toBe(false); // 空 location 不齊備
+  it('[D-004 AC-20 / D-005] isComplete：per_person 需 price；split 需 venueFee；缺 priceMode 為 false', () => {
+    // 缺 priceMode → false（D-005）。
+    const noMode: CreateEventDraft = { date: 'd', time: 't', location: 'l', capacity: 16, price: 0 };
+    expect(isComplete(noMode)).toBe(false);
+    // per_person 齊備（price=0 仍齊備）。
+    const perPerson: CreateEventDraft = { ...noMode, priceMode: 'per_person' };
+    expect(isComplete(perPerson)).toBe(true);
+    // per_person 缺 price → false。
+    expect(isComplete({ date: 'd', time: 't', location: 'l', capacity: 16, priceMode: 'per_person' })).toBe(false);
+    // split 齊備需 venueFee>0。
+    const split: CreateEventDraft = {
+      date: 'd', time: 't', location: 'l', capacity: 16, priceMode: 'split_venue', venueFee: 3000, price: 0,
+    };
+    expect(isComplete(split)).toBe(true);
+    // split 缺 venueFee → false。
+    expect(isComplete({ ...split, venueFee: undefined })).toBe(false);
+    // 空 location 不齊備。
+    expect(isComplete({ ...perPerson, location: '' })).toBe(false);
   });
 
   it('[D-004 AC-20] parseDraft 型別安全：malformed JSON / 非物件 / 錯型別欄位 → 安全承載', () => {
@@ -78,8 +92,13 @@ describe('create-flow 純狀態機（D-004 §3）', () => {
     expect(parseDraft('123')).toEqual({}); // 非物件
     // 錯型別欄位被剔除（capacity 為字串 → 忽略）
     expect(parseDraft('{"date":"2026-08-15","capacity":"16"}')).toEqual({ date: '2026-08-15' });
-    // 正常往返
-    const d: CreateEventDraft = { date: '2026-08-15', time: '07:30', location: 'X', capacity: 16, price: 0 };
+    // 正常往返（含 D-005 priceMode/venueFee）
+    const d: CreateEventDraft = {
+      date: '2026-08-15', time: '07:30', location: 'X', capacity: 16, price: 0,
+      priceMode: 'split_venue', venueFee: 3000,
+    };
     expect(parseDraft(serializeDraft(d))).toEqual(d);
+    // 非法 priceMode 字串被剔除。
+    expect(parseDraft('{"priceMode":"bogus"}')).toEqual({});
   });
 });

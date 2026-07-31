@@ -3,6 +3,8 @@
 // D-002 §1：`ParsedCommand` discriminated union、相關常數與原因碼。
 // 嚴禁 any（G1）：每種指令的 payload 皆具體定型，以 `type` 為判別鍵。
 
+import type { PriceMode } from '../db/schema';
+
 /** 單次 +N/-N 的人數上限（防濫用；O-1 裁決）。 */
 export const MAX_COUNT = 20;
 
@@ -25,7 +27,8 @@ export type InvalidReason =
   | 'create_bad_date' // 日期格式/範圍錯
   | 'create_bad_time' // 時間格式/範圍錯
   | 'create_bad_capacity' // 人數非正整數
-  | 'create_bad_price'; // 價格非非負整數
+  | 'create_bad_price' // 價格非非負整數（per_person）
+  | 'create_bad_venue_fee'; // 場地費非正整數（split_venue；D-005 §6.1 / OP-2）
 
 export type ParsedCommand =
   // 報名（含代報名）：count>=1；proxyName 存在即代報名（kind='proxy'）
@@ -41,7 +44,12 @@ export type ParsedCommand =
       time: string; // 'HH:MM'（24h，零填充）
       location: string; // 原樣（僅 trim；白名單字元類已於全串正規化，見 §5）
       capacity: number; // 正整數
-      price: number; // 非負整數（新台幣元）
+      /** per_person 金額（新台幣元，非負整數）；split_venue 時為 0（D-005 §6.1）。 */
+      price: number;
+      /** 計費模式（D-005 §6.1）。 */
+      priceMode: PriceMode;
+      /** 場地費總額（元）；僅 split_venue 帶值（>0），per_person 為 undefined。 */
+      venueFee?: number;
     }
   // 開團（無參數）→ 進入逐步問答（流程屬 D-003）
   | { type: 'create_event_start' }

@@ -1,6 +1,11 @@
 import type { Db } from '../index';
 import { nowIso } from '../time';
-import { ACTIVE_EVENT_STATUSES, type EventRow, type EventStatus } from '../schema';
+import {
+  ACTIVE_EVENT_STATUSES,
+  type EventRow,
+  type EventStatus,
+  type PriceMode,
+} from '../schema';
 
 export interface CreateEventInput {
   groupId: string;
@@ -10,6 +15,10 @@ export interface CreateEventInput {
   location: string;
   capacity: number;
   pricePerPerson?: number;
+  /** 計費模式（D-005 §1）；預設 'per_person'（回歸）。 */
+  priceMode?: PriceMode;
+  /** 場地費總額（split_venue 必填且 >0）；per_person 不得帶（G4）。 */
+  venueFee?: number;
   status?: EventStatus;
 }
 
@@ -25,13 +34,34 @@ export class EventRepository {
 
   create(input: CreateEventInput): EventRow {
     const now = nowIso();
+    // D-005 §1.3 / G4：邊界層強制 price_mode 與 venue_fee/price_per_person 一致性。
+    // split_venue → venue_fee 為整數且 >0、price_per_person=0；
+    // per_person → venue_fee 必為 NULL（帶入 venueFee 視為不一致組合，拒絕）。
+    const priceMode: PriceMode = input.priceMode ?? 'per_person';
+    let venueFee: number | null;
+    let pricePerPerson: number;
+    if (priceMode === 'split_venue') {
+      const fee = input.venueFee;
+      if (fee === undefined || !Number.isInteger(fee) || fee <= 0) {
+        throw new Error('split_venue 需要正整數 venue_fee（G4 一致性）');
+      }
+      venueFee = fee;
+      pricePerPerson = 0; // split 模式 price_per_person 恆為 0（欄位 NOT NULL 不可 NULL）
+    } else {
+      if (input.venueFee !== undefined) {
+        throw new Error('per_person 不得帶 venue_fee（G4 一致性）');
+      }
+      venueFee = null; // per_person 模式 venue_fee 恆為 NULL
+      pricePerPerson = input.pricePerPerson ?? 0;
+    }
+
     const info = this.db
       .prepare(
         `INSERT INTO events
            (group_id, host_user_id, event_date, event_time, location,
-            capacity, price_per_person, status, created_at, updated_at)
+            capacity, price_per_person, price_mode, venue_fee, status, created_at, updated_at)
          VALUES (@groupId, @hostUserId, @eventDate, @eventTime, @location,
-            @capacity, @pricePerPerson, @status, @now, @now)`,
+            @capacity, @pricePerPerson, @priceMode, @venueFee, @status, @now, @now)`,
       )
       .run({
         groupId: input.groupId,
@@ -40,7 +70,9 @@ export class EventRepository {
         eventTime: input.eventTime,
         location: input.location,
         capacity: input.capacity,
-        pricePerPerson: input.pricePerPerson ?? 0,
+        pricePerPerson,
+        priceMode,
+        venueFee,
         status: input.status ?? 'draft',
         now,
       });
@@ -73,5 +105,16 @@ export class EventRepository {
     return this.db
       .prepare('UPDATE events SET status = ?, updated_at = ? WHERE id = ?')
       .run(status, now, id).changes;
+  }
+
+  /**
+   * 寫入 split_venue 關閉報名時的最終每人攤額（D-005 §4 / OP-3；architect N2 專屬原語）。
+   * 與 updateStatus 分離：狀態轉移與結算金額為兩種關注點，不耦合。回傳受影響列數。
+   */
+  updateSettledPerPerson(id: number, amount: number): number {
+    const now = nowIso();
+    return this.db
+      .prepare('UPDATE events SET settled_per_person = ?, updated_at = ? WHERE id = ?')
+      .run(amount, now, id).changes;
   }
 }

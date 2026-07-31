@@ -28,10 +28,12 @@ describe('migrate runner + schema 約束', () => {
     const result = runMigrations(t.db);
     expect(result.applied).toHaveLength(0);
     expect(result.skipped).toContain('0001_init');
+    // D-005：migrations 目錄現含 0001_init 與 0002_billing_modes → 共 2 筆。
+    expect(result.skipped).toContain('0002_billing_modes');
     const count = t.db
       .prepare('SELECT COUNT(*) AS n FROM schema_migrations')
       .get() as { n: number };
-    expect(count.n).toBe(1);
+    expect(count.n).toBe(2);
   });
 
   it('[D-001 AC-9] 同 group 第二場 active 被 ux_events_active_group 拒絕', () => {

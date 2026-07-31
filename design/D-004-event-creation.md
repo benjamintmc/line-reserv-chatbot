@@ -460,6 +460,7 @@ close/cancel 無 active → 目前沒有進行中的活動。
 - [ ] **[D-004 AC-16]（無流程時 confirm/abort no-op）**：無 conversation_states 時 `確認` / `取消` → handler 回空訊息、不 mark、不改狀態。（驗證：unit test / G9、§3.4）
 - [ ] **[D-004 AC-17]（生命週期指令狀態不符）**：無 active 活動時 `關閉報名` / `取消活動` → 回「目前沒有進行中的活動」(J)、無狀態變更；cancelled/done 終態下任何生命週期指令不轉移。（驗證：unit test / G2、§5.1）
 - [ ] **[D-004 AC-18]（開團後 M2 可報名，銜接）**：白名單 host 走完 `確認` 建立 open 活動後，成員 `+2` → D-003 `signup` 正常產生 2 列 confirmed、回名單（成功條件 #3「開團→公告→報名」全程）。（驗證：e2e/整合 test / 旅程 #1、與 D-003 銜接）
+  - **errata（2026-07-31，來源 D-005 §3 主辦自動登記）**：D-005 已 APPROVED 使 `確認` 建立 open event 時**自動登記主辦為第 1 正取（seq=1）**。故本 AC 的名單計數自 host 起算：成員 `+2` 後名單為 **3/16**（主辦 + 2），非原範例假設「空 event → 2/16」。實作測試已依此更新（`countConfirmed` 自 host+N 起算）；本 errata 僅澄清範例語意，不改 AC 驗證意圖。
 - [ ] **[D-004 AC-19]（domain 不下 SQL、不觸 LINE）**：`src/domain/{create-flow,event-service,event-formatter}.ts` 內無 SQL 字串、無 `db.prepare`/`db.transaction` 直接呼叫、無 `@line/bot-sdk` import。（驗證：靜態審查 / grep，G5）
 - [ ] **[D-004 AC-20]（payload 型別安全）**：`conversation_states.payload` 之 `JSON.parse` 結果以 `CreateEventDraft` 承載，欄位齊備判定（`isComplete`）正確；缺欄位時不進 `確認` 建立。（驗證：unit test，create-flow / G6）
 - [ ] **[D-004 AC-21]（awaiting_confirm 非確認/取消 → 重新提示）**：`awaiting_confirm` 下輸入 `OK`/`好`/`確定`（非 `確認`/`取消`）→ 回 (M) 重新提示、**停留 awaiting_confirm、不建立、不前進**；隨後 `確認` 正常建立。（驗證：unit test，create-flow + handler / design-reviewer B2、G9）

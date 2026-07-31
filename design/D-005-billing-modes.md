@@ -171,7 +171,7 @@ split_venue： 場地費：3000 元，平均每人約 429 元（暫估，關閉�
 - `src/domain/event-formatter.ts`：
   - `formatConfirmSummary(draft)`：確認摘要費用列依 draft 的計費模式顯示（每人 N 元 ／ 場地費 N 元，平均每人約 M 元（暫估））——需 `CreateEventDraft` 帶 `priceMode`/`venueFee` 與 draft 當下的預估正取數（建立前無正取，split 摘要以「主辦 1 人」為分母預估或標「開團後依報名人數均攤」；**建議摘要階段 split 只顯示場地費總額 + 「開團後依實際報名人數均攤」**，不硬算 M，避免建立前分母失真）。
   - `formatOpenAnnouncement(event)`：開團公告費用列——split **只顯示** `費用：場地費 N 元，將依報名人數均攤（暫估，關閉報名後結算）`，**不顯示每人估額**（design-reviewer B2：正取=1 時顯示「平均每人約 3000 元」即使標暫估仍造成價格錯覺）。另於公告或確認摘要明示主辦已佔第 1 正取（architect N4），例：公告尾附「（主辦已自動報名為第 1 位）」。
-  - `formatClosed(event, settledPerPerson)`：**參數改為 `settledPerPerson: number | null`（唯一真相來源，architect N3——不再從 `event` spread 讀可能為 NULL 的舊值）**。split 追加最終結算列（design-reviewer 結算 nit：補「多收不找零」）：`本場最終每人費用：M 元（場地費 N 元 ÷ 正取 K 人，除不盡無條件進位；多收部分不另找零）`；per_person 傳 `null`、維持原句不附結算列（AC-7/AC-8）。
+  - `formatClosed(event, settledPerPerson, confirmedCount)`（**errata(T-009)：三參數簽名**——AC-7 結算列需顯示「÷ 正取 K 人」，故 `confirmedCount` 為顯示 K 所必需；`settledPerPerson: number | null` 仍為**金額唯一真相來源**（architect N3，不從 `event` spread 讀 NULL 舊值），`confirmedCount` 僅供分母文字。原 §述兩參數對自身 AC-7 欠規格，此為最小必要擴充）。split 追加最終結算列（design-reviewer 結算 nit：補「多收不找零」）：`本場最終每人費用：M 元（場地費 N 元 ÷ 正取 K 人，除不盡無條件進位；多收部分不另找零）`；per_person 傳 `null`、維持原句不附結算列（AC-7/AC-8）。
   - `formatAlreadyActiveEntry(event)`：重複開團摘要費用列同步 mode-aware。
 
 #### 5.2 型別擴充
@@ -385,3 +385,12 @@ awaiting_price_mode ──「場地費」──► awaiting_venue_fee ──(合
 > **兩 blocker 群已於設計正文補齊。** 待使用者最終 APPROVED 即派 T-009 實作。
 > **APPROVED 後 orchestrator 分派（errata 批次，不阻擋）**：①派 architect 補 D-001 errata（schema 三欄擴充 + G2 carve-out）②D-002/D-003/D-004 §8 文案由 D-005 §7 為新權威來源（各 owner 補一句指向 D-005 或 errata）。
 > **LESSONS 待登記**：新增對話 state 須同時交付「提問+無效重問範本+AC」（第 2 次，checklist 候選）、D-001 G2「IMMEDIATE 無條件」措辭過寬（區分 read-decide-write vs write-first 盲插）、APPROVED 文件反覆 errata 的治理（第 3 次）。
+
+### T-009 實作 + R2 品質關卡結果（2026-07-31）
+| 關卡 | 結論 |
+|---|---|
+| architect-reviewer | **APPROVED**（零改碼 blocker，Guardrails 8/8 PASS）；三特別點：既有測試調整合理、D-004 AC-18 需 errata（已補）、formatClosed 三參數可接受（§5.1 已補 errata） |
+| design-reviewer | **APPROVED**（無 blocker）；均攤暫估防誤解、公告不顯示每人估額、中性化全面（grep 確認輸出零殘留） |
+| unit-tester | **通過**（211 tests 全綠、AC 99/99、無 bug）；DB 層確認 AC-3/7/12/16、既有測試調整為反映新行為；補 3 整合強化（主辦自移 confirmedCount=0 保底、結算以 soft-delete 後正取數為分母） |
+
+> **T-009 標 DONE（2026-07-31）**。文件校正已套用：§5.1 formatClosed 三參數 errata、D-004 §8/AC-18 補 errata 指向 D-005 §3（主辦佔 seq=1）。build 綠、211 tests、AC 99/99、lint 0 error。真機跨試（2 群組×2 計費）待使用者執行。

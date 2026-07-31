@@ -10,6 +10,7 @@ function makeSvc(t: TestDb, hostIds: string[] = [HOST]): EventService {
   return new EventService({
     events: t.events,
     users: t.users,
+    registrations: t.registrations,
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
@@ -25,10 +26,13 @@ function nextMid(): string {
   return `w${midCounter}`;
 }
 
-/** 逐步走完至 awaiting_confirm（不含 `確認`；每步 message_id 全域唯一）。 */
+/**
+ * 逐步走完至 awaiting_confirm（不含 `確認`；每步 message_id 全域唯一）。
+ * D-005 §6.2：capacity 後加「每人」選計費方式，再輸入每人費用。
+ */
 function walkToConfirm(svc: EventService, userId = HOST): void {
   svc.startCreation({ groupId: G, executorLineUserId: userId, messageId: nextMid() });
-  for (const text of ['2026/08/15', '07:30', '東方球場', '16', '2200']) {
+  for (const text of ['2026/08/15', '07:30', '東方球場', '16', '每人', '2200']) {
     svc.continueFlow({
       groupId: G,
       executorLineUserId: userId,
@@ -39,7 +43,7 @@ function walkToConfirm(svc: EventService, userId = HOST): void {
   }
 }
 
-describe('EventService（D-004）', () => {
+describe('EventService（D-004 / D-005）', () => {
   let t: TestDb;
   beforeEach(() => {
     t = createTestDb();
@@ -59,6 +63,7 @@ describe('EventService（D-004）', () => {
       location: '東方球場',
       capacity: 16,
       price: 2200,
+      priceMode: 'per_person',
     });
     expect(r1.kind).toBe('awaiting_confirm');
     expect(t.conversations.get(HOST)?.state).toBe('awaiting_confirm');
@@ -73,6 +78,7 @@ describe('EventService（D-004）', () => {
     expect(r2.event.location).toBe('東方球場');
     expect(r2.event.capacity).toBe(16);
     expect(r2.event.price_per_person).toBe(2200);
+    expect(r2.event.price_mode).toBe('per_person');
     expect(t.conversations.get(HOST)).toBeUndefined(); // 流程清除
   });
 
@@ -86,23 +92,25 @@ describe('EventService（D-004）', () => {
       ['2026/08/15', 's1', 'awaiting_time'],
       ['07:30', 's2', 'awaiting_location'],
       ['東方球場', 's3', 'awaiting_capacity'],
-      ['16', 's4', 'awaiting_price'],
+      ['16', 's4', 'awaiting_price_mode'],
+      ['每人', 's5', 'awaiting_price'],
     ];
     for (const [text, mid, next] of seq) {
       const r = svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: mid, text, hostDisplayName: '主辦人' });
       expect(r.kind).toBe('advanced');
       if (r.kind === 'advanced') expect(r.state).toBe(next);
     }
-    const last = svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's5', text: '2200', hostDisplayName: '主辦人' });
+    const last = svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's6', text: '2200', hostDisplayName: '主辦人' });
     expect(last.kind).toBe('awaiting_confirm');
 
-    const done = svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's6', text: '確認', hostDisplayName: '主辦人' });
+    const done = svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's7', text: '確認', hostDisplayName: '主辦人' });
     expect(done.kind).toBe('created');
     if (done.kind !== 'created') return;
     expect(done.event.event_date).toBe('2026-08-15');
     expect(done.event.location).toBe('東方球場');
     expect(done.event.capacity).toBe(16);
     expect(done.event.price_per_person).toBe(2200);
+    expect(done.event.price_mode).toBe('per_person');
   });
 
   it('[D-004 AC-4] 逐步欄位驗證錯 → field_error 停留、payload 不含該欄；修正後前進', () => {
@@ -184,7 +192,7 @@ describe('EventService（D-004）', () => {
     if (created.kind !== 'created') return;
     const eventId = created.event.id;
 
-    // 塞入 registrations：3 confirmed，取消 1（soft-delete）。
+    // D-005：confirm 已自動登記主辦 1 列（seq=1）。再塞 3 confirmed member，取消 1（soft-delete）。
     const member = t.users.upsert('U-m', '成員');
     t.registrations.runImmediate(() => {
       const slots = t.registrations.insertSlots(
@@ -194,15 +202,16 @@ describe('EventService（D-004）', () => {
       t.registrations.cancelByIds([slots[0]!.id], member.id); // soft-delete 1 列
       return null;
     });
+    // 主辦 1 + 成員 3 = 4 列（含被 soft-delete 者，實體列仍在）。
     const totalBefore = (t.db.prepare('SELECT COUNT(*) AS n FROM registrations WHERE event_id = ?').get(eventId) as { n: number }).n;
-    expect(totalBefore).toBe(3);
+    expect(totalBefore).toBe(4);
 
     const cancel = svc.cancelEvent({ groupId: G, executorLineUserId: HOST, messageId: 'z1' });
     expect(cancel.kind).toBe('ok');
     if (cancel.kind === 'ok') expect(cancel.event.status).toBe('cancelled');
     // registrations 列數不變（無 DELETE，G10）；稽核欄保留。
     const totalAfter = (t.db.prepare('SELECT COUNT(*) AS n FROM registrations WHERE event_id = ?').get(eventId) as { n: number }).n;
-    expect(totalAfter).toBe(3);
+    expect(totalAfter).toBe(4);
     // 群組 active 集合清空 → 可再開團
     expect(t.events.findActiveByGroup(G)).toBeUndefined();
 
@@ -219,7 +228,7 @@ describe('EventService（D-004）', () => {
     const svc = makeSvc(t, [HOST]); // 白名單只有 HOST
     const B = 'U-bad';
     expect(svc.startCreation({ groupId: G, executorLineUserId: B, messageId: 'b1' }).kind).toBe('not_authorized');
-    expect(svc.handleOneline({ groupId: G, executorLineUserId: B, messageId: 'b2', date: '2026-08-15', time: '07:30', location: 'X', capacity: 4, price: 0 }).kind).toBe('not_authorized');
+    expect(svc.handleOneline({ groupId: G, executorLineUserId: B, messageId: 'b2', date: '2026-08-15', time: '07:30', location: 'X', capacity: 4, price: 0, priceMode: 'per_person' }).kind).toBe('not_authorized');
     expect(svc.closeEvent({ groupId: G, executorLineUserId: B, messageId: 'b3' }).kind).toBe('not_authorized');
     expect(svc.cancelEvent({ groupId: G, executorLineUserId: B, messageId: 'b4' }).kind).toBe('not_authorized');
     // 零副作用：無 conversation、無 event、messageId 未 mark。
@@ -235,7 +244,7 @@ describe('EventService（D-004）', () => {
 
     const start = svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'r1' });
     expect(start.kind).toBe('already_active');
-    const oneline = svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r2', date: '2026-09-01', time: '08:00', location: 'Y', capacity: 8, price: 0 });
+    const oneline = svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r2', date: '2026-09-01', time: '08:00', location: 'Y', capacity: 8, price: 0, priceMode: 'per_person' });
     expect(oneline.kind).toBe('already_active');
     expect(t.conversations.get(HOST)).toBeUndefined(); // 不寫 conversation
     expect(t.processed.has('r1')).toBe(false);
@@ -253,7 +262,7 @@ describe('EventService（D-004）', () => {
       lineUserId: HOST,
       groupId: G,
       state: 'awaiting_confirm',
-      payload: JSON.stringify({ date: '2026-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200 }),
+      payload: JSON.stringify({ date: '2026-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person' }),
     });
     // 先有一場 open（佔用 ux_events_active_group）。
     const other = t.users.upsert('U-other', '別人');
@@ -276,7 +285,7 @@ describe('EventService（D-004）', () => {
       lineUserId: HOST,
       groupId: G,
       state: 'awaiting_confirm',
-      payload: JSON.stringify({ date: '2026-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200 }),
+      payload: JSON.stringify({ date: '2026-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person' }),
     });
     const boom = Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR' });
     const spy = vi.spyOn(t.events, 'create').mockImplementation(() => {

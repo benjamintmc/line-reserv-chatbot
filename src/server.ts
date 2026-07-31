@@ -33,9 +33,11 @@ export function buildHandler(): WebhookHandler {
   const runInTransaction = createTransactionRunner(db);
   const service = new RegistrationService({ events, users, registrations, processed });
   // 開團 domain：注入 repos、tx runner、以 config.adminUserIds 為 host 白名單（G1；OP-1）。
+  // D-005 §3：注入 registrations 供主辦自動登記（confirm）與關閉重查正取數（closeEvent）。
   const eventService = new EventService({
     events,
     users,
+    registrations,
     conversations,
     processed,
     runInTransaction,

@@ -1,6 +1,6 @@
 // src/webhook/handler.ts
 //
-// D-003 §6 / D-004 §9：webhook 接線。從 LINE WebhookEvent 抽 groupId/userId/messageId/text →
+// D-003 §6 / D-004 §9 / D-005 §9：webhook 接線。從 LINE WebhookEvent 抽 groupId/userId/messageId/text →
 // **先查 conversation_states 攔截進行中開團流程（D-004 §3.3，per-user 隔離）** →
 // 否則 parseCommand → 依 type 窮舉分派 → 取名（getGroupMemberProfile）→ 呼叫 service →
 // 呼叫 formatter → 組出 messagingApi.Message[]（含 mention）。
@@ -279,7 +279,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'already_closed':
         return [toLineMessage(formatAlreadyClosed())]; // (J)
       case 'ok':
-        return [toLineMessage(formatClosed(result.event))]; // (E)
+        // D-005 §4：settledPerPerson 為結算唯一真相來源（split 才有值），confirmedCount 供顯示 K。
+        return [
+          toLineMessage(formatClosed(result.event, result.settledPerPerson, result.confirmedCount)),
+        ]; // (E)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -309,7 +312,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'not_authorized':
         return [toLineMessage(formatNotAuthorized())]; // (H)
       case 'format_help':
-        return [toLineMessage(formatOnelineFormatHelp())]; // (K)
+        return [toLineMessage(formatOnelineFormatHelp())]; // (K′)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -383,6 +386,8 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           location: cmd.location,
           capacity: cmd.capacity,
           price: cmd.price,
+          priceMode: cmd.priceMode,
+          venueFee: cmd.venueFee,
         });
         return renderCreateEntry(result);
       }
@@ -429,7 +434,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         // M4 我的ID → 仍 no-op。
         return [];
       case 'invalid': {
-        // create_event 類 → 授權後格式提示 (K)／非白名單 (H)；signup/cancel 類 → 靜默（D-003 既定）。
+        // create_event 類 → 授權後格式提示 (K′)／非白名單 (H)；signup/cancel 類 → 靜默（D-003 既定）。
         if (cmd.command === 'create_event') {
           const result = deps.eventService.handleInvalidOneline({ executorLineUserId: userId });
           return renderInvalidOneline(result);

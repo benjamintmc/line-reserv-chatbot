@@ -36,6 +36,7 @@ function makeHandler(t: TestDb, hostUserIds: string[] = [HOST]): WebhookHandler 
   const eventService = new EventService({
     events: t.events,
     users: t.users,
+    registrations: t.registrations,
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
@@ -66,7 +67,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     t.cleanup();
   });
 
-  it('[D-004 AC-2] 白名單 host「開團 缺欄位」→ 格式提示 (K)、不寫 conversation、不 INSERT', async () => {
+  it('[D-004 AC-2] 白名單 host「開團 缺欄位」→ 格式提示 (K′)、不寫 conversation、不 INSERT', async () => {
     const handler = makeHandler(t);
     const out = await handler.handleEvent(groupTextEvent('開團 只有一個參數', { messageId: 'm1' }));
     expect(textOf(out)).toContain('格式：開團');
@@ -95,13 +96,13 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(t.conversations.get(HOST)?.state).toBe('awaiting_date');
     expect(JSON.parse(t.conversations.get(HOST)!.payload ?? '{}').date).toBeUndefined();
 
-    // host 下一則才是 date 答案 → 前進。
+    // host 下一則才是 date 答案 → 前進（D-005 中性化：提問為「請輸入時間」）。
     const dateOut = await handler.handleEvent(groupTextEvent('2026/08/15', { userId: HOST, messageId: 'h1' }));
-    expect(textOf(dateOut)).toContain('請輸入開球時間');
+    expect(textOf(dateOut)).toContain('請輸入時間');
     expect(t.conversations.get(HOST)?.state).toBe('awaiting_time');
   });
 
-  it('[D-004 AC-18] 開團（一行式→確認→open）後，成員 +2 可報名（銜接 M2）', async () => {
+  it('[D-004 AC-18 / D-005 AC-3] 開團（一行式→確認→open）後主辦佔第 1 位，成員 +2 可報名（3/16）', async () => {
     const handler = makeHandler(t);
     // 一行式 → 確認摘要 (B)。
     const summary = await handler.handleEvent(
@@ -113,11 +114,13 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(textOf(announce)).toContain('開團成功');
     const event = t.events.findActiveByGroup(G);
     expect(event?.status).toBe('open');
+    // D-005 §3：主辦自動登記為第 1 正取。
+    expect(t.registrations.countConfirmed(event!.id)).toBe(1);
 
-    // 成員 +2 → D-003 signup 正常。
+    // 成員 +2 → D-003 signup 正常（主辦 1 + 成員 2 = 3）。
     const signup = await handler.handleEvent(groupTextEvent('+2', { userId: 'U-m', messageId: 'o3' }));
-    expect(textOf(signup)).toContain('報名名單（2/16）');
-    expect(t.registrations.countConfirmed(event!.id)).toBe(2);
+    expect(textOf(signup)).toContain('報名名單（3/16）');
+    expect(t.registrations.countConfirmed(event!.id)).toBe(3);
   });
 
   it('[D-004 AC-16] 無流程時 confirm/abort 經 handler → 空陣列', async () => {

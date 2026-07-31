@@ -1,20 +1,25 @@
 // src/domain/event-service.ts
 //
-// D-004 §1–§6：開團 domain。組合 D-001 repository 原語 + create-flow 純邏輯，
+// D-004 §1–§6 / D-005 §3–§4：開團 domain。組合 D-001 repository 原語 + create-flow 純邏輯，
 // 完成 host 授權（注入白名單，G1）、狀態轉移合法性（G2）、同群一場 active（G3）、
 // 交易 + 去重（G4）、host_user_id=建立者（G8）、取消活動不刪 registrations（G10）。
+//
+// D-005：`確認` 建立 open event 後於同交易插入主辦第 1 正取（§3、G3 走既有 insertSlot）；
+// `關閉報名`(split) 於同交易計算 ceil 最終攤額並持久化 settled_per_person（§4、OP-3、G1）。
 //
 // 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測（G5）。
 // 嚴禁 any（G6）；不得出現 SQL 字串或直接存取 db（G5）——一律經 repository / tx runner。
 // 授權只認注入的 hostUserIds、不讀 process.env（G1）。
 
 import { parseCommand } from '../commands';
-import type { EventRow } from '../db/schema';
+import type { EventRow, PriceMode } from '../db/schema';
 import type { EventRepository } from '../db/repositories/event-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
+import type { RegistrationRepository } from '../db/repositories/registration-repository';
 import type { ConversationRepository } from '../db/repositories/conversation-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
 import type { TransactionRunner } from '../db/tx';
+import { perPersonAmount } from './billing';
 import {
   applyAnswer,
   FIRST_STATE,
@@ -60,13 +65,16 @@ export type ConfirmResult =
 /** `取消`（abort）結果。 */
 export type AbortResult = { kind: 'noop' } | { kind: 'duplicate' } | { kind: 'aborted' };
 
-/** `關閉報名`（close_event）結果。 */
+/**
+ * `關閉報名`（close_event）結果。
+ * D-005 §4：ok 帶 confirmedCount（凍結正取數）與 settledPerPerson（split 最終攤額；per_person 為 null）。
+ */
 export type CloseResult =
   | { kind: 'not_authorized' }
   | { kind: 'duplicate' }
   | { kind: 'no_active' }
   | { kind: 'already_closed' }
-  | { kind: 'ok'; event: EventRow };
+  | { kind: 'ok'; event: EventRow; confirmedCount: number; settledPerPerson: number | null };
 
 /** `取消活動`（cancel_event）結果。 */
 export type CancelResult =
@@ -91,7 +99,12 @@ export interface OnelineInput {
   time: string;
   location: string;
   capacity: number;
+  /** per_person 每人金額；split_venue 時為 0（D-005 §6.1）。 */
   price: number;
+  /** 計費模式（D-005 §6.1）。 */
+  priceMode: PriceMode;
+  /** 場地費總額（僅 split_venue 帶值，>0）。 */
+  venueFee?: number;
 }
 
 export interface InvalidOnelineInput {
@@ -128,6 +141,8 @@ export interface LifecycleInput {
 export interface EventServiceDeps {
   events: EventRepository;
   users: UserRepository;
+  /** D-005 §3：主辦自動登記走既有 insertSlot（不繞過，G3）；§4 關閉重查正取數。 */
+  registrations: RegistrationRepository;
   conversations: ConversationRepository;
   processed: ProcessedEventRepository;
   runInTransaction: TransactionRunner;
@@ -156,6 +171,7 @@ function isActiveGroupUniqueViolation(err: unknown): boolean {
 export class EventService {
   private readonly events: EventRepository;
   private readonly users: UserRepository;
+  private readonly registrations: RegistrationRepository;
   private readonly conversations: ConversationRepository;
   private readonly processed: ProcessedEventRepository;
   private readonly tx: TransactionRunner;
@@ -165,6 +181,7 @@ export class EventService {
   constructor(deps: EventServiceDeps) {
     this.events = deps.events;
     this.users = deps.users;
+    this.registrations = deps.registrations;
     this.conversations = deps.conversations;
     this.processed = deps.processed;
     this.tx = deps.runInTransaction;
@@ -201,7 +218,7 @@ export class EventService {
     });
   }
 
-  // ── `開團 <欄位…>`（一行式入口，§2） ───────────────────────────────
+  // ── `開團 <欄位…>`（一行式入口，§2 / D-005 §6.1） ──────────────────
   handleOneline(input: OnelineInput): CreateEntryResult {
     if (!this.isAuthorized(input.executorLineUserId)) return { kind: 'not_authorized' };
 
@@ -214,6 +231,8 @@ export class EventService {
       location: input.location,
       capacity: input.capacity,
       price: input.price,
+      priceMode: input.priceMode,
+      ...(input.venueFee !== undefined ? { venueFee: input.venueFee } : {}),
     };
 
     return this.tx<CreateEntryResult>(() => {
@@ -296,7 +315,7 @@ export class EventService {
     });
   }
 
-  // ── `確認` 建立 open event（§4） ───────────────────────────────────
+  // ── `確認` 建立 open event + 主辦自動登記（§4 / D-005 §3） ───────────
   confirm(input: ConfirmInput): ConfirmResult {
     const conv = this.conversations.get(input.executorLineUserId);
     if (conv === undefined || conv.state !== 'awaiting_confirm') return { kind: 'noop' };
@@ -326,6 +345,8 @@ export class EventService {
           location: draft.location,
           capacity: draft.capacity,
           pricePerPerson: draft.price,
+          priceMode: draft.priceMode,
+          venueFee: draft.venueFee,
           status: 'open',
         });
       } catch (err) {
@@ -334,6 +355,18 @@ export class EventService {
         this.conversations.delete(input.executorLineUserId); // 清落敗者流程，不卡 awaiting_confirm（nit-2）
         return { kind: 'already_active' };
       }
+
+      // D-005 §3：主辦自動登記為第 1 正取（名單第 1 位；均攤分母天然 >=1）。
+      // 走既有 per-slot 交易原語 insertSlot（G3，不繞過；assertInTransaction 於本 DEFERRED
+      // 交易內 markProcessed 首寫已取 RESERVED 鎖，db.inTransaction===true 守門通過）。
+      // 空 event → seq=COALESCE(MAX(seq),0)+1=1；kind='self'、status='confirmed'、cancelled_at=NULL。
+      this.registrations.insertSlot({
+        eventId: event.id,
+        ownerUserId: host.id,
+        displayName: input.hostDisplayName,
+        kind: 'self',
+        status: 'confirmed',
+      });
 
       this.conversations.delete(input.executorLineUserId);
       return { kind: 'created', event };
@@ -352,7 +385,7 @@ export class EventService {
     });
   }
 
-  // ── `關閉報名`（close_event，§5.2） ────────────────────────────────
+  // ── `關閉報名`（close_event，§5.2 / D-005 §4） ─────────────────────
   closeEvent(input: LifecycleInput): CloseResult {
     if (!this.isAuthorized(input.executorLineUserId)) return { kind: 'not_authorized' };
 
@@ -364,7 +397,23 @@ export class EventService {
       if (active.status !== 'open') return { kind: 'no_active' }; // draft 未物化，其餘非法
       // G2：open → closed（讀當前 status 判定合法後才寫）。
       this.events.updateStatus(active.id, 'closed');
-      return { kind: 'ok', event: { ...active, status: 'closed' } };
+
+      // D-005 §4：凍結正取數（有效正取，G6 過濾），split 計算並持久化最終攤額。
+      const confirmedCount = this.registrations.countConfirmed(active.id);
+      const closed: EventRow = { ...active, status: 'closed' };
+      if (active.price_mode === 'split_venue') {
+        // G1：ceil + 分母 max(,1)（perPersonAmount 已保底）。同交易寫 settled_per_person（OP-3、architect N2）。
+        const settled = perPersonAmount(closed, confirmedCount);
+        this.events.updateSettledPerPerson(active.id, settled);
+        return {
+          kind: 'ok',
+          event: { ...closed, settled_per_person: settled },
+          confirmedCount,
+          settledPerPerson: settled,
+        };
+      }
+      // per_person：不寫 settled_per_person（維持 NULL），不附結算列（AC-8）。
+      return { kind: 'ok', event: closed, confirmedCount, settledPerPerson: null };
     });
   }
 

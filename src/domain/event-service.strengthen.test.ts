@@ -18,6 +18,7 @@ function makeSvc(t: TestDb, hostIds: string[] = [HOST]): EventService {
   return new EventService({
     events: t.events,
     users: t.users,
+    registrations: t.registrations,
     conversations: t.conversations,
     processed: t.processed,
     runInTransaction: createTransactionRunner(t.db),
@@ -37,6 +38,7 @@ function seedAwaitingConfirm(t: TestDb): void {
       location: '東方球場',
       capacity: 16,
       price: 2200,
+      priceMode: 'per_person',
     }),
   });
 }

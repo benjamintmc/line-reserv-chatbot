@@ -6,6 +6,7 @@
 //
 // D-004 OP-9/G7：一行式欄位驗證改為複用 commands/validators.ts（單一 source of truth，
 // 與逐步問答 create-flow 共用同一組規則）；本檔不再自持一套 date/time/capacity/price regex。
+// D-005 §6.1：第 5 欄（費用）改呼叫 validateFee，依前綴判定 per_person / split_venue。
 
 import type { InvalidCommandKind, ParsedCommand } from './types';
 import { MAX_COUNT } from './types';
@@ -17,7 +18,7 @@ import {
 import {
   validateCapacity,
   validateDate,
-  validatePrice,
+  validateFee,
   validateTime,
 } from './validators';
 
@@ -131,6 +132,7 @@ function parseCountCommand(
  * §4 一行式開團。`args` 為丟棄首 token（開團/新活動）後的剩餘 token（皆已正規化）。
  * `raw` 為原始輸入，供 invalid 帶回。
  * 欄位驗證複用 commands/validators.ts（單一 source of truth，D-004 G7/AC-22）。
+ * D-005 §6.1：第 5 欄改呼叫 validateFee，據 mode 填 priceMode/price/venueFee。
  */
 function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
   const command: InvalidCommandKind = 'create_event';
@@ -139,7 +141,7 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     return { type: 'invalid', command, reason: 'create_wrong_arity', raw };
   }
 
-  const [dateTok, timeTok, locationTok, capacityTok, priceTok] = args as [
+  const [dateTok, timeTok, locationTok, capacityTok, feeTok] = args as [
     string,
     string,
     string,
@@ -147,7 +149,7 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     string,
   ];
 
-  // 檢查順序：date → time → capacity → price，多欄同錯回第一個（AC-24）。
+  // 檢查順序：date → time → capacity → fee，多欄同錯回第一個（AC-24）。
   const date = validateDate(dateTok);
   if (!date.ok) {
     return { type: 'invalid', command, reason: date.reason, raw };
@@ -163,9 +165,22 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     return { type: 'invalid', command, reason: capacity.reason, raw };
   }
 
-  const price = validatePrice(priceTok);
-  if (!price.ok) {
-    return { type: 'invalid', command, reason: price.reason, raw };
+  const fee = validateFee(feeTok);
+  if (!fee.ok) {
+    return { type: 'invalid', command, reason: fee.reason, raw };
+  }
+
+  if (fee.value.mode === 'split_venue') {
+    return {
+      type: 'create_event_oneline',
+      date: date.value,
+      time: time.value,
+      location: locationTok,
+      capacity: capacity.value,
+      price: 0,
+      priceMode: 'split_venue',
+      venueFee: fee.value.amount,
+    };
   }
 
   return {
@@ -174,6 +189,7 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     time: time.value,
     location: locationTok,
     capacity: capacity.value,
-    price: price.value,
+    price: fee.value.amount,
+    priceMode: 'per_person',
   };
 }
