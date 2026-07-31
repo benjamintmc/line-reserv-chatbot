@@ -24,7 +24,7 @@
 | D-002 | 指令解析 command parser（+N/-N/名單/開團；全形/上限/邊界） | backend-engineer | APPROVED（2026-07-23，reviewer 通過 + errata + 使用者核可） |
 | D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版/webhook 接線） | backend-engineer | **APPROVED（2026-07-31）** — architect-reviewer 通過 + nit-2/5 採納 + 使用者最終核可（OP-1~4 已裁決；風險 R1） |
 | D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 2 blocker 已修）、OP-1~9 定案、使用者核可 |
-| D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | 撰寫中（2026-07-31 派工；R2，含 schema migration + 金額語意；決策已鎖定，少數微 OP；完成後雙審 + 使用者 APPROVED） |
+| D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | IN_DISCUSSION（2026-07-31）— DRAFT 完成、**OP-1~4 定案**（主辦可移除、關鍵字「場地費」、最終攤額存 settled_per_person 併入 0002、一致性 MVP 應用層）。R2 雙審中；architect 待裁定 D-001 schema 擴充/OP-4 DB CHECK/DEFERRED 插首列 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
