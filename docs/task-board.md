@@ -23,8 +23,8 @@
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
 |---|---|---|---|---|---|
 | ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | DRAFT 完成 |
-| D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | **R2 雙審通過，待使用者最終 APPROVED**（OP-1~7 定案）— **B1 路線 A**（交易 runner 注入 client-bound `TxRepos` 束、拒斥 ALS）、**B2 int4 IDENTITY**（pg 天然回 number）兩 blocker 已封閉；architect-reviewer 逐一核對閉包 repo 全落 `TxRepos` 五束、nextSeq=COALESCE(MAX(seq),0)+1、D-001 §0 偏離走 errata 不私改。design + architect reviewer 皆 APPROVED、零新 blocker。2 則 nit（N-new-1 交易外 user upsert 措辭、N-new-2 pool-bound repo 寫方法硬化）併 T-012 待辦 |
-| T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007 | R2 | backend-engineer | BLOCKED（等 D-007 APPROVED）|
+| D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可。解鎖 T-012 |
+| T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007（APPROVED） | R2 | backend-engineer | **實作中**（2026-08-01 派工）|
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
@@ -35,6 +35,7 @@
 | D-004 | 開團流程（開團一行式/逐步問答、event 狀態機、host 白名單授權、確認/關閉/取消活動、conversation_states） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 2 blocker 已修）、OP-1~9 定案、使用者核可 |
 | D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 條件式零 blocker + design 3 blocker 已修）、OP-1~4 定案、使用者核可。D-001 errata 已補 |
 | D-006 | 授權簡化（開團全開 + 關閉/取消限建立者 host_user_id 或 super-admin；作廢管理人認領方案） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 3 blocker 已修）、OP 採建議、使用者核可 |
+| D-007 | PG 移植 + serverless 部署（repository 換 PG、FOR UPDATE、pooler、先處理再回200、migration PG 方言、Dockerfile） | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |

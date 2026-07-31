@@ -1,11 +1,11 @@
 # D-007: Postgres 移植 + serverless（Cloud Run + Neon）部署設計
 
-狀態：DRAFT
+狀態：APPROVED（2026-08-01，R2 雙審通過 + B1/B2 blocker 封閉 + 使用者最終核可；解鎖 T-012）
 
 - 撰寫者：architect
 - 風險：R2（資料 migration + 併發語意變更 + serverless 時序；強制雙 reviewer + e2e，Guardrails ≥3）
 - 關聯：ADR-004（決策）、`docs/deployment.md` §5（目標架構草案，本文件之主要輸入）/§6（.sql 複製 bug）、D-001（資料模型、§0 PG 型別對映總表、§8 migration、G2 併發）、ADR-002（防超賣併發）、ADR-003（better-sqlite3 版本）、D-003（runImmediate 防超賣）、D-004（runInTransaction DEFERRED）、D-005（migration 0002 計費三欄）、D-006（授權，無 group_admins → 無 0003）
-- 對應任務：T-012（BLOCKED，待本文件 APPROVED 才動工）
+- 對應任務：T-012（已解鎖，2026-08-01 起動工）
 
 > 本文件是**設計文件、不寫實作程式碼**。文中少量程式片段僅用於說明「介面形狀 / SQL 語意」，非交付碼。
 > 落實把 `docs/deployment.md` §5 的移植計畫變成可執行、可驗收的設計。
