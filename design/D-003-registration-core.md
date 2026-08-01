@@ -128,8 +128,8 @@ type ListResult =
 
 **交易內（`runImmediate`）**：
 1. `processedRepo.markProcessed(messageId)` → `false` → 中止回 `duplicate`。
-2. `cancelled = registrationRepo.cancelByIds(toCancel.map(r=>r.id), executor.id)`（soft-delete：設 `cancelled_at` / `cancelled_by_user_id = executor.id`；主辦人代取消時稽核欄記主辦人，對接 D-001 AC-12；G3 禁硬 DELETE）。
-3. `freedConfirmed = toCancel.filter(r => r.status === 'confirmed').length`（本次釋出的正取名額數；不分自取消或主辦代取消）。
+2. `{ cancelled, freedConfirmed } = registrationRepo.cancelByIds(toCancel.map(r=>r.id), executor.id)`（soft-delete：設 `cancelled_at` / `cancelled_by_user_id = executor.id`；主辦人代取消時稽核欄記主辦人，對接 D-001 AC-12；G3 禁硬 DELETE）。
+3. `freedConfirmed`＝**本次鎖內實際取消且原 `status='confirmed'` 的列數**（由 `cancelByIds` 的 `RETURNING status` 於同一 FOR UPDATE 交易內得出；本次實際釋出的正取名額數，不分自取消或主辦代取消）。**不得**以交易外快照 `toCancel.filter(...)` 推導（B1 errata，見文末「已定案／errata」）。
 4. **FIFO 遞補（定案 #2）**：若 `freedConfirmed > 0`：
    - `picks = registrationRepo.pickWaitlistForPromotion(event.id, freedConfirmed)`（有效候補中最小 seq 起，至多 `freedConfirmed` 列；已取消列自動排除）。
    - `const promotedN = registrationRepo.promoteByIds(picks.map(r=>r.id))`（waitlist→confirmed，seq 不變；G8）。
@@ -361,6 +361,7 @@ type ListResult =
 - [ ] **AC-17（主辦人代取消他人代報名額）**：主辦人（`executor.id === event.host_user_id`）`-1 陳大哥`，其中「陳大哥」由**成員 A（A.id ≠ host）** 代報 → 以 `findActiveProxyByName` 跨 owner 定位該列 → soft-delete，`cancelled_by_user_id = 主辦人`；若該列為 `confirmed`，釋出名額後**觸發 FIFO 遞補**（與自取消一致，最小 seq 有效候補遞補）。（驗證：unit test / OP-2 裁決、定案 #4、G4、G8）
 - [ ] **AC-18（主辦代取消多筆同名歧義）**：不同 owner 各代報一個「陳大哥」（共 2 列，seq 不同），主辦人 `-1 陳大哥` → 依「先候補後正取、組內高 seq 先」取 1 列（即較新者）soft-delete；另一「陳大哥」保留。（驗證：unit test / §3 多筆同名定案）
 - [ ] **AC-19（群組取名，非 getProfile）**：新成員（未加 bot 好友）`+1` → handler 以 `getGroupMemberProfile(groupId, userId)` 取得其群組顯示名並存為快照（非 `getProfile` 而落入「使用者」佔位）；取名失敗時 fallback 既有 `users.display_name`→「使用者」。（驗證：unit test，handler + mock client / NFR-4、nit-2、§7）
+- [ ] **AC-20（cancel 遞補不超賣：鎖內釋出數）**：capacity=2、confirmed=[r1,r2]、waitlist=[w1,w2]，兩則不同 messageId 的 cancel 於交易外皆定位到同一正取列 r2，各自 FOR UPDATE 交易（真並行）→ 序列化後第二者 `cancelByIds` 實取 0、`freedConfirmed=0` 不遞補；最終有效正取數 ≤ capacity（=2，非 3），只實際釋出的 1 個正取對應遞補 1 筆候補。（驗證：PG 真並行整合測試，d007-postgres / B1 errata、G8、ADR-002）
 
 ---
 
@@ -374,6 +375,7 @@ type ListResult =
 - **主辦人身分認定（最小化）**：M2 主辦人 = 該 open 活動的 `event.host_user_id`；不讀 env 白名單（env 白名單決定「誰能開團」，屬 M3/M4）。
 - **群組取名用 `getGroupMemberProfile`（nit-2）**：群組情境一律以 `getGroupMemberProfile(groupId, userId)` 取顯示名快照，非 `getProfile`——後者對未加 bot 好友的成員 404，會使新使用者落入佔位、劣化 AC-1／NFR-4。fallback：`users.display_name`→「使用者」佔位，不阻斷報名。
 - **遞補列數防禦性斷言（nit-5）**：採納。§3 交易內以 `promotedN === picks.length` 斷言（同步交易內恆相等）；不等則記異常並以回讀為準，避免通知/資料不一致。
+- **B1 errata（cancel 遞補超賣競態，2026-08-01，T-012）**：cancel 的 `freedConfirmed` 必須於 FOR UPDATE 交易內由 `cancelByIds` 之 `RETURNING status`（本次實際取消的 confirmed 列數）得出，**非**交易外快照 `toCancel.filter(r=>r.status==='confirmed').length`。起因：D-007 sync→async 移植（T-012）在「交易外定位 candidates／toCancel」與「交易內 runImmediate」之間引入 await 讓點；當同一列被兩則不同 messageId 的 cancel 鎖定（同人雙擊、或主辦跨 owner 代取消 + owner 自取消同名）時，`cancelByIds` 的 `AND cancelled_at IS NULL` 守衛使第二者實取 0，但陳舊快照仍計 `freedConfirmed=1` → 多遞補 1 個候補 → 有效正取數 > capacity（超賣，破 G8 / ADR-002）。SQLite 同步版無此窗（定位＋runImmediate 單執行緒原子），故 T-006 nit-2（交易外快照）當時安全；async 化後激活，本次修正。回歸測試：`[D-003 AC-20]`（PG 真並行）。
 
 ### 開放問題裁決留痕（2026-07-23，使用者裁決）
 - **OP-1（風險等級）→ R1（標準）**：併發防超賣已於 T-004 資料層測試覆蓋，本文件為組合層。（原 backend 建議 R2，使用者定 R1；Guardrails 保留 11 條無妨。）
@@ -405,3 +407,4 @@ type ListResult =
 | 2026-07-31 | 使用者最終 APPROVED | D-003 狀態 → APPROVED，T-006 派工實作 |
 | 2026-07-31 | T-006 實作後 architect-reviewer 複審 | 建議 APPROVED（零 blocker，G1~G11 逐條 PASS）；裁決 (A) LINE mention 改 TextMessageV2+substitution 可接受（已補 §4 errata，不需 ADR）、(B) ownerDisplayName→subjectDisplayName + ListResult 增 duplicate 語意等價可接受（已補 §1.1 errata）；nit-2（freedConfirmed 取交易外快照，MVP 單實例安全，多實例才需改）、nit-3（no_open_event 時 list 有 mark、signup/cancel 未 mark 之行為不對稱）、nit-4（display_name 含字面 `{`/`}` 極低風險）記 task-board 備查 |
 | 2026-07-31 | T-006 unit-tester 獨立覆核 | 124 tests 全綠、AC 58/58、未揪出實作 bug；補 11 個真覆蓋測試（整批候補分支、AC-2 大批併發、AC-5 組內高 seq、AC-11 cancel 冪等、AC-14 多筆遞補 index 位移等）。提醒 better-sqlite3 首次冷跑一次性 flake（環境層，記 Backlog） |
+| 2026-08-01 | T-012 architect-reviewer R2 blocker B1（cancel 遞補超賣競態） | 已修：freedConfirmed 改由 `cancelByIds` 之 RETURNING（鎖內實際取消 confirmed 數）得出，取代交易外快照；新增 `[D-003 AC-20]` 回歸（PG 真並行）；§3 step 2/3 與「已定案／errata」補記。待 architect-reviewer 複審封閉 |

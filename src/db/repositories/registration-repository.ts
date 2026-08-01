@@ -13,6 +13,19 @@ export interface InsertSlotInput {
 }
 
 /**
+ * `cancelByIds` 回傳（D-003 B1 修：鎖內真值）。
+ * 兩個計數皆由**本次 UPDATE 實際影響列（`RETURNING`）**得出，故 `freedConfirmed`
+ * 為「本次實際釋出的正取名額數」——並發下（同列被兩 cancel 鎖定）第二者實取 0、`freedConfirmed=0`，
+ * 不再誤用交易外陳舊快照多遞補（防超賣 G8）。
+ */
+export interface CancelByIdsResult {
+  /** 實際 soft-delete 的列數（= 受影響列數；重複取消已取消列時為 0）。 */
+  cancelled: number;
+  /** 其中原 `status='confirmed'` 者的列數（= 本次實際釋出的正取名額數，驅動 FIFO 遞補）。 */
+  freedConfirmed: number;
+}
+
+/**
  * registrations 唯讀介面（N-new-2 硬化，G1 核心）：pool-bound 依賴只曝**讀**方法，
  * **寫**方法（insertSlot/insertSlots/cancelByIds/promoteByIds）只存在於 client-bound
  * `TxRepos.registrations`（交易內、同一 checked-out client）。
@@ -198,18 +211,28 @@ export class RegistrationRepository implements RegistrationReader {
 
   /**
    * soft-delete 標記取消（G9，禁止 DELETE）：設 cancelled_at 與 cancelled_by_user_id。
-   * 僅影響尚未取消（cancelled_at IS NULL）的列；回傳實際取消列數。
+   * 僅影響尚未取消（cancelled_at IS NULL）的列。
+   *
+   * 回傳（D-003 B1 修）：以 `RETURNING status` 一趟取回**本次實際受影響列**的 status，
+   * 由此得 `cancelled`（實際取消列數）與 `freedConfirmed`（其中原 confirmed 者＝本次實際釋出正取數）。
+   * 呼叫端必以此鎖內真值驅動遞補，**不得**用交易外快照推 freedConfirmed（並發下同列被兩 cancel
+   * 鎖定時，第二者實取 0、freedConfirmed=0，避免多遞補致超賣，G8）。
    */
-  async cancelByIds(ids: number[], cancelledByUserId: number): Promise<number> {
-    if (ids.length === 0) return 0;
+  async cancelByIds(ids: number[], cancelledByUserId: number): Promise<CancelByIdsResult> {
+    if (ids.length === 0) return { cancelled: 0, freedConfirmed: 0 };
     const now = nowIso();
-    const res = await this.q.query(
+    const res = await this.q.query<{ status: RegistrationStatus }>(
       `UPDATE registrations
        SET cancelled_at = $1, cancelled_by_user_id = $2
-       WHERE id = ANY($3::int[]) AND cancelled_at IS NULL`,
+       WHERE id = ANY($3::int[]) AND cancelled_at IS NULL
+       RETURNING status`,
       [now, cancelledByUserId, ids],
     );
-    return res.rowCount ?? 0;
+    // status 欄未被本 UPDATE 改動 → RETURNING 的 status 即該列取消前狀態；
+    // 僅計「本次實際取消」（RETURNING 只含受影響列）的 confirmed 數為 freedConfirmed。
+    const cancelled = res.rows.length;
+    const freedConfirmed = res.rows.filter((r) => r.status === 'confirmed').length;
+    return { cancelled, freedConfirmed };
   }
 
   /**

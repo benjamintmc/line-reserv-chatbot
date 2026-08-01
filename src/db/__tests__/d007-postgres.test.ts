@@ -238,4 +238,64 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
     expect(existsSync(join(ROOT, 'src', 'db', 'migrations', '0001_init.sql'))).toBe(true);
     expect(existsSync(join(ROOT, 'scripts', 'copy-migrations.mjs'))).toBe(true);
   });
+
+  it('[D-003 AC-20] cancel 遞補路徑：freedConfirmed 取鎖內實際取消數 → 並發同列 cancel 不超賣（回歸 B1）', async () => {
+    // 回歸 architect-reviewer R2 blocker B1（T-012 sync→async 激活的 cancel 遞補超賣競態）。
+    // 場景：capacity=2、confirmed=[r1,r2]（同 owner A 自報）、waitlist=[w1,w2]。
+    // 兩則不同 messageId 的 -1（如同人雙擊）於交易外皆定位到同一高 seq 正取列 r2（toCancel 快照皆 [r2]）；
+    // 兩交易各自 runImmediate（真兩 PoolClient、Promise.all），FOR UPDATE 序列化。
+    const { event } = await seedEvent(t, { capacity: 2, groupId: 'Gb1' });
+    const a = await t.users.upsert('U-a', 'A');
+    const confirmed = await t.runImmediate(event.id, (repos) =>
+      repos.registrations.insertSlots(
+        { eventId: event.id, ownerUserId: a.id, displayName: 'A', kind: 'self', status: 'confirmed' },
+        2,
+      ),
+    );
+    const w1 = await t.users.upsert('U-w1', 'W1');
+    await t.runImmediate(event.id, (repos) =>
+      repos.registrations.insertSlots(
+        { eventId: event.id, ownerUserId: w1.id, displayName: 'W1', kind: 'self', status: 'waitlist' },
+        1,
+      ),
+    );
+    const w2 = await t.users.upsert('U-w2', 'W2');
+    await t.runImmediate(event.id, (repos) =>
+      repos.registrations.insertSlots(
+        { eventId: event.id, ownerUserId: w2.id, displayName: 'W2', kind: 'self', status: 'waitlist' },
+        1,
+      ),
+    );
+    expect(await t.registrations.countConfirmed(event.id)).toBe(2);
+    expect(await t.registrations.listWaitlist(event.id)).toHaveLength(2);
+
+    // 交易外定位（模擬 service）：兩並行 cancel 於交易前皆讀到 r2 為有效正取 → 共享同一「取消前快照」。
+    const r2 = confirmed[1]!; // 高 seq 正取列（-N 先退高 seq）
+    const toCancel = [r2];
+    // 反例錨點：修前以交易外快照計 freedConfirmed，兩者皆得 1（r2 快照 status='confirmed'）→ 多遞補致 confirmed=3 超賣。
+    expect(toCancel.filter((r) => r.status === 'confirmed').length).toBe(1);
+
+    // 兩並行 cancel 交易對同一列 r2 各自 cancelByIds + 依「鎖內實際釋出正取數」遞補（B1 修法）。
+    const doCancel = (): Promise<number> =>
+      t.runImmediate(event.id, async (repos) => {
+        const { freedConfirmed } = await repos.registrations.cancelByIds(
+          toCancel.map((r) => r.id),
+          a.id,
+        );
+        if (freedConfirmed > 0) {
+          const picks = await repos.registrations.pickWaitlistForPromotion(event.id, freedConfirmed);
+          await repos.registrations.promoteByIds(picks.map((r) => r.id));
+        }
+        return freedConfirmed;
+      });
+    const freed = (await Promise.all([doCancel(), doCancel()])).sort((x, y) => x - y);
+
+    // 第二者 FOR UPDATE 阻塞至第一者 COMMIT → r2 已取消 → cancelByIds 實取 0 → freedConfirmed=0 → 不遞補。
+    expect(freed).toEqual([0, 1]); // 只一者實釋 1 個正取（非兩者皆 1）
+    const finalConfirmed = await t.registrations.countConfirmed(event.id);
+    expect(finalConfirmed).toBeLessThanOrEqual(event.capacity); // 不超賣（修前為 3 > 2）
+    expect(finalConfirmed).toBe(2); // r1 保留 + 遞補 1 筆候補
+    expect(await t.registrations.listWaitlist(event.id)).toHaveLength(1); // 只遞補 1 筆，另一候補仍在候補
+  });
+
 });

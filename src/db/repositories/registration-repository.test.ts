@@ -105,7 +105,7 @@ describe('RegistrationRepository', () => {
     const cancelled = await t.runImmediate(event.id, (repos) =>
       repos.registrations.cancelByIds(ids, member.id),
     );
-    expect(cancelled).toBe(2);
+    expect(cancelled.cancelled).toBe(2);
 
     // 列仍存在且標記取消。
     for (let i = 0; i < ids.length; i += 1) {
@@ -129,7 +129,7 @@ describe('RegistrationRepository', () => {
     const cancelled = await t.runImmediate(event.id, (repos) =>
       repos.registrations.cancelByIds([rows[0]!.id], member.id),
     );
-    expect(cancelled).toBe(1);
+    expect(cancelled.cancelled).toBe(1);
     expect((await t.registrations.getById(rows[0]!.id))!.cancelled_at).not.toBeNull();
     expect((await t.registrations.getById(rows[1]!.id))!.cancelled_at).toBeNull();
     expect((await t.registrations.getById(rows[2]!.id))!.cancelled_at).toBeNull();
@@ -151,7 +151,7 @@ describe('RegistrationRepository', () => {
     const second = await t.runImmediate(event.id, (repos) =>
       repos.registrations.cancelByIds([rows[0]!.id], host.id),
     );
-    expect(second).toBe(0); // 已取消，不再影響
+    expect(second.cancelled).toBe(0); // 已取消，不再影響
     const row = (await t.registrations.getById(rows[0]!.id))!;
     expect(row.cancelled_at).toBe(firstCancelledAt); // 未被覆寫
     expect(row.cancelled_by_user_id).toBe(member.id); // 執行者不被覆寫

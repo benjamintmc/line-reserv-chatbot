@@ -9,6 +9,11 @@
 // 閉包**內** this.<repo> 改用注入的 repos.<repo>（同一 client，G1）；閉包**外**唯讀查詢仍用 this.<repo>。
 // 商業分支/決策規則/AC 期望值零改。
 //
+// D-003 B1 修（T-012 sync→async 激活的 cancel 遞補超賣競態）：cancel 的 `freedConfirmed`
+// 一律由**鎖內實際取消的 confirmed 列數**（`cancelByIds` 之 RETURNING）得出，取代交易外快照
+// `toCancel.filter(...)`。SQLite 同步版無此窗（定位+runImmediate 單執行緒原子）；async 兩 await
+// 間插讓點後，同列被兩則不同 messageId 的 cancel 鎖定時，舊快照會令第二者多遞補 → 超賣（破 G8）。詳見 D-003 §3 errata。
+//
 // 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測。
 // 嚴禁 any（G11）；不得出現 SQL 字串或直接存取 db（G10）——一律經 repository 原語 / 交易 runner。
 
@@ -237,14 +242,16 @@ export class RegistrationService {
       if (!(await repos.processed.markProcessed(input.messageId))) {
         return { kind: 'duplicate' };
       }
-      const cancelled = await repos.registrations.cancelByIds(
+      // B1 修：freedConfirmed 取「鎖內實際取消的 confirmed 列數」（cancelByIds 之 RETURNING），
+      // 非交易外快照 toCancel.filter(...)。並發下同列被兩 cancel 鎖定時，第二者實取 0、freedConfirmed=0，
+      // 不多遞補 → 有效正取數永不超過 capacity（G8）。SQLite 同步版無此窗；async 讓點激活之。
+      const { cancelled, freedConfirmed } = await repos.registrations.cancelByIds(
         toCancel.map((r) => r.id),
         executor.id,
       );
-      const freedConfirmed = toCancel.filter((r) => r.status === 'confirmed').length;
       let promoted: RegistrationRow[] = [];
       if (freedConfirmed > 0) {
-        // G8：FIFO 遞補，數量 ≤ 本次釋出正取數。
+        // G8：FIFO 遞補，數量 ≤ 本次實際釋出正取數。
         const picks = await repos.registrations.pickWaitlistForPromotion(event.id, freedConfirmed);
         const promotedN = await repos.registrations.promoteByIds(picks.map((r) => r.id));
         if (promotedN !== picks.length) {
