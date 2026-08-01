@@ -2,7 +2,7 @@
 
 > 擁有者：orchestrator。這是跨 session、跨模型的共同記憶，每次派工前後必須更新。
 
-## 目前階段：M5 部署 = Cloud Run + Neon(PG)（使用者選 $0/月）。**T-012 PG 移植 DONE**（256 tests 綠、R2 全通過）、部署 runbook 就緒（`docs/deployment-runbook.md`）→ 使用者可依 runbook 部署。並行：D-008（單場自動釋放，決策#8）雙審修訂中 → T-014 實作排 T-012 後
+## 目前階段：M5 部署 = Cloud Run + Neon(PG)（$0/月）。**T-012 PG 移植 DONE**、**D-008 APPROVED**。使用者選「等 D-008（T-014）實作完一起部署」→ **T-014 實作中**（單場自動釋放 + migration 0003 + 套用預列 errata）→ 完成後依 `docs/deployment-runbook.md` 部署（多一步 0003 migrate）
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
@@ -25,8 +25,8 @@
 | ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | DRAFT 完成 |
 | D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可。解鎖 T-012 |
 | T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007（APPROVED） | R2 | backend-engineer | **DONE（2026-08-02）**。PG-only 移植完成：pg 驅動、路線A 交易 runner（client-bound TxRepos）、5 repo async、serverless 先處理再回200、migration PG 方言、Dockerfile、docker-compose 測試。**R2 全通過**：unit-tester PASS（AC-2/3/12 真驗+反例、補連線洩漏/多事件測試）、architect-reviewer PASS（G1~G7、B1 超賣競態修復後複審封閉）、design-reviewer N/A（零 user-facing 變更）。**256 tests 綠、build/lint 0、AC 129/129**（對真 PG）。B1 修法：cancelByIds RETURNING 鎖內真值（`6f18e73`）。部署 runbook：`docs/deployment-runbook.md`。e2e/真機部署由使用者依 runbook 操作 |
-| D-008 | 單場名額自動釋放（決策 #8）：合併 event_datetime、closed/過期自動釋放、ux_events_active_group active 集合移除 closed、惰性 on-read 過期判定、過期顯示 done | – | R2 | architect | **R2 雙審通過，待使用者最終 APPROVED**（2026-08-02）。architect-reviewer 零 blocker；design-reviewer B1/B2 修訂後複審**封閉**、無新問題。5 Guardrails / 13 AC。三讀取點語意 + 索引拆兩半（0003 移除 closed + 開團內過期 open flip done 原子）+ 固定 UTC+8；ended/closed 名單去暫估、移除剩餘名額列（G2 升 Must NOT）。**非阻塞微選待問**：剩餘名額列移除(預設) vs 改「報名人數：K」。使用者 APPROVED → T-014（排 T-012 後） |
-| T-014 | 單場自動釋放實作（migration 0003 合併 event_datetime + 改 ux active 集合、event-service 過期判定、formatter 已結束顯示、create-flow 存 UTC datetime） | D-008 | R2 | backend-engineer | **BLOCKED**（等 D-008 APPROVED **且** T-012 落地；不併入 T-012）|
+| D-008 | 單場名額自動釋放（決策 #8）：合併 event_datetime、closed/過期自動釋放、ux_events_active_group active 集合移除 closed、惰性 on-read 過期判定、過期顯示 done | – | R2 | architect | **APPROVED（2026-08-02）** — R2 雙審通過（architect 零 blocker + design B1/B2 修訂後封閉）、使用者最終核可、剩餘名額列微選＝移除。5 Guardrails / 13 AC。解鎖 T-014 |
+| T-014 | 單場自動釋放實作（migration 0003 合併 event_datetime + 改 ux active 集合、event-service 過期判定/開團 flip、findOpenEventForSignup/findEventForDisplay 三讀取點、phase 名單 formatter、create-flow 存 UTC datetime、鎖內 getById 重讀）＋套用預列 errata（D-001/D-003/D-004/D-005/D-007） | D-008（APPROVED） | R2 | backend-engineer | **實作中**（2026-08-02 派工，T-012 已 DONE 前置就緒）|
 | T-013 | 使用者安裝 Docker Desktop（PG-only 本機/CI 測試前置） | – | – | 使用者 | **DONE（2026-08-01）** — per-user 裝於 `%LOCALAPPDATA%\Programs\DockerDesktop`（不在 Program Files）；已在 User PATH。既有 shell session PATH 為安裝前快照，呼叫 docker 前需 prepend `…\DockerDesktop\resources\bin` |
 
 ## 設計文件狀態
@@ -39,7 +39,7 @@
 | D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 條件式零 blocker + design 3 blocker 已修）、OP-1~4 定案、使用者核可。D-001 errata 已補 |
 | D-006 | 授權簡化（開團全開 + 關閉/取消限建立者 host_user_id 或 super-admin；作廢管理人認領方案） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 3 blocker 已修）、OP 採建議、使用者核可 |
 | D-007 | PG 移植 + serverless 部署（repository 換 PG、FOR UPDATE、pooler、先處理再回200、migration PG 方言、Dockerfile） | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可 |
-| D-008 | 單場名額自動釋放（合併 event_datetime、closed/過期自動釋放、惰性 on-read 過期判定、過期顯示 done） | architect | **設計中（2026-08-01）** — 決策 #8/FR-6 已入 brief；R2、於 T-012 落地後實作 |
+| D-008 | 單場名額自動釋放（合併 event_datetime、closed/過期自動釋放、惰性 on-read 過期判定、過期顯示 done） | architect | **APPROVED（2026-08-02）** — R2 雙審通過（architect 零 blocker + design B1/B2 修訂後封閉）、使用者最終核可。三讀取點語意 + 索引拆兩半 + UTC+8；5 Guardrails / 13 AC |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |

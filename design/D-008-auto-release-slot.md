@@ -1,6 +1,6 @@
 # D-008: 單場名額自動釋放（closed／過期條件釋放 + event_datetime 合併）
 
-狀態：DRAFT
+狀態：APPROVED（2026-08-02，R2 雙審通過 [architect 零 blocker + design B1/B2 修訂後封閉] + 使用者最終核可；剩餘名額列微選＝移除。解鎖 T-014，排 T-012 後實作）
 
 - 撰寫者：architect
 - 風險等級：R2（高）——資料 migration（合併 `event_date`+`event_time` → `event_datetime`）+ `ux_events_active_group` 唯一約束變更 + 狀態機/併發相鄰。依 CLAUDE.md §5：強制 design-reviewer + architect-reviewer 雙審 + e2e，Guardrails ≥ 3（本文件列 5 條）。
