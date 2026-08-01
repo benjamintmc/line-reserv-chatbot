@@ -6,7 +6,7 @@ import { join } from 'node:path';
  * [D-005 AC-16] 守則回歸靜態審查（G3/G5/G6）：
  *  - billing.ts / formatter / create-flow / event-service 無 any、無 SQL 字串、無 @line/bot-sdk。
  *  - registration-service.ts / roster.ts 與計費零耦合（不 import billing、不引用計費欄位）——報名核心不動。
- *  - 主辦自動登記經 insertSlot（非裸 INSERT INTO registrations）。
+ *  - 主辦自動登記經 insertSlot（非裸 INSERT INTO registrations）。D-007 路線 A：走注入的 repos.registrations。
  */
 describe('D-005 計費守則靜態審查（AC-16）', () => {
   const dir = __dirname;
@@ -43,7 +43,8 @@ describe('D-005 計費守則靜態審查（AC-16）', () => {
 
   it('[D-005 AC-16] 主辦自動登記走 insertSlot（非裸 INSERT INTO registrations，G3）', () => {
     const s = src('event-service.ts');
-    expect(s).toMatch(/this\.registrations\.insertSlot\(/);
+    // D-007 路線 A：交易閉包內經注入的 client-bound repos（非 this.registrations）。
+    expect(s).toMatch(/repos\.registrations\.insertSlot\(/);
     expect(s).not.toMatch(/INSERT\s+INTO\s+registrations/i);
   });
 });
