@@ -5,15 +5,15 @@ const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
 describe('ConversationRepository', () => {
   let t: TestDb;
-  beforeEach(() => {
-    t = createTestDb();
+  beforeEach(async () => {
+    t = await createTestDb();
   });
-  afterEach(() => {
-    t.cleanup();
+  afterEach(async () => {
+    await t.cleanup();
   });
 
-  it('upsert/get/delete 以 line_user_id 為鍵，updated_at 為 ISO', () => {
-    const created = t.conversations.upsert({
+  it('upsert/get/delete 以 line_user_id 為鍵，updated_at 為 ISO', async () => {
+    const created = await t.conversations.upsert({
       lineUserId: 'U-c',
       groupId: 'G-1',
       state: 'awaiting_date',
@@ -22,7 +22,7 @@ describe('ConversationRepository', () => {
     expect(created.state).toBe('awaiting_date');
     expect(created.updated_at).toMatch(ISO_RE);
 
-    const updated = t.conversations.upsert({
+    const updated = await t.conversations.upsert({
       lineUserId: 'U-c',
       groupId: 'G-1',
       state: 'awaiting_time',
@@ -31,8 +31,8 @@ describe('ConversationRepository', () => {
     expect(updated.state).toBe('awaiting_time');
     expect(JSON.parse(updated.payload ?? '{}')).toEqual({ eventDate: '2026-08-01' });
 
-    expect(t.conversations.delete('U-c')).toBe(true);
-    expect(t.conversations.get('U-c')).toBeUndefined();
-    expect(t.conversations.delete('U-c')).toBe(false);
+    expect(await t.conversations.delete('U-c')).toBe(true);
+    expect(await t.conversations.get('U-c')).toBeUndefined();
+    expect(await t.conversations.delete('U-c')).toBe(false);
   });
 });
