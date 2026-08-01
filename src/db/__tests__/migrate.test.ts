@@ -229,7 +229,7 @@ describe('migrate runner + schema 約束（PG）', () => {
   });
 
   it('[D-001 AC-6] 資料完整保留：另開連線讀回已提交列（含取消稽核）', async () => {
-    const { event, host } = await seedEvent(t, { capacity: 3, groupId: 'G-persist' });
+    const { event } = await seedEvent(t, { capacity: 3, groupId: 'G-persist' });
     const member = await t.users.upsert('U-m', '阿明');
     const rows = await t.runImmediate(event.id, (repos) =>
       repos.registrations.insertSlots(
