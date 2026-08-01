@@ -3,7 +3,6 @@ import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
 import { EventService } from '../domain/event-service';
-import { createTransactionRunner } from '../db/tx';
 import { createWebhookHandler, type GroupProfileClient, type WebhookHandler } from './handler';
 
 /** 建立群組文字訊息事件（測試用最小 shape）。 */
@@ -25,6 +24,7 @@ function makeService(t: TestDb): RegistrationService {
     users: t.users,
     registrations: t.registrations,
     processed: t.processed,
+    runImmediate: t.runImmediate,
     logError: () => {},
   });
 }
@@ -34,8 +34,7 @@ function makeEventService(t: TestDb, superAdminUserIds: string[] = []): EventSer
     events: t.events,
     users: t.users,
     conversations: t.conversations,
-    processed: t.processed,
-    runInTransaction: createTransactionRunner(t.db),
+    runInTransaction: t.runInTransaction,
     superAdminUserIds,
     logError: () => {},
   });
@@ -62,15 +61,15 @@ function profileReturning(name: string): GroupProfileClient {
 
 describe('webhook handler（D-003 §6 分派）', () => {
   let t: TestDb;
-  beforeEach(() => {
-    t = createTestDb();
+  beforeEach(async () => {
+    t = await createTestDb();
   });
-  afterEach(() => {
-    t.cleanup();
+  afterEach(async () => {
+    await t.cleanup();
   });
 
   it('[D-003 AC-10] unknown（閒聊）→ 回空陣列、不呼叫 profile、不 markProcessed', async () => {
-    seedEvent(t, { capacity: 4, groupId: 'G' });
+    await seedEvent(t, { capacity: 4, groupId: 'G' });
     const service = makeService(t);
     const signupSpy = vi.spyOn(service, 'signup');
     const profile = profileReturning('任何人');
@@ -80,11 +79,11 @@ describe('webhook handler（D-003 §6 分派）', () => {
     expect(out).toEqual([]);
     expect(profile.getGroupMemberProfile).not.toHaveBeenCalled();
     expect(signupSpy).not.toHaveBeenCalled();
-    expect(t.processed.has('mx')).toBe(false);
+    expect(await t.processed.has('mx')).toBe(false);
   });
 
   it('[D-003 AC-15] +99（invalid signup count_out_of_range）→ 靜默不回覆', async () => {
-    seedEvent(t, { capacity: 4, groupId: 'G' });
+    await seedEvent(t, { capacity: 4, groupId: 'G' });
     const service = makeService(t);
     const signupSpy = vi.spyOn(service, 'signup');
     const handler = makeHandler(t, { service, profile: profileReturning('X') });
@@ -92,25 +91,25 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const out = await handler.handleEvent(groupTextEvent('+99', { messageId: 'mv' }));
     expect(out).toEqual([]);
     expect(signupSpy).not.toHaveBeenCalled();
-    expect(t.processed.has('mv')).toBe(false);
+    expect(await t.processed.has('mv')).toBe(false);
   });
 
   it('[D-003 AC-19] 以 getGroupMemberProfile 取群組顯示名並存為快照（非 getProfile）', async () => {
-    const { event } = seedEvent(t, { capacity: 4, groupId: 'G' });
+    const { event } = await seedEvent(t, { capacity: 4, groupId: 'G' });
     const profile = profileReturning('群組顯示名');
     const handler = makeHandler(t, { profile });
 
     await handler.handleEvent(groupTextEvent('+1', { userId: 'U-new', messageId: 'm1' }));
     expect(profile.getGroupMemberProfile).toHaveBeenCalledWith('G', 'U-new');
     // 快照存入 registrations（display_name）與 users。
-    const confirmed = t.registrations.listConfirmed(event.id);
+    const confirmed = await t.registrations.listConfirmed(event.id);
     expect(confirmed).toHaveLength(1);
     expect(confirmed[0]!.display_name).toBe('群組顯示名');
-    expect(t.users.getByLineUserId('U-new')!.display_name).toBe('群組顯示名');
+    expect((await t.users.getByLineUserId('U-new'))!.display_name).toBe('群組顯示名');
   });
 
   it('[D-003 AC-19] 取名失敗 fallback：既有 users.display_name → 否則「使用者」', async () => {
-    seedEvent(t, { capacity: 4, groupId: 'G' });
+    await seedEvent(t, { capacity: 4, groupId: 'G' });
     const service = makeService(t);
     const failing: GroupProfileClient = {
       getGroupMemberProfile: vi.fn().mockRejectedValue(new Error('404 not friend')),
@@ -125,7 +124,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
     });
 
     // 既有快照存在 → 用之。
-    t.users.upsert('U-known', '舊名快照');
+    await t.users.upsert('U-known', '舊名快照');
     const signupSpy = vi.spyOn(service, 'signup');
     await handler.handleEvent(groupTextEvent('+1', { userId: 'U-known', messageId: 'm1' }));
     expect(signupSpy.mock.calls[0]![0].executorDisplayName).toBe('舊名快照');
@@ -136,7 +135,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
   });
 
   it('[D-003 AC-14] 取消觸發遞補 → 追加 textV2 訊息、substitution 含被遞補者 userId', async () => {
-    seedEvent(t, { capacity: 1, groupId: 'G' }); // host = U-host
+    await seedEvent(t, { capacity: 1, groupId: 'G' }); // host = U-host
     const handler = makeHandler(t, { profile: profileReturning('報名者') });
 
     // A 佔滿唯一正取，W 進候補。
@@ -165,7 +164,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
   });
 
   it('signup 正常回覆為單一文字訊息（含活動摘要與名單）', async () => {
-    seedEvent(t, { capacity: 16, groupId: 'G' });
+    await seedEvent(t, { capacity: 16, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('王小明') });
     const out = await handler.handleEvent(groupTextEvent('+3', { userId: 'U-wang', messageId: 'm1' }));
     expect(out).toHaveLength(1);
@@ -177,7 +176,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
   });
 
   it('list 重送（相同 message_id）→ 第二次不回覆（唯讀去重）', async () => {
-    seedEvent(t, { capacity: 4, groupId: 'G' });
+    await seedEvent(t, { capacity: 4, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('X') });
     const first = await handler.handleEvent(groupTextEvent('名單', { messageId: 'ml' }));
     const second = await handler.handleEvent(groupTextEvent('名單', { messageId: 'ml' }));

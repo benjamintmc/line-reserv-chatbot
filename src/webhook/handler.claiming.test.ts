@@ -3,7 +3,6 @@ import type { WebhookEvent } from '@line/bot-sdk';
 import { createTestDb, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
 import { EventService } from '../domain/event-service';
-import { createTransactionRunner } from '../db/tx';
 import { createWebhookHandler, type GroupProfileClient, type WebhookHandler } from './handler';
 import { formatMyId } from '../domain/event-formatter';
 
@@ -36,15 +35,14 @@ function makeHandler(t: TestDb, profile: GroupProfileClient, superAdmins: string
     users: t.users,
     registrations: t.registrations,
     processed: t.processed,
+    runImmediate: t.runImmediate,
     logError: () => {},
   });
   const eventService = new EventService({
     events: t.events,
     users: t.users,
-    registrations: t.registrations,
     conversations: t.conversations,
-    processed: t.processed,
-    runInTransaction: createTransactionRunner(t.db),
+    runInTransaction: t.runInTransaction,
     superAdminUserIds: superAdmins,
     logError: () => {},
   });
@@ -65,11 +63,11 @@ function textOf(msgs: Awaited<ReturnType<WebhookHandler['handleEvent']>>): strin
 
 describe('webhook handler 授權簡化（D-006）', () => {
   let t: TestDb;
-  beforeEach(() => {
-    t = createTestDb();
+  beforeEach(async () => {
+    t = await createTestDb();
   });
-  afterEach(() => {
-    t.cleanup();
+  afterEach(async () => {
+    await t.cleanup();
   });
 
   it('[D-006 AC-9] 我的ID → (MyID) 含傳訊人自身 userId、不 mark、無 DB 副作用（不呼叫 profile）', async () => {
@@ -81,8 +79,8 @@ describe('webhook handler 授權簡化（D-006）', () => {
     expect(textOf(out)).toContain('你的 LINE 使用者 ID');
     expect(textOf(out)).toContain('U-me');
     // 唯讀、無副作用：不 mark、不寫 users、不呼叫 profile。
-    expect(t.processed.has('mid9')).toBe(false);
-    expect(t.users.getByLineUserId('U-me')).toBeUndefined();
+    expect(await t.processed.has('mid9')).toBe(false);
+    expect(await t.users.getByLineUserId('U-me')).toBeUndefined();
     expect(profile.getGroupMemberProfile).not.toHaveBeenCalled();
   });
 
@@ -102,12 +100,12 @@ describe('webhook handler 授權簡化（D-006）', () => {
     expect(textOf(summary)).toContain('請確認開團資訊');
     const announce = await handler.handleEvent(groupTextEvent('確認', { userId: X, messageId: 'o2' }));
     expect(textOf(announce)).toContain('開團成功');
-    const event = t.events.findActiveByGroup(G);
+    const event = await t.events.findActiveByGroup(G);
     expect(event?.status).toBe('open');
-    expect(t.registrations.countConfirmed(event!.id)).toBe(1); // 主辦自動第 1 正取
+    expect(await t.registrations.countConfirmed(event!.id)).toBe(1); // 主辦自動第 1 正取
 
     const signup = await handler.handleEvent(groupTextEvent('+2', { userId: 'U-m', messageId: 'o3' }));
     expect(textOf(signup)).toContain('報名名單（3/16）');
-    expect(t.registrations.countConfirmed(event!.id)).toBe(3);
+    expect(await t.registrations.countConfirmed(event!.id)).toBe(3);
   });
 });
