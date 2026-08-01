@@ -24,8 +24,8 @@
 |---|---|---|---|---|---|
 | ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | DRAFT 完成 |
 | D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可。解鎖 T-012 |
-| T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007（APPROVED） | R2 | backend-engineer | **BLOCKED（等 Docker Desktop）** — 2026-08-01 派工後 backend-engineer 依 R2 鐵律做環境前置檢查：本機無 Docker/WSL/本機 PG，PG-only 測試（AC-2/3 真並行、AC-5 空 PG migrate）無真 Postgres 無法誠實驗收 → 停手未寫實作碼（設計已研讀、藍圖成形）。使用者選 (A) 裝 Docker Desktop（OP-5 一致）。裝好 `docker compose version` 可用即恢復 |
-| T-013 | 使用者安裝 Docker Desktop（PG-only 本機/CI 測試前置） | – | – | 使用者 | **進行中**（解阻塞 T-012）|
+| T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007（APPROVED） | R2 | backend-engineer | **實作中**（Docker 就緒，2026-08-01 恢復）— 環境驗證：Docker Desktop 4.84.0 / Client 29.6.2 / Compose v5.3.1、daemon 連通、postgres:16-alpine 可拉 |
+| T-013 | 使用者安裝 Docker Desktop（PG-only 本機/CI 測試前置） | – | – | 使用者 | **DONE（2026-08-01）** — per-user 裝於 `%LOCALAPPDATA%\Programs\DockerDesktop`（不在 Program Files）；已在 User PATH。既有 shell session PATH 為安裝前快照，呼叫 docker 前需 prepend `…\DockerDesktop\resources\bin` |
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
@@ -41,7 +41,7 @@
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
 |---|---|---|
-| T-012 | 本機無 Postgres 測試環境（PG-only 需真 PG 跑 AC-2/3/5）；使用者選裝 Docker Desktop | 使用者裝 Docker Desktop（T-013） |
+| （無）| T-012 已於 2026-08-01 解阻塞（Docker Desktop 就緒，T-013 DONE） | – |
 
 ## Backlog（含暫緩的 TODO）
 - M1 起導入 better-sqlite3（M0 暫不加，避免 native build 影響骨架驗證）。
