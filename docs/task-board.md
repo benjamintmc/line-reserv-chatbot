@@ -25,6 +25,8 @@
 | ADR-004 | SQLite→Postgres + serverless(Cloud Run) 決策 | – | R2 | architect | DRAFT 完成 |
 | D-007 | PG 移植 + serverless 部署設計（repository 換 PG、FOR UPDATE 併發、pooler、先處理再回200、migration PG 方言、Dockerfile、config） | – | R2 | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可。解鎖 T-012 |
 | T-012 | PG 移植實作（driver/repositories/migrations/serverless/Dockerfile/config） | D-007（APPROVED） | R2 | backend-engineer | **實作中**（Docker 就緒，2026-08-01 恢復）— 環境驗證：Docker Desktop 4.84.0 / Client 29.6.2 / Compose v5.3.1、daemon 連通、postgres:16-alpine 可拉 |
+| D-008 | 單場名額自動釋放（決策 #8）：合併 event_datetime、closed/過期自動釋放、ux_events_active_group active 集合移除 closed、惰性 on-read 過期判定、過期顯示 done | – | R2 | architect | **設計中**（2026-08-01 派工）— 需求已入 brief 決策 #8/FR-6 |
+| T-014 | 單場自動釋放實作（migration 0003 合併 event_datetime + 改 ux active 集合、event-service 過期判定、formatter 已結束顯示、create-flow 存 UTC datetime） | D-008 | R2 | backend-engineer | **BLOCKED**（等 D-008 APPROVED **且** T-012 落地；不併入 T-012）|
 | T-013 | 使用者安裝 Docker Desktop（PG-only 本機/CI 測試前置） | – | – | 使用者 | **DONE（2026-08-01）** — per-user 裝於 `%LOCALAPPDATA%\Programs\DockerDesktop`（不在 Program Files）；已在 User PATH。既有 shell session PATH 為安裝前快照，呼叫 docker 前需 prepend `…\DockerDesktop\resources\bin` |
 
 ## 設計文件狀態
@@ -37,6 +39,7 @@
 | D-005 | 計費模式擴充（每人固定 vs 場地費均攤：估算/關閉結算/無條件進位/主辦自動登記為第一人）+ 文案中性化（忽略球種） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 條件式零 blocker + design 3 blocker 已修）、OP-1~4 定案、使用者核可。D-001 errata 已補 |
 | D-006 | 授權簡化（開團全開 + 關閉/取消限建立者 host_user_id 或 super-admin；作廢管理人認領方案） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 3 blocker 已修）、OP 採建議、使用者核可 |
 | D-007 | PG 移植 + serverless 部署（repository 換 PG、FOR UPDATE、pooler、先處理再回200、migration PG 方言、Dockerfile） | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可 |
+| D-008 | 單場名額自動釋放（合併 event_datetime、closed/過期自動釋放、惰性 on-read 過期判定、過期顯示 done） | architect | **設計中（2026-08-01）** — 決策 #8/FR-6 已入 brief；R2、於 T-012 落地後實作 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
