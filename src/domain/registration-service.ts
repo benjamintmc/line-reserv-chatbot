@@ -2,16 +2,22 @@
 //
 // D-003 §2/§3/§5：報名核心 domain。組合 D-001 repository 原語完成
 // 額滿判斷（G1 整批候補）、FIFO 遞補（G8）、soft-delete（G3）、
-// 代取消授權（G4）、去重（G7 markProcessed 為 runImmediate 第一步）。
+// 代取消授權（G4）、去重（G7 markProcessed 為交易第一步）。
+//
+// D-007 移植：sync→async（呼叫處加 await）＋路線 A——防超賣交易改注入 `runImmediate`
+// 交易 runner（取代 SQLite 版 this.registrations.runImmediate）；交易閉包簽名 (repos)=>Promise<T>，
+// 閉包**內** this.<repo> 改用注入的 repos.<repo>（同一 client，G1）；閉包**外**唯讀查詢仍用 this.<repo>。
+// 商業分支/決策規則/AC 期望值零改。
 //
 // 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測。
-// 嚴禁 any（G11）；不得出現 SQL 字串或直接存取 db（G10）——一律經 repository 原語。
+// 嚴禁 any（G11）；不得出現 SQL 字串或直接存取 db（G10）——一律經 repository 原語 / 交易 runner。
 
 import type { EventRow, RegistrationRow, RegistrationStatus } from '../db/schema';
-import type { EventRepository } from '../db/repositories/event-repository';
+import type { EventReader } from '../db/repositories/event-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
-import type { RegistrationRepository } from '../db/repositories/registration-repository';
+import type { RegistrationReader } from '../db/repositories/registration-repository';
+import type { ImmediateRunner } from '../db/tx';
 
 /** 名單快照視圖（D-003 §1.1）。 */
 export interface RegistrationView {
@@ -92,10 +98,12 @@ export interface ListInput {
 }
 
 export interface RegistrationServiceDeps {
-  events: EventRepository;
+  events: EventReader;
   users: UserRepository;
-  registrations: RegistrationRepository;
+  registrations: RegistrationReader;
   processed: ProcessedEventRepository;
+  /** 防超賣交易 runner（路線 A）：BEGIN → SELECT event FOR UPDATE → work(repos) → COMMIT（D-007 §3）。 */
+  runImmediate: ImmediateRunner;
   /** 不預期發生的異常記錄（如遞補守恆斷言失敗）；預設 console.error。 */
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
@@ -111,10 +119,11 @@ type TxCancel =
   | { kind: 'ok'; cancelled: number; promoted: RegistrationRow[] };
 
 export class RegistrationService {
-  private readonly events: EventRepository;
+  private readonly events: EventReader;
   private readonly users: UserRepository;
-  private readonly registrations: RegistrationRepository;
+  private readonly registrations: RegistrationReader;
   private readonly processed: ProcessedEventRepository;
+  private readonly runImmediate: ImmediateRunner;
   private readonly logError: (msg: string, meta?: Record<string, unknown>) => void;
 
   constructor(deps: RegistrationServiceDeps) {
@@ -122,6 +131,7 @@ export class RegistrationService {
     this.users = deps.users;
     this.registrations = deps.registrations;
     this.processed = deps.processed;
+    this.runImmediate = deps.runImmediate;
     this.logError =
       deps.logError ??
       ((msg, meta): void => {
@@ -130,15 +140,15 @@ export class RegistrationService {
   }
 
   /** 取當前 group 的 open 活動；非 open（無 / draft / closed / cancelled）→ undefined。 */
-  private findOpenEvent(groupId: string): EventRow | undefined {
-    const event = this.events.findActiveByGroup(groupId);
+  private async findOpenEvent(groupId: string): Promise<EventRow | undefined> {
+    const event = await this.events.findActiveByGroup(groupId);
     return event !== undefined && event.status === 'open' ? event : undefined;
   }
 
   /** 交易後重查名單視圖（有效性過濾一律走 repo 原語；G6）。 */
-  private buildView(event: EventRow): RegistrationView {
-    const confirmed = this.registrations.listConfirmed(event.id);
-    const waitlist = this.registrations.listWaitlist(event.id);
+  private async buildView(event: EventRow): Promise<RegistrationView> {
+    const confirmed = await this.registrations.listConfirmed(event.id);
+    const waitlist = await this.registrations.listWaitlist(event.id);
     return {
       event,
       confirmed,
@@ -149,25 +159,25 @@ export class RegistrationService {
   }
 
   // ── +N 報名（D-003 §2） ─────────────────────────────────────────────
-  signup(input: SignupInput): SignupResult {
-    const event = this.findOpenEvent(input.groupId);
+  async signup(input: SignupInput): Promise<SignupResult> {
+    const event = await this.findOpenEvent(input.groupId);
     if (event === undefined) return { kind: 'no_open_event' };
 
-    const owner = this.users.upsert(input.executorLineUserId, input.executorDisplayName);
+    const owner = await this.users.upsert(input.executorLineUserId, input.executorDisplayName);
     const isProxy = input.proxyName !== undefined;
     const slotDisplayName = isProxy ? input.proxyName! : owner.display_name;
     const kind = isProxy ? 'proxy' : 'self';
 
-    const tx = this.registrations.runImmediate<TxSignup>(() => {
+    const tx = await this.runImmediate<TxSignup>(event.id, async (repos) => {
       // G7：去重為交易第一步，重送即中止（原子回滾）。
-      if (!this.processed.markProcessed(input.messageId)) {
+      if (!(await repos.processed.markProcessed(input.messageId))) {
         return { kind: 'duplicate' };
       }
-      const confirmed = this.registrations.countConfirmed(event.id);
+      const confirmed = await repos.registrations.countConfirmed(event.id);
       const available = event.capacity - confirmed;
       // G1：整批全進 / 整批候補，不部分接受。
       const status: RegistrationStatus = available >= input.count ? 'confirmed' : 'waitlist';
-      const newSlots = this.registrations.insertSlots(
+      const newSlots = await repos.registrations.insertSlots(
         {
           eventId: event.id,
           ownerUserId: owner.id,
@@ -187,31 +197,31 @@ export class RegistrationService {
       requested: input.count,
       subjectDisplayName: slotDisplayName,
       newSlots: tx.newSlots,
-      view: this.buildView(event),
+      view: await this.buildView(event),
     };
   }
 
   // ── -N 取消（D-003 §3） ─────────────────────────────────────────────
-  cancel(input: CancelInput): CancelResult {
-    const event = this.findOpenEvent(input.groupId);
+  async cancel(input: CancelInput): Promise<CancelResult> {
+    const event = await this.findOpenEvent(input.groupId);
     if (event === undefined) return { kind: 'no_open_event' };
 
-    const executor = this.users.upsert(input.executorLineUserId, input.executorDisplayName);
+    const executor = await this.users.upsert(input.executorLineUserId, input.executorDisplayName);
     const isHost = executor.id === event.host_user_id;
 
     // 定位待取消列（交易外查詢；交易內再取消）。
     let candidates: RegistrationRow[];
     if (input.proxyName === undefined) {
       // 自取消：只取本人自報名列（本人代報名額需以 -N 名字 取消）。
-      candidates = this.registrations
-        .findActiveByOwner(event.id, executor.id)
-        .filter((r) => r.kind === 'self');
+      candidates = (await this.registrations.findActiveByOwner(event.id, executor.id)).filter(
+        (r) => r.kind === 'self',
+      );
     } else if (isHost) {
       // 主辦人：跨 owner 定位（G4；已涵蓋主辦人自己代報的列，不再合併 owner-scoped）。
-      candidates = this.registrations.findActiveProxyByName(event.id, input.proxyName);
+      candidates = await this.registrations.findActiveProxyByName(event.id, input.proxyName);
     } else {
       // 非主辦人：只走 owner-scoped（G4；查無即拒，不得取消他人代報名額）。
-      candidates = this.registrations.findActiveProxy(event.id, executor.id, input.proxyName);
+      candidates = await this.registrations.findActiveProxy(event.id, executor.id, input.proxyName);
     }
 
     if (candidates.length === 0) return { kind: 'nothing_to_cancel' };
@@ -223,11 +233,11 @@ export class RegistrationService {
     const ordered = [...waitlistDesc, ...confirmedDesc];
     const toCancel = ordered.slice(0, Math.min(input.count, ordered.length));
 
-    const tx = this.registrations.runImmediate<TxCancel>(() => {
-      if (!this.processed.markProcessed(input.messageId)) {
+    const tx = await this.runImmediate<TxCancel>(event.id, async (repos) => {
+      if (!(await repos.processed.markProcessed(input.messageId))) {
         return { kind: 'duplicate' };
       }
-      const cancelled = this.registrations.cancelByIds(
+      const cancelled = await repos.registrations.cancelByIds(
         toCancel.map((r) => r.id),
         executor.id,
       );
@@ -235,18 +245,19 @@ export class RegistrationService {
       let promoted: RegistrationRow[] = [];
       if (freedConfirmed > 0) {
         // G8：FIFO 遞補，數量 ≤ 本次釋出正取數。
-        const picks = this.registrations.pickWaitlistForPromotion(event.id, freedConfirmed);
-        const promotedN = this.registrations.promoteByIds(picks.map((r) => r.id));
+        const picks = await repos.registrations.pickWaitlistForPromotion(event.id, freedConfirmed);
+        const promotedN = await repos.registrations.promoteByIds(picks.map((r) => r.id));
         if (promotedN !== picks.length) {
-          // nit-5 防禦性斷言：同步交易內恆相等；不等記異常並以回讀為準。
+          // nit-5 防禦性斷言：交易內恆相等；不等記異常並以回讀為準。
           this.logError('遞補列數與選取數不一致（不預期）', {
             eventId: event.id,
             promotedN,
             picked: picks.length,
           });
-          promoted = picks
-            .map((r) => this.registrations.getById(r.id))
-            .filter((r): r is RegistrationRow => r !== undefined && r.status === 'confirmed');
+          const rechecked = await Promise.all(picks.map((r) => repos.registrations.getById(r.id)));
+          promoted = rechecked.filter(
+            (r): r is RegistrationRow => r !== undefined && r.status === 'confirmed',
+          );
         } else {
           promoted = picks;
         }
@@ -261,18 +272,18 @@ export class RegistrationService {
       requested: input.count,
       subjectDisplayName: input.proxyName ?? executor.display_name,
       promoted: tx.promoted,
-      view: this.buildView(event),
+      view: await this.buildView(event),
     };
   }
 
   // ── 名單查詢（D-003 §5：唯讀，markProcessed 交易外） ──────────────────
-  getListView(input: ListInput): ListResult {
+  async getListView(input: ListInput): Promise<ListResult> {
     // 唯讀去重：重送略過回覆，避免重複貼名單（無資料副作用，不綁交易）。
-    if (!this.processed.markProcessed(input.messageId)) {
+    if (!(await this.processed.markProcessed(input.messageId))) {
       return { kind: 'duplicate' };
     }
-    const event = this.findOpenEvent(input.groupId);
+    const event = await this.findOpenEvent(input.groupId);
     if (event === undefined) return { kind: 'no_open_event' };
-    return { kind: 'ok', view: this.buildView(event) };
+    return { kind: 'ok', view: await this.buildView(event) };
   }
 }

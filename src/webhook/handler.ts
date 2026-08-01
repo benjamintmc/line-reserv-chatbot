@@ -8,6 +8,9 @@
 // D-006：開團全開（create_* 不再產生 not_authorized）；close/cancel 授權於 service 內 canManageEvent
 // 判定（非授權回 (H′)）；`my_id` 由 no-op 接線回 (MyID)。
 //
+// D-007 移植：domain/repo 皆 async → 呼叫處加 await（含 conversations.get / buildPromotionNotice 的
+// users.getById / resolveDisplayName 的 users.getByLineUserId）；renderCancel 因需 await 遞補通知而轉 async。
+//
 // **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any。
 // unknown / 無流程 confirm·abort / 未攔截雜訊一律不回覆、不 markProcessed（G9）。
 
@@ -15,7 +18,7 @@ import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { parseCommand } from '../commands';
 import type { RegistrationRow } from '../db/schema';
 import type { UserRepository } from '../db/repositories/user-repository';
-import type { ConversationRepository } from '../db/repositories/conversation-repository';
+import type { ConversationReader } from '../db/repositories/conversation-repository';
 import type {
   RegistrationService,
   SignupResult,
@@ -72,7 +75,7 @@ export interface WebhookHandlerDeps {
   service: RegistrationService;
   eventService: EventService;
   users: UserRepository;
-  conversations: ConversationRepository;
+  conversations: ConversationReader;
   profile: GroupProfileClient;
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
@@ -122,14 +125,14 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         err: String(err),
       });
     }
-    const existing = deps.users.getByLineUserId(userId);
+    const existing = await deps.users.getByLineUserId(userId);
     if (existing !== undefined) return existing.display_name;
     return '使用者';
   }
 
   /** 被遞補列 → 遞補通知（以 userRepo 解析 owner 的 line_user_id 與代報者稱謂；§4）。 */
-  function buildPromotionNotice(row: RegistrationRow): PromotionNotice {
-    const owner = deps.users.getById(row.owner_user_id);
+  async function buildPromotionNotice(row: RegistrationRow): Promise<PromotionNotice> {
+    const owner = await deps.users.getById(row.owner_user_id);
     const ownerLineUserId = owner?.line_user_id ?? null;
     if (row.kind === 'proxy') {
       return {
@@ -158,7 +161,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderCancel(result: CancelResult, proxyName?: string): messagingApi.Message[] {
+  async function renderCancel(
+    result: CancelResult,
+    proxyName?: string,
+  ): Promise<messagingApi.Message[]> {
     switch (result.kind) {
       case 'no_open_event':
         return [toLineMessage(formatNoOpenEvent())];
@@ -169,7 +175,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'ok': {
         const messages = [toLineMessage(formatCancel(result))];
         if (result.promoted.length > 0) {
-          const notices = result.promoted.map((row) => buildPromotionNotice(row));
+          const notices = await Promise.all(result.promoted.map((row) => buildPromotionNotice(row)));
           messages.push(toLineMessage(formatPromotionNotice(notices)));
         }
         return messages;
@@ -334,10 +340,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
 
     // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
     // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。
-    const conv = deps.conversations.get(userId);
+    const conv = await deps.conversations.get(userId);
     if (conv !== undefined) {
       const hostDisplayName = await resolveDisplayName(groupId, userId);
-      const result = deps.eventService.continueFlow({
+      const result = await deps.eventService.continueFlow({
         groupId,
         executorLineUserId: userId,
         messageId,
@@ -351,7 +357,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     switch (cmd.type) {
       case 'signup': {
         const displayName = await resolveDisplayName(groupId, userId);
-        const result = deps.service.signup({
+        const result = await deps.service.signup({
           groupId,
           executorLineUserId: userId,
           executorDisplayName: displayName,
@@ -363,7 +369,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       }
       case 'cancel': {
         const displayName = await resolveDisplayName(groupId, userId);
-        const result = deps.service.cancel({
+        const result = await deps.service.cancel({
           groupId,
           executorLineUserId: userId,
           executorDisplayName: displayName,
@@ -374,12 +380,12 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return renderCancel(result, cmd.proxyName);
       }
       case 'list': {
-        const result = deps.service.getListView({ groupId, messageId });
+        const result = await deps.service.getListView({ groupId, messageId });
         return renderList(result);
       }
       // D-004 M3 開團流程（D-006：開團全開，無授權前置） ────────────────
       case 'create_event_oneline': {
-        const result = deps.eventService.handleOneline({
+        const result = await deps.eventService.handleOneline({
           groupId,
           executorLineUserId: userId,
           messageId,
@@ -394,7 +400,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return renderCreateEntry(result);
       }
       case 'create_event_start': {
-        const result = deps.eventService.startCreation({
+        const result = await deps.eventService.startCreation({
           groupId,
           executorLineUserId: userId,
           messageId,
@@ -403,7 +409,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       }
       case 'confirm': {
         // 走到此代表無進行中流程（有流程已於上方攔截）→ 靜默 no-op（G9）。
-        const result = deps.eventService.confirm({
+        const result = await deps.eventService.confirm({
           groupId,
           executorLineUserId: userId,
           messageId,
@@ -413,12 +419,12 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       }
       case 'abort': {
         // 同上：無流程 → 靜默 no-op（G9）。
-        const result = deps.eventService.abort({ executorLineUserId: userId, messageId });
+        const result = await deps.eventService.abort({ executorLineUserId: userId, messageId });
         return renderAbort(result);
       }
       case 'close_event': {
         // D-006：service 內 canManageEvent 判定；非授權回 (H′)。
-        const result = deps.eventService.closeEvent({
+        const result = await deps.eventService.closeEvent({
           groupId,
           executorLineUserId: userId,
           messageId,
@@ -427,7 +433,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       }
       case 'cancel_event': {
         // D-006：service 內 canManageEvent 判定；非授權回 (H′)。
-        const result = deps.eventService.cancelEvent({
+        const result = await deps.eventService.cancelEvent({
           groupId,
           executorLineUserId: userId,
           messageId,
