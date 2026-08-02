@@ -14,6 +14,13 @@
 // `toCancel.filter(...)`。SQLite 同步版無此窗（定位+runImmediate 單執行緒原子）；async 兩 await
 // 間插讓點後，同列被兩則不同 messageId 的 cancel 鎖定時，舊快照會令第二者多遞補 → 超賣（破 G8）。詳見 D-003 §3 errata。
 //
+// D-008 T-014（單場名額自動釋放；D-003 errata §五）：
+//   - `findOpenEvent` **拆分**為 `findOpenEventForSignup`（open ∧ 未過期，否則 event_ended/no_open_event）
+//     與 `findEventForDisplay`（用 `findLatestDisplayable`，顯示集 {draft,open,closed}，回 phase）。
+//   - signup/cancel 新增 `event_ended` 結果；`runImmediate` **鎖內以 getById(event.id) 重讀最新列** re-check
+//     status/過期（**非** stale 快照，nit-2/AC-9）→ 過期/被 flip → event_ended、不插槽。
+//   - `getListView` 帶 `phase`（live/ended/closed），供 formatter 選標題/費用列。
+//
 // 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測。
 // 嚴禁 any（G11）；不得出現 SQL 字串或直接存取 db（G10）——一律經 repository 原語 / 交易 runner。
 
@@ -23,6 +30,10 @@ import type { UserRepository } from '../db/repositories/user-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
 import type { RegistrationReader } from '../db/repositories/registration-repository';
 import type { ImmediateRunner } from '../db/tx';
+import { nowIso } from '../db/time';
+import { displayPhase, isExpired, isOpenForSignup, type ListPhase } from './event-status';
+
+export type { ListPhase } from './event-status';
 
 /** 名單快照視圖（D-003 §1.1）。 */
 export interface RegistrationView {
@@ -37,9 +48,10 @@ export interface RegistrationView {
   available: number;
 }
 
-/** `+N` 報名結果（D-003 §1.1）。 */
+/** `+N` 報名結果（D-003 §1.1；D-008：新增 event_ended）。 */
 export type SignupResult =
   | { kind: 'no_open_event' }
+  | { kind: 'event_ended' }
   | { kind: 'duplicate' }
   | {
       kind: 'ok';
@@ -53,9 +65,10 @@ export type SignupResult =
       view: RegistrationView;
     };
 
-/** `-N` 取消結果（D-003 §1.1）。 */
+/** `-N` 取消結果（D-003 §1.1；D-008：新增 event_ended）。 */
 export type CancelResult =
   | { kind: 'no_open_event' }
+  | { kind: 'event_ended' }
   | { kind: 'duplicate' }
   | { kind: 'nothing_to_cancel' }
   | {
@@ -71,11 +84,11 @@ export type CancelResult =
       view: RegistrationView;
     };
 
-/** `名單` 查詢結果（D-003 §1.1；`duplicate` 為 §5 唯讀去重）。 */
+/** `名單` 查詢結果（D-003 §1.1；`duplicate` 為 §5 唯讀去重；D-008：ok 帶 phase）。 */
 export type ListResult =
   | { kind: 'no_open_event' }
   | { kind: 'duplicate' }
-  | { kind: 'ok'; view: RegistrationView };
+  | { kind: 'ok'; view: RegistrationView; phase: ListPhase };
 
 export interface SignupInput {
   groupId: string;
@@ -113,14 +126,22 @@ export interface RegistrationServiceDeps {
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
-/** 交易內回傳型別（signup）。 */
+/** signup 用「可報名事件」解析（D-008：拆自 findOpenEvent）。 */
+type SignupEventResolution =
+  | { kind: 'ok'; event: EventRow }
+  | { kind: 'event_ended' }
+  | { kind: 'no_open_event' };
+
+/** 交易內回傳型別（signup；D-008 新增 event_ended 為鎖內 re-check 結果）。 */
 type TxSignup =
   | { kind: 'duplicate' }
+  | { kind: 'event_ended' }
   | { kind: 'ok'; outcome: RegistrationStatus; newSlots: RegistrationRow[] };
 
-/** 交易內回傳型別（cancel）。 */
+/** 交易內回傳型別（cancel；D-008 新增 event_ended）。 */
 type TxCancel =
   | { kind: 'duplicate' }
+  | { kind: 'event_ended' }
   | { kind: 'ok'; cancelled: number; promoted: RegistrationRow[] };
 
 export class RegistrationService {
@@ -144,10 +165,31 @@ export class RegistrationService {
       });
   }
 
-  /** 取當前 group 的 open 活動；非 open（無 / draft / closed / cancelled）→ undefined。 */
-  private async findOpenEvent(groupId: string): Promise<EventRow | undefined> {
+  /**
+   * 報名用（`+N`/`-N`）：取當前 group 可報名事件（open ∧ 未過期，D-008 §2）。
+   * - open ∧ 未過期 → `{ ok, event }`；
+   * - open ∧ 已過期 → `{ event_ended }`（活動已結束，拒報名/取消，OP-2）；
+   * - 無 / draft（未物化）→ `{ no_open_event }`（closed 不在 findActiveByGroup 集合）。
+   */
+  private async findOpenEventForSignup(groupId: string): Promise<SignupEventResolution> {
     const event = await this.events.findActiveByGroup(groupId);
-    return event !== undefined && event.status === 'open' ? event : undefined;
+    if (event === undefined) return { kind: 'no_open_event' };
+    const now = nowIso();
+    if (isOpenForSignup(event, now)) return { kind: 'ok', event };
+    if (event.status === 'open' && isExpired(event, now)) return { kind: 'event_ended' };
+    return { kind: 'no_open_event' };
+  }
+
+  /**
+   * 顯示用（`名單`）：取最新一場可顯示活動（{draft,open,closed} latest-by-id，D-008 §2/OP-4）+ phase。
+   * latest 為 cancelled/無 → undefined（no_open_event）；done 不入顯示集（必被更新 open 取代）。
+   */
+  private async findEventForDisplay(
+    groupId: string,
+  ): Promise<{ event: EventRow; phase: ListPhase } | undefined> {
+    const event = await this.events.findLatestDisplayable(groupId);
+    if (event === undefined) return undefined;
+    return { event, phase: displayPhase(event, nowIso()) };
   }
 
   /** 交易後重查名單視圖（有效性過濾一律走 repo 原語；G6）。 */
@@ -163,10 +205,12 @@ export class RegistrationService {
     };
   }
 
-  // ── +N 報名（D-003 §2） ─────────────────────────────────────────────
+  // ── +N 報名（D-003 §2 / D-008 §6b） ────────────────────────────────
   async signup(input: SignupInput): Promise<SignupResult> {
-    const event = await this.findOpenEvent(input.groupId);
-    if (event === undefined) return { kind: 'no_open_event' };
+    const resolved = await this.findOpenEventForSignup(input.groupId);
+    if (resolved.kind === 'no_open_event') return { kind: 'no_open_event' };
+    if (resolved.kind === 'event_ended') return { kind: 'event_ended' };
+    const event = resolved.event;
 
     const owner = await this.users.upsert(input.executorLineUserId, input.executorDisplayName);
     const isProxy = input.proxyName !== undefined;
@@ -177,6 +221,12 @@ export class RegistrationService {
       // G7：去重為交易第一步，重送即中止（原子回滾）。
       if (!(await repos.processed.markProcessed(input.messageId))) {
         return { kind: 'duplicate' };
+      }
+      // D-008 §6b/AC-9：鎖內以 getById 重讀最新列 re-check（非 stale 快照）；
+      // 若非 open 或已過期（含被並行 flip 為 done）→ event_ended、不插槽（無超賣、不雙開）。
+      const fresh = await repos.events.getById(event.id);
+      if (fresh === undefined || !isOpenForSignup(fresh, nowIso())) {
+        return { kind: 'event_ended' };
       }
       const confirmed = await repos.registrations.countConfirmed(event.id);
       const available = event.capacity - confirmed;
@@ -196,6 +246,7 @@ export class RegistrationService {
     });
 
     if (tx.kind === 'duplicate') return { kind: 'duplicate' };
+    if (tx.kind === 'event_ended') return { kind: 'event_ended' };
     return {
       kind: 'ok',
       outcome: tx.outcome === 'confirmed' ? 'confirmed' : 'waitlisted',
@@ -206,10 +257,12 @@ export class RegistrationService {
     };
   }
 
-  // ── -N 取消（D-003 §3） ─────────────────────────────────────────────
+  // ── -N 取消（D-003 §3 / D-008 §6b） ────────────────────────────────
   async cancel(input: CancelInput): Promise<CancelResult> {
-    const event = await this.findOpenEvent(input.groupId);
-    if (event === undefined) return { kind: 'no_open_event' };
+    const resolved = await this.findOpenEventForSignup(input.groupId);
+    if (resolved.kind === 'no_open_event') return { kind: 'no_open_event' };
+    if (resolved.kind === 'event_ended') return { kind: 'event_ended' };
+    const event = resolved.event;
 
     const executor = await this.users.upsert(input.executorLineUserId, input.executorDisplayName);
     const isHost = executor.id === event.host_user_id;
@@ -242,6 +295,11 @@ export class RegistrationService {
       if (!(await repos.processed.markProcessed(input.messageId))) {
         return { kind: 'duplicate' };
       }
+      // D-008 §6b/AC-9：鎖內重讀最新列 re-check（非 stale 快照）；過期/被 flip → event_ended、不取消。
+      const fresh = await repos.events.getById(event.id);
+      if (fresh === undefined || !isOpenForSignup(fresh, nowIso())) {
+        return { kind: 'event_ended' };
+      }
       // B1 修：freedConfirmed 取「鎖內實際取消的 confirmed 列數」（cancelByIds 之 RETURNING），
       // 非交易外快照 toCancel.filter(...)。並發下同列被兩 cancel 鎖定時，第二者實取 0、freedConfirmed=0，
       // 不多遞補 → 有效正取數永不超過 capacity（G8）。SQLite 同步版無此窗；async 讓點激活之。
@@ -273,6 +331,7 @@ export class RegistrationService {
     });
 
     if (tx.kind === 'duplicate') return { kind: 'duplicate' };
+    if (tx.kind === 'event_ended') return { kind: 'event_ended' };
     return {
       kind: 'ok',
       cancelled: tx.cancelled,
@@ -283,14 +342,14 @@ export class RegistrationService {
     };
   }
 
-  // ── 名單查詢（D-003 §5：唯讀，markProcessed 交易外） ──────────────────
+  // ── 名單查詢（D-003 §5：唯讀，markProcessed 交易外；D-008：帶 phase） ──────────────────
   async getListView(input: ListInput): Promise<ListResult> {
     // 唯讀去重：重送略過回覆，避免重複貼名單（無資料副作用，不綁交易）。
     if (!(await this.processed.markProcessed(input.messageId))) {
       return { kind: 'duplicate' };
     }
-    const event = await this.findOpenEvent(input.groupId);
-    if (event === undefined) return { kind: 'no_open_event' };
-    return { kind: 'ok', view: await this.buildView(event) };
+    const resolved = await this.findEventForDisplay(input.groupId);
+    if (resolved === undefined) return { kind: 'no_open_event' };
+    return { kind: 'ok', view: await this.buildView(resolved.event), phase: resolved.phase };
   }
 }

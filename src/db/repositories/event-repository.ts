@@ -2,6 +2,7 @@ import type { Queryable } from '../index';
 import { nowIso } from '../time';
 import {
   ACTIVE_EVENT_STATUSES,
+  DISPLAYABLE_EVENT_STATUSES,
   type EventRow,
   type EventStatus,
   type PriceMode,
@@ -10,8 +11,8 @@ import {
 export interface CreateEventInput {
   groupId: string;
   hostUserId: number;
-  eventDate: string;
-  eventTime: string;
+  /** 活動開始時刻，UTC ISO-8601（`YYYY-MM-DDTHH:MM:SSZ`）；由 domain 以 taipeiToUtcIso 合併轉存（D-008 §3）。 */
+  eventDatetime: string;
   location: string;
   capacity: number;
   pricePerPerson?: number;
@@ -23,12 +24,15 @@ export interface CreateEventInput {
 }
 
 /**
- * events 唯讀介面（N-new-2）：pool-bound 依賴只曝讀方法（getById/findActiveByGroup），
+ * events 唯讀介面（N-new-2）：pool-bound 依賴只曝讀方法（getById/findActiveByGroup/findLatestDisplayable），
  * 寫入（create/updateStatus/updateSettledPerPerson）僅存在於 client-bound `TxRepos.events`（交易內）。
  */
 export interface EventReader {
   getById(id: number): Promise<EventRow | undefined>;
+  /** 擋團/生命週期：回 status ∈ {draft,open} 的最新一場（D-008：不回 closed）。 */
   findActiveByGroup(groupId: string): Promise<EventRow | undefined>;
+  /** 顯示用：回 status ∈ {draft,open,closed} 的最新一場（latest by id），供 `名單`（D-008 §2/OP-4）。 */
+  findLatestDisplayable(groupId: string): Promise<EventRow | undefined>;
 }
 
 /**
@@ -69,15 +73,14 @@ export class EventRepository implements EventReader {
 
     const res = await this.q.query<EventRow>(
       `INSERT INTO events
-         (group_id, host_user_id, event_date, event_time, location,
+         (group_id, host_user_id, event_datetime, location,
           capacity, price_per_person, price_mode, venue_fee, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
        RETURNING *`,
       [
         input.groupId,
         input.hostUserId,
-        input.eventDate,
-        input.eventTime,
+        input.eventDatetime,
         input.location,
         input.capacity,
         pricePerPerson,
@@ -99,13 +102,28 @@ export class EventRepository implements EventReader {
     return res.rows[0];
   }
 
-  /** 查某 group 目前唯一的 active 活動（status ∈ {draft,open,closed}）。 */
+  /** 查某 group 目前唯一的 active 活動（status ∈ {draft,open}；D-008：不含 closed）。 */
   async findActiveByGroup(groupId: string): Promise<EventRow | undefined> {
     const res = await this.q.query<EventRow>(
       `SELECT * FROM events
        WHERE group_id = $1 AND status = ANY($2)
        ORDER BY id DESC LIMIT 1`,
       [groupId, [...ACTIVE_EVENT_STATUSES]],
+    );
+    return res.rows[0];
+  }
+
+  /**
+   * 顯示用唯讀原語（D-008 §2/§5）：回 status ∈ {draft,open,closed} 的最新一場（latest by id）。
+   * 供 `名單`——closed 與新 open 可並存時取較新者；僅 closed 時取到 closed（標「報名已截止」）。
+   * done/cancelled 不納入（done 必被更新 open 取代、cancelled 為終態）。由既有 ix_events_group_status 支撐。
+   */
+  async findLatestDisplayable(groupId: string): Promise<EventRow | undefined> {
+    const res = await this.q.query<EventRow>(
+      `SELECT * FROM events
+       WHERE group_id = $1 AND status = ANY($2)
+       ORDER BY id DESC LIMIT 1`,
+      [groupId, [...DISPLAYABLE_EVENT_STATUSES]],
     );
     return res.rows[0];
   }

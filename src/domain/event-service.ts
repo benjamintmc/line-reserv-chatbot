@@ -10,9 +10,14 @@
 //
 // D-007 移植：sync→async（呼叫 repo/runner 處加 await）＋路線 A——交易閉包 (repos)=>Promise<T>，
 // 閉包**內** this.<repo> 改用注入的 repos.<repo>（同一 client）；閉包**外**唯讀查詢仍用 this.<repo>。
-// 窄捕捉改判 PG `23505` + `constraint==='ux_events_active_group'`。confirm 落敗清理見該方法註解
-// （PG 交易內失敗語句會 abort 整個交易，無法於同交易 catch-and-continue，故落敗清理另起交易）。
-// 商業分支/決策規則/AC 期望值零改。
+// 窄捕捉改判 PG `23505` + `constraint==='ux_events_active_group'`。
+//
+// D-008 T-014（單場名額自動釋放）：
+//   - 入口早退放寬為 `active && !isExpired`（過期 open 於入口放行、不 flip，§1b）。
+//   - `確認` 交易內、insert 新 open 前：現存 active 若未過期 → already_active（清 conversation，nit-1）；
+//     若過期 → updateStatus('done') flip 釋放索引槽，再 insert（原子，§1b/G1）。
+//   - `確認` 建立前以 taipeiToUtcIso 合併 draft.date/time → event_datetime（UTC，§3）。
+//   - close/cancel 遇過期 open → no_active（不 flip，OP-7/G5）；closed 已釋放 → 不再由 findActiveByGroup 返回。
 //
 // 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測。
 // 嚴禁 any（D-006 G4）；不得出現 SQL 字串或直接存取 db（D-006 G4）——一律經 repository / tx runner。
@@ -24,6 +29,8 @@ import type { EventReader } from '../db/repositories/event-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
 import type { TransactionRunner } from '../db/tx';
+import { nowIso, taipeiToUtcIso } from '../db/time';
+import { isExpired } from './event-status';
 import { perPersonAmount } from './billing';
 import {
   applyAnswer,
@@ -73,6 +80,7 @@ export type AbortResult = { kind: 'noop' } | { kind: 'duplicate' } | { kind: 'ab
  * `關閉報名`（close_event）結果。
  * D-005 §4：ok 帶 confirmedCount（凍結正取數）與 settledPerPerson（split 最終攤額；per_person 為 null）。
  * D-006：not_authorized（非建立者非 super-admin）於進交易前 early-return。
+ * D-008：`already_closed` 因 closed 不再由 findActiveByGroup 返回 → 不可達（保留供防禦，errata D-004 §5.1）。
  */
 export type CloseResult =
   | { kind: 'not_authorized' }
@@ -196,9 +204,12 @@ export class EventService {
 
   // ── `開團`（逐步問答入口，§3；D-006 §1.1 開團全開） ──────────────────
   async startCreation(input: StartCreationInput): Promise<CreateEntryResult> {
-    // 入口先查（§6 fail fast）：已有 active（draft/open/closed）→ 拒絕、不寫 conversation。
+    // 入口先查（§6 fail fast）：已有**未過期** active（open）→ 拒絕、不寫 conversation。
+    // D-008 §1b：過期 open 於入口放行（不 flip、不建立），實際 flip 延至 `確認` 交易。
     const active = await this.events.findActiveByGroup(input.groupId);
-    if (active !== undefined) return { kind: 'already_active', event: active };
+    if (active !== undefined && !isExpired(active, nowIso())) {
+      return { kind: 'already_active', event: active };
+    }
 
     return this.tx<CreateEntryResult>(async (repos) => {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
@@ -215,7 +226,9 @@ export class EventService {
   // ── `開團 <欄位…>`（一行式入口，§2 / D-005 §6.1；D-006 §1.1 開團全開） ──
   async handleOneline(input: OnelineInput): Promise<CreateEntryResult> {
     const active = await this.events.findActiveByGroup(input.groupId);
-    if (active !== undefined) return { kind: 'already_active', event: active };
+    if (active !== undefined && !isExpired(active, nowIso())) {
+      return { kind: 'already_active', event: active };
+    }
 
     const draft: CreateEventDraft = {
       date: input.date,
@@ -306,7 +319,7 @@ export class EventService {
     });
   }
 
-  // ── `確認` 建立 open event + 主辦自動登記（§4 / D-005 §3） ───────────
+  // ── `確認` 建立 open event + 主辦自動登記（§4 / D-005 §3 / D-008 §1b/§3） ───────────
   async confirm(input: ConfirmInput): Promise<ConfirmResult> {
     const conv = await this.conversations.get(input.executorLineUserId);
     if (conv === undefined || conv.state !== 'awaiting_confirm') return { kind: 'noop' };
@@ -317,15 +330,23 @@ export class EventService {
       return await this.tx<ConfirmResult>(async (repos) => {
         if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
 
-        // G3 入口再確認（早退；此路徑無前置失敗語句，可於同交易 delete + commit）。
+        // G3 入口再確認（交易內權威重讀）。D-008 §1b：
+        //   未過期 active → already_active（清 conversation，nit-1）；
+        //   過期 open → flip done（釋放索引槽），再於同交易 insert 新 open（原子，G1）。
         const active = await repos.events.findActiveByGroup(input.groupId);
         if (active !== undefined) {
-          await repos.conversations.delete(input.executorLineUserId);
-          return { kind: 'already_active' };
+          if (!isExpired(active, nowIso())) {
+            await repos.conversations.delete(input.executorLineUserId);
+            return { kind: 'already_active' };
+          }
+          await repos.events.updateStatus(active.id, 'done');
         }
 
         // G8：host_user_id = 建立者（任一群成員，D-006 開團全開）的 user.id。
         const host = await repos.users.upsert(input.executorLineUserId, input.hostDisplayName);
+
+        // D-008 §3：台灣本地 draft.date/time → UTC event_datetime（一行式與逐步問答皆匯流至此）。
+        const eventDatetime = taipeiToUtcIso(draft.date, draft.time);
 
         // 真正安全網：INSERT 撞 ux_events_active_group（並行競態）。PG 下唯一違反會 abort 整個交易，
         // 故此處**不** catch-and-continue；讓錯誤逸出 → 交易 runner ROLLBACK + rethrow → 由下方 catch
@@ -333,8 +354,7 @@ export class EventService {
         const event = await repos.events.create({
           groupId: input.groupId,
           hostUserId: host.id,
-          eventDate: draft.date,
-          eventTime: draft.time,
+          eventDatetime,
           location: draft.location,
           capacity: draft.capacity,
           pricePerPerson: draft.price,
@@ -381,12 +401,14 @@ export class EventService {
     });
   }
 
-  // ── `關閉報名`（close_event，§5.2 / D-005 §4 / D-006 §1.2·§2） ───────
+  // ── `關閉報名`（close_event，§5.2 / D-005 §4 / D-006 §1.2·§2 / D-008 OP-7） ───────
   async closeEvent(input: LifecycleInput): Promise<CloseResult> {
     // D-006 §2：授權需先讀 active 取 host_user_id → no_active 與 not_authorized 皆於**進交易前**
     // early-return（不 mark、無 DB 變更，G2）。
+    // D-008 OP-7：過期 open → no_active、不 flip（讀寫最小，reads 不寫，G5）。
     const active0 = await this.events.findActiveByGroup(input.groupId);
     if (active0 === undefined) return { kind: 'no_active' };
+    if (isExpired(active0, nowIso())) return { kind: 'no_active' };
     if (!(await this.canManageEvent(active0, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
@@ -395,7 +417,8 @@ export class EventService {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
       const active = await repos.events.findActiveByGroup(input.groupId); // 交易內權威重讀（D-004 §5.2）
       if (active === undefined) return { kind: 'no_active' };
-      if (active.status === 'closed') return { kind: 'already_closed' };
+      if (isExpired(active, nowIso())) return { kind: 'no_active' }; // 交易內重檢（OP-7）
+      if (active.status === 'closed') return { kind: 'already_closed' }; // D-008：不可達（防禦保留）
       if (active.status !== 'open') return { kind: 'no_active' }; // draft 未物化，其餘非法
       // G2：open → closed（讀當前 status 判定合法後才寫）。
       await repos.events.updateStatus(active.id, 'closed');
@@ -419,11 +442,13 @@ export class EventService {
     });
   }
 
-  // ── `取消活動`（cancel_event，§5.2；刪除類 R2 / D-006 §1.2·§2） ──────
+  // ── `取消活動`（cancel_event，§5.2；刪除類 R2 / D-006 §1.2·§2 / D-008 OP-7） ──────
   async cancelEvent(input: LifecycleInput): Promise<CancelResult> {
     // D-006 §2：授權於進交易前判定（不 mark、無 DB 變更，G2）。
+    // D-008 OP-7：過期 open → no_active、不 flip；closed 已釋放（findActiveByGroup 不回）→ no_active。
     const active0 = await this.events.findActiveByGroup(input.groupId);
     if (active0 === undefined) return { kind: 'no_active' };
+    if (isExpired(active0, nowIso())) return { kind: 'no_active' };
     if (!(await this.canManageEvent(active0, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
@@ -432,9 +457,10 @@ export class EventService {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
       const active = await repos.events.findActiveByGroup(input.groupId); // 交易內權威重讀
       if (active === undefined) return { kind: 'no_active' };
-      // open 或 closed 皆可取消；draft 未物化（防禦）。
+      if (isExpired(active, nowIso())) return { kind: 'no_active' }; // 交易內重檢（OP-7）
+      // open 可取消；draft 未物化、closed 不再由 findActiveByGroup 返回（防禦）。
       if (active.status !== 'open' && active.status !== 'closed') return { kind: 'no_active' };
-      // G2：open/closed → cancelled（終態）。G6：僅狀態轉移，不刪 registrations。
+      // G2：open → cancelled（終態）。G6：僅狀態轉移，不刪 registrations。
       await repos.events.updateStatus(active.id, 'cancelled');
       return { kind: 'ok', event: { ...active, status: 'cancelled' } };
     });
