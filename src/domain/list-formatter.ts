@@ -3,15 +3,23 @@
 // D-003 §8 / D-005 §5：把 domain 結果物件組版為繁體中文文字 + LINE-agnostic mention 描述子。
 // 純函式：對 LINE SDK 零耦合（AC-8/AC-14）。嚴禁 any（G11/G6）；不觸 DB（G10）。
 //
-// D-005：費用列依 price_mode 顯示（split_venue 標「暫估，關閉報名後結算」，G2）；
+// D-005：費用列依 price_mode 顯示（split_venue live 標「暫估，關閉報名後結算」，G2）；
 // 文案中性化（球聚→球敘、body 標籤 地點→場地，§7）；均攤金額走 billing.perPersonAmount（G1）。
+//
+// D-008 T-014（D-003 errata §五）：名單依 phase（live/ended/closed）分列組成——
+//   - 標題：ended「（活動已結束）」、closed「（報名已截止）」；
+//   - 費用列 phase 化：live 暫估／ended 取 perPersonAmount 去暫估／closed 取 settled_per_person 標「最終結算」；
+//   - ended/closed **移除「剩餘名額」列**、總金額列去「預估/暫估」；
+//   - 日期一律 utcIsoToTaipei(event.event_datetime) 還原台灣本地（顯示字面與輸入一致，AC-10）。
 //
 // 輸出型別 MessageDescriptor 由 webhook handler 轉為實際 LINE 訊息
 // （純文字 → TextMessage；含 mention → TextMessageV2 + substitution）。
 
 import type { EventRow, RegistrationRow } from '../db/schema';
+import { utcIsoToTaipei } from '../db/time';
 import { buildRoster } from './roster';
 import { estimatedTotal, perPersonAmount } from './billing';
+import type { ListPhase } from './event-status';
 import type { RegistrationView, SignupResult, CancelResult } from './registration-service';
 
 /** LINE-agnostic mention 描述子（AC-14）：mention 顯示文字在 text 中的位置與被 @ 者 line_user_id。 */
@@ -48,26 +56,54 @@ type CancelOk = Extract<CancelResult, { kind: 'ok' }>;
 // ── 共用區塊 ─────────────────────────────────────────────────────────
 
 /**
- * 費用列（D-005 §5.1；供 header 複用）。依 price_mode：
- * - per_person：`每人費用：N 元`
- * - split_venue：`場地費：N 元，平均每人約 M 元（暫估，關閉報名後結算）`（M=ceil，分母=正取數，G1/G2）
+ * 費用列（D-005 §5.1 / D-008 §8；供 header 複用）。依 price_mode + phase：
+ * - per_person（所有 phase）：`每人費用：N 元`
+ * - split_venue live：`場地費：N 元，平均每人約 M 元（暫估，關閉報名後結算）`
+ * - split_venue ended：`場地費：N 元，每人 M 元（正取 K 人）`（M=perPersonAmount 動態終值，去「暫估」）
+ * - split_venue closed：`場地費：N 元，每人 M 元（正取 K 人，最終結算）`（M=settled_per_person 凍結快照）
  */
-export function feeLine(event: EventRow, confirmedCount: number): string {
-  if (event.price_mode === 'split_venue') {
-    const fee = event.venue_fee ?? 0;
+export function feeLine(
+  event: EventRow,
+  confirmedCount: number,
+  phase: ListPhase = 'live',
+): string {
+  if (event.price_mode !== 'split_venue') {
+    return `每人費用：${event.price_per_person} 元`;
+  }
+  const fee = event.venue_fee ?? 0;
+  if (phase === 'live') {
     const per = perPersonAmount(event, confirmedCount);
     return `場地費：${fee} 元，平均每人約 ${per} 元（暫估，關閉報名後結算）`;
   }
-  return `每人費用：${event.price_per_person} 元`;
+  if (phase === 'closed') {
+    // closed 取凍結快照 settled_per_person；意外為 NULL（D-005 後不應發生）→ fallback 動態算。
+    const settled = event.settled_per_person ?? perPersonAmount(event, confirmedCount);
+    return `場地費：${fee} 元，每人 ${settled} 元（正取 ${confirmedCount} 人，最終結算）`;
+  }
+  // ended（過期 open，settled_per_person 恆為 NULL 因從未關閉）：取 perPersonAmount 動態終值。
+  const per = perPersonAmount(event, confirmedCount);
+  return `場地費：${fee} 元，每人 ${per} 元（正取 ${confirmedCount} 人）`;
 }
 
-function eventHeader(event: EventRow, forSignup: boolean, confirmedCount: number): string {
-  const title = forSignup ? `[${event.location} 球敘報名]` : `[${event.location} 球敘]`;
+function eventHeader(
+  event: EventRow,
+  forSignup: boolean,
+  confirmedCount: number,
+  phase: ListPhase = 'live',
+): string {
+  const { date, time } = utcIsoToTaipei(event.event_datetime);
+  let title: string;
+  if (forSignup) {
+    title = `[${event.location} 球敘報名]`;
+  } else {
+    const suffix = phase === 'ended' ? '（活動已結束）' : phase === 'closed' ? '（報名已截止）' : '';
+    title = `[${event.location} 球敘]${suffix}`;
+  }
   return [
     title,
-    `日期：${event.event_date} ${event.event_time}`,
+    `日期：${date} ${time}`,
     `場地：${event.location}`,
-    feeLine(event, confirmedCount),
+    feeLine(event, confirmedCount, phase),
   ].join('\n');
 }
 
@@ -95,15 +131,21 @@ function waitlistPositions(waitlist: RegistrationRow[], newSlots: RegistrationRo
   return positions;
 }
 
-function bodyRoster(view: RegistrationView): string[] {
+/**
+ * 名單主體（正取 + 候補 + 剩餘名額列）。
+ * D-008：ended/closed **略去「剩餘名額」列**（`報名名單（K/上限）` 已含人數，不暗示可加入）。
+ */
+function bodyRoster(view: RegistrationView, phase: ListPhase = 'live'): string[] {
   const parts: string[] = [];
   parts.push(...confirmedSection(view.event.capacity, view.confirmed));
   if (view.waitlist.length > 0) {
     parts.push('');
     parts.push(...waitlistSection(view.waitlist));
   }
-  parts.push('');
-  parts.push(`剩餘名額：${view.available}`);
+  if (phase === 'live') {
+    parts.push('');
+    parts.push(`剩餘名額：${view.available}`);
+  }
   return parts;
 }
 
@@ -112,6 +154,11 @@ function bodyRoster(view: RegistrationView): string[] {
 /** 無 open 活動定型句（§8(F)、§7）。 */
 export function formatNoOpenEvent(): MessageDescriptor {
   return { text: '目前沒有開放報名的活動', mentionees: [] };
+}
+
+/** 過期 open 的 +N/-N 拒絕（D-008 §8(1)/OP-2/AC-4）。 */
+export function formatEventEnded(): MessageDescriptor {
+  return { text: '這場活動已結束，無法再報名／取消。', mentionees: [] };
 }
 
 /** -N 查無可取消名額（§7）。 */
@@ -151,18 +198,24 @@ export function formatCancel(result: CancelOk): MessageDescriptor {
   return { text: parts.join('\n'), mentionees: [] };
 }
 
-/** 名單查詢（§8(E) / D-005 §5.1）：名單 + 剩餘名額 + 預估總金額（mode-aware）。 */
-export function formatList(view: RegistrationView): MessageDescriptor {
-  const parts: string[] = [eventHeader(view.event, false, view.confirmedCount), ''];
-  parts.push(...bodyRoster(view));
+/**
+ * 名單查詢（§8(E) / D-005 §5.1 / D-008 §8(3)）：名單 + （live 才有）剩餘名額 + 總金額（mode/phase-aware）。
+ * ended/closed：標題標「活動已結束/報名已截止」、費用列去暫估、無剩餘名額、總金額去「預估/暫估」。
+ */
+export function formatList(view: RegistrationView, phase: ListPhase = 'live'): MessageDescriptor {
+  const parts: string[] = [eventHeader(view.event, false, view.confirmedCount, phase), ''];
+  parts.push(...bodyRoster(view, phase));
+  const total = estimatedTotal(view.event, view.confirmedCount);
   if (view.event.price_mode === 'split_venue') {
     // split：總額固定 = venue_fee，與正取數無關（AC-2/AC-14）。
-    parts.push(`預估總金額：場地費 ${estimatedTotal(view.event, view.confirmedCount)} 元（固定，暫估）`);
-  } else {
-    const total = estimatedTotal(view.event, view.confirmedCount);
     parts.push(
-      `預估總金額：${view.confirmedCount} × ${view.event.price_per_person} = ${total} 元`,
+      phase === 'live'
+        ? `預估總金額：場地費 ${total} 元（固定，暫估）`
+        : `總金額：場地費 ${total} 元`,
     );
+  } else {
+    const line = `${view.confirmedCount} × ${view.event.price_per_person} = ${total} 元`;
+    parts.push(phase === 'live' ? `預估總金額：${line}` : `總金額：${line}`);
   }
   return { text: parts.join('\n'), mentionees: [] };
 }

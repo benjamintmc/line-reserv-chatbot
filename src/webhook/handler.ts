@@ -11,6 +11,9 @@
 // D-007 移植：domain/repo 皆 async → 呼叫處加 await（含 conversations.get / buildPromotionNotice 的
 // users.getById / resolveDisplayName 的 users.getByLineUserId）；renderCancel 因需 await 遞補通知而轉 async。
 //
+// D-008 T-014：signup/cancel 新增 event_ended → 拒絕文案（formatEventEnded）；
+// 名單依 domain 傳回之 phase（live/ended/closed）組版（formatList(view, phase)）。
+//
 // **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any。
 // unknown / 無流程 confirm·abort / 未攔截雜訊一律不回覆、不 markProcessed（G9）。
 
@@ -40,6 +43,7 @@ import {
   formatCancel,
   formatList,
   formatNoOpenEvent,
+  formatEventEnded,
   formatNothingToCancel,
   formatPromotionNotice,
   type MessageDescriptor,
@@ -145,11 +149,13 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     return { isProxy: false, displayName: row.display_name, ownerLineUserId };
   }
 
-  // ── D-003 render（不變） ─────────────────────────────────────────────
+  // ── D-003 render（D-008：新增 event_ended / 名單 phase） ────────────────
   function renderSignup(result: SignupResult): messagingApi.Message[] {
     switch (result.kind) {
       case 'no_open_event':
         return [toLineMessage(formatNoOpenEvent())];
+      case 'event_ended':
+        return [toLineMessage(formatEventEnded())]; // D-008 §8(1)/AC-4
       case 'duplicate':
         return [];
       case 'ok':
@@ -168,6 +174,8 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     switch (result.kind) {
       case 'no_open_event':
         return [toLineMessage(formatNoOpenEvent())];
+      case 'event_ended':
+        return [toLineMessage(formatEventEnded())]; // D-008 §8(1)/AC-4
       case 'duplicate':
         return [];
       case 'nothing_to_cancel':
@@ -194,7 +202,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'duplicate':
         return [];
       case 'ok':
-        return [toLineMessage(formatList(result.view))];
+        return [toLineMessage(formatList(result.view, result.phase))]; // D-008 §8(3)：phase 化
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -286,7 +294,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'no_active':
         return [toLineMessage(formatNoActiveEvent())]; // (J)
       case 'already_closed':
-        return [toLineMessage(formatAlreadyClosed())]; // (J)
+        return [toLineMessage(formatAlreadyClosed())]; // (J)（D-008：不可達，保留防禦）
       case 'ok':
         // D-005 §4：settledPerPerson 為結算唯一真相來源（split 才有值），confirmedCount 供顯示 K。
         return [

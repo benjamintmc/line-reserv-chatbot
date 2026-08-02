@@ -7,13 +7,24 @@
 // 關閉報名(split) 顯示最終攤額（formatClosed 以傳入 settledPerPerson 為唯一真相來源）；
 // 文案中性化（球聚→球敘、開球時間→時間、球場地點→場地）。
 // D-006：(H′) close/cancel 非授權文案（開團已全開，無「非授權開團」訊息）；(MyID) 我的ID。
+//
+// D-008 T-014（D-004/D-005 errata §五）：
+//   - (D) 開團公告 / (I) 重複活動摘要之日期改由 event.event_datetime（UTC）經 utcIsoToTaipei 還原台灣本地；
+//   - (E) formatClosed 即時回覆用詞由「已關閉報名」→「報名已截止」（與名單 closed 標籤收斂，B1）。
 
 import type { EventRow } from '../db/schema';
+import { utcIsoToTaipei } from '../db/time';
 import type { CreateState, CreateEventDraft } from './create-flow';
 import type { MessageDescriptor } from './list-formatter';
 
 function text(s: string): MessageDescriptor {
   return { text: s, mentionees: [] };
+}
+
+/** event.event_datetime（UTC）→ 台灣本地顯示字串 `YYYY-MM-DD HH:MM`（D-008 §3）。 */
+function eventDateTimeDisplay(event: EventRow): string {
+  const { date, time } = utcIsoToTaipei(event.event_datetime);
+  return `${date} ${time}`;
 }
 
 // (A) 逐步問答提問（依 state）。首問附「取消」逃生口提示（N1）。
@@ -57,6 +68,7 @@ function draftFeeLine(draft: CreateEventDraft): string {
 }
 
 // (B) 確認摘要（awaiting_confirm；一行式與逐步問答共用）。
+// D-008：摘要仍以 draft 台灣本地 date/time 顯示（尚未合併 UTC；create-flow 不變）。
 export function formatConfirmSummary(draft: CreateEventDraft): MessageDescriptor {
   return text(
     [
@@ -110,7 +122,7 @@ export function formatOpenAnnouncement(event: EventRow): MessageDescriptor {
   return text(
     [
       `[${event.location} 球敘] 開團成功！`,
-      `日期：${event.event_date} ${event.event_time}`,
+      `日期：${eventDateTimeDisplay(event)}`,
       `場地：${event.location}`,
       `人數上限：${event.capacity}`,
       eventFeeLine(event),
@@ -121,13 +133,14 @@ export function formatOpenAnnouncement(event: EventRow): MessageDescriptor {
   );
 }
 
-// (E) 關閉報名回覆。split 追加最終結算列（settledPerPerson 為唯一真相來源，architect N3）。
+// (E) 關閉報名回覆（D-008 B1：用詞「報名已截止」，與名單 closed 標籤一致）。
+// split 追加最終結算列（settledPerPerson 為唯一真相來源，architect N3）。
 export function formatClosed(
   event: EventRow,
   settledPerPerson: number | null,
   confirmedCount: number,
 ): MessageDescriptor {
-  const base = `「${event.location}」球敘已關閉報名，不再接受新報名。`;
+  const base = `「${event.location}」球敘報名已截止，不再接受新報名。`;
   if (event.price_mode === 'split_venue' && settledPerPerson !== null) {
     return text(
       base +
@@ -173,7 +186,7 @@ export function formatAlreadyActiveEntry(event: EventRow): MessageDescriptor {
   return text(
     [
       '目前已有進行中的活動，無法再開新團：',
-      `日期：${event.event_date} ${event.event_time}`,
+      `日期：${eventDateTimeDisplay(event)}`,
       `場地：${event.location}`,
       eventFeeLine(event),
       '（如需另開新團，請開團的人先輸入「取消活動」結束目前活動。）',
@@ -181,7 +194,7 @@ export function formatAlreadyActiveEntry(event: EventRow): MessageDescriptor {
   );
 }
 
-// (J) 生命週期指令但狀態不符：已關閉報名。
+// (J) 生命週期指令但狀態不符：已關閉報名（D-008：closed 釋放後 close 路徑不可達，保留供防禦）。
 export function formatAlreadyClosed(): MessageDescriptor {
   return text('活動已關閉報名。');
 }
