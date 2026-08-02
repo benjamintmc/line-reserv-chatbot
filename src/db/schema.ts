@@ -24,18 +24,30 @@ export type EventStatus = 'draft' | 'open' | 'closed' | 'cancelled' | 'done';
  */
 export type PriceMode = 'per_person' | 'split_venue';
 
-/** active 集合：受 ux_events_active_group 約束（G3）。 */
-export const ACTIVE_EVENT_STATUSES: ReadonlyArray<EventStatus> = ['draft', 'open', 'closed'];
+/**
+ * active 集合（擋團/生命週期）：受 ux_events_active_group 約束（D-008 §1a）。
+ * D-008 T-014：`closed` 移出 active 集合——closed 釋放擋團（不再擋新開團），
+ * 但名單仍可查（見 {@link DISPLAYABLE_EVENT_STATUSES}）。migration 0003 同步重定義索引 predicate。
+ */
+export const ACTIVE_EVENT_STATUSES: ReadonlyArray<EventStatus> = ['draft', 'open'];
+
+/**
+ * 顯示集（`名單` 查詢用；D-008 §2/OP-4）：含 closed，供關閉報名後仍可查最終名單。
+ * 不含 `done`/`cancelled`（done 僅內部釋放槽物化、必被更新 open 取代；cancelled 為終態不顯示）。
+ */
+export const DISPLAYABLE_EVENT_STATUSES: ReadonlyArray<EventStatus> = ['draft', 'open', 'closed'];
 
 /** events 表列。 */
 export interface EventRow {
   id: number;
   group_id: string;
   host_user_id: number;
-  /** 顯示文字 YYYY-MM-DD（Q2）。 */
-  event_date: string;
-  /** 顯示文字 HH:MM（Q2）。 */
-  event_time: string;
+  /**
+   * 活動開始時刻，UTC ISO-8601（`YYYY-MM-DDTHH:MM:SSZ`，秒精度；D-008 §3）。
+   * 由台灣本地輸入經 `taipeiToUtcIso` 轉存；顯示時 `utcIsoToTaipei` 還原。與 `nowIso()` 同格式，
+   * 字典序 == 時序 → 過期判定 `nowIso() > event_datetime` 可純字串比較（G3，倚 D-001 G11）。
+   */
+  event_datetime: string;
   location: string;
   capacity: number;
   /** 整數新台幣元。split_venue 模式恆為 0（不適用，見 D-005 §1.1）。 */
