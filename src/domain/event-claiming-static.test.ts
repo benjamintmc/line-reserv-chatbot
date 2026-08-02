@@ -14,7 +14,7 @@ const SRC = join(__dirname, '..');
 describe('D-006 靜態審查（G3 / G4 / G5）', () => {
   it('[D-006 AC-13] 零 migration：migrations/ 僅 0001/0002，無新增', () => {
     const files = readdirSync(join(SRC, 'db', 'migrations')).filter((f) => f.endsWith('.sql')).sort();
-    expect(files).toEqual(['0001_init.sql', '0002_billing_modes.sql']);
+    expect(files).toEqual(['0001_init.sql', '0002_billing_modes.sql', '0003_merge_event_datetime.sql']);
   });
 
   it('[D-006 AC-13] 零新指令：ParsedCommand 無 group_admins/管理人 類新成員（my_id 沿用既有）', () => {

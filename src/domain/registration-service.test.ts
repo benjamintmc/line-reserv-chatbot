@@ -232,19 +232,22 @@ describe('RegistrationService', () => {
     expect(await t.registrations.findActiveProxyByName(event.id, '陳大哥')).toHaveLength(1);
   });
 
-  it('[D-003 AC-9] 無 open 活動（無活動 / closed）signup/cancel/list 皆回 no_open_event', async () => {
+  it('[D-003 AC-9 / D-008 AC-11] 無活動 → 皆 no_open_event；closed → signup/cancel no_open_event、名單顯示 closed', async () => {
     const svc = makeService(t);
     // 無任何活動。
     expect((await svc.signup({ groupId: 'G-none', executorLineUserId: 'U', executorDisplayName: 'U', messageId: 'm1', count: 1 })).kind).toBe('no_open_event');
     expect((await svc.cancel({ groupId: 'G-none', executorLineUserId: 'U', executorDisplayName: 'U', messageId: 'm2', count: 1 })).kind).toBe('no_open_event');
     expect((await svc.getListView({ groupId: 'G-none', messageId: 'm3' })).kind).toBe('no_open_event');
 
-    // closed 活動（在 active 集合，但非 open）→ 一律 no_open_event（含 cancel）。
+    // closed 活動：signup/cancel 仍 no_open_event（findActiveByGroup 不回 closed）；
+    // D-008 AC-11：名單改顯示 closed（phase='closed'、kind='ok'，非 no_open_event）。
     const host = await t.users.upsert('U-h2', '主辦2');
-    await t.events.create({ groupId: 'G-closed', hostUserId: host.id, eventDate: '2026-08-01', eventTime: '07:30', location: '某場', capacity: 4, status: 'closed' });
+    await t.events.create({ groupId: 'G-closed', hostUserId: host.id, eventDatetime: '2026-08-14T23:30:00Z', location: '某場', capacity: 4, status: 'closed' });
     expect((await svc.signup({ groupId: 'G-closed', executorLineUserId: 'U', executorDisplayName: 'U', messageId: 'm4', count: 1 })).kind).toBe('no_open_event');
     expect((await svc.cancel({ groupId: 'G-closed', executorLineUserId: 'U', executorDisplayName: 'U', messageId: 'm6', count: 1 })).kind).toBe('no_open_event');
-    expect((await svc.getListView({ groupId: 'G-closed', messageId: 'm5' })).kind).toBe('no_open_event');
+    const list = await svc.getListView({ groupId: 'G-closed', messageId: 'm5' });
+    expect(list.kind).toBe('ok');
+    if (list.kind === 'ok') expect(list.phase).toBe('closed');
   });
 
   it('[D-003 AC-11] 相同 message_id 的 +1 連續兩次 → 第二次 duplicate、只 1 列有效', async () => {

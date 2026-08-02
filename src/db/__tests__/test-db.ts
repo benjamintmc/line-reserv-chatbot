@@ -6,6 +6,7 @@ import {
   type TransactionRunner,
   type ImmediateRunner,
 } from '../tx';
+import type { EventStatus } from '../schema';
 import { UserRepository } from '../repositories/user-repository';
 import { EventRepository } from '../repositories/event-repository';
 import { RegistrationRepository } from '../repositories/registration-repository';
@@ -18,6 +19,14 @@ import { ProcessedEventRepository } from '../repositories/processed-event-reposi
  */
 const TEST_URL =
   process.env.DATABASE_URL_TEST ?? 'postgres://golf:golf@localhost:5433/golf_test';
+
+/**
+ * D-008 測試共用固定時刻（UTC ISO；event_datetime 皆用此類值，過期判定不倚賴真實時鐘）：
+ * - `FUTURE_ISO`：遠未來 → 未過期（seedEvent 預設；既有 live 行為測試保持綠）。
+ * - `PAST_ISO`：已過去 → 過期（過期 open / ended phase 測試用）。
+ */
+export const FUTURE_ISO = '2999-01-01T00:00:00Z';
+export const PAST_ISO = '2000-01-01T00:00:00Z';
 
 /**
  * 測試用 DB handle（含 pool-bound repository 集合與交易 runner）。
@@ -77,10 +86,20 @@ export async function createTestDb(): Promise<TestDb> {
   };
 }
 
-/** 建立一位 user 與一場 open 活動的常用夾具。 */
+/**
+ * 建立一位 user 與一場 open 活動的常用夾具。
+ * D-008：event_datetime 預設 {@link FUTURE_ISO}（未過期 → live）；可傳 `eventDatetime`/`status` 覆寫
+ * 以構造過期（PAST_ISO）或 closed 情境。
+ */
 export async function seedEvent(
   t: TestDb,
-  opts: { capacity: number; groupId?: string; hostLineId?: string },
+  opts: {
+    capacity: number;
+    groupId?: string;
+    hostLineId?: string;
+    eventDatetime?: string;
+    status?: EventStatus;
+  },
 ): Promise<{
   host: Awaited<ReturnType<UserRepository['upsert']>>;
   event: Awaited<ReturnType<EventRepository['create']>>;
@@ -89,11 +108,10 @@ export async function seedEvent(
   const event = await t.events.create({
     groupId: opts.groupId ?? 'G-1',
     hostUserId: host.id,
-    eventDate: '2026-08-01',
-    eventTime: '07:30',
+    eventDatetime: opts.eventDatetime ?? FUTURE_ISO,
     location: '林口高球場',
     capacity: opts.capacity,
-    status: 'open',
+    status: opts.status ?? 'open',
   });
   return { host, event };
 }

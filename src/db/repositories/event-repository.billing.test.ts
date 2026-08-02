@@ -20,8 +20,7 @@ describe('EventRepository 計費一致性（D-005 §1.3 / G4）', () => {
     const row = await t.events.create({
       groupId: 'G-split',
       hostUserId: host.id,
-      eventDate: '2026-08-15',
-      eventTime: '07:30',
+      eventDatetime: '2026-08-14T23:30:00Z',
       location: '東方球場',
       capacity: 16,
       priceMode: 'split_venue',
@@ -39,8 +38,7 @@ describe('EventRepository 計費一致性（D-005 §1.3 / G4）', () => {
     const row = await t.events.create({
       groupId: 'G-pp',
       hostUserId: host.id,
-      eventDate: '2026-08-15',
-      eventTime: '07:30',
+      eventDatetime: '2026-08-14T23:30:00Z',
       location: '東方球場',
       capacity: 16,
       priceMode: 'per_person',
@@ -57,8 +55,7 @@ describe('EventRepository 計費一致性（D-005 §1.3 / G4）', () => {
     const row = await t.events.create({
       groupId: 'G-def',
       hostUserId: host.id,
-      eventDate: '2026-08-15',
-      eventTime: '07:30',
+      eventDatetime: '2026-08-14T23:30:00Z',
       location: '東方球場',
       capacity: 16,
       pricePerPerson: 1800,
@@ -73,8 +70,7 @@ describe('EventRepository 計費一致性（D-005 §1.3 / G4）', () => {
     const base = {
       groupId: 'G-bad',
       hostUserId: host.id,
-      eventDate: '2026-08-15',
-      eventTime: '07:30',
+      eventDatetime: '2026-08-14T23:30:00Z',
       location: '東方球場',
       capacity: 16,
       status: 'open' as const,
@@ -96,8 +92,7 @@ describe('EventRepository 計費一致性（D-005 §1.3 / G4）', () => {
     const row = await t.events.create({
       groupId: 'G-set',
       hostUserId: host.id,
-      eventDate: '2026-08-15',
-      eventTime: '07:30',
+      eventDatetime: '2026-08-14T23:30:00Z',
       location: '東方球場',
       capacity: 16,
       priceMode: 'split_venue',

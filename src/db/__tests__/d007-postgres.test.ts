@@ -162,7 +162,7 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
     // (a) 真實重複 active group → pg 錯誤帶 code 23505 + constraint（窄捕捉的判別鍵）。
     let caught: unknown;
     try {
-      await t.events.create({ groupId: 'G9', hostUserId: host.id, eventDate: '2026-09-01', eventTime: '08:00', location: 'Y', capacity: 4, status: 'draft' });
+      await t.events.create({ groupId: 'G9', hostUserId: host.id, eventDatetime: '2026-09-01T00:00:00Z', location: 'Y', capacity: 4, status: 'draft' });
     } catch (e) {
       caught = e;
     }

@@ -140,7 +140,7 @@ describe('EventService 計費（D-005 §3–§4）', () => {
     expect(close.settledPerPerson).toBeNull();
     expect((await t.events.getById(eventId))?.settled_per_person).toBeNull();
     const msg = formatClosed(close.event, close.settledPerPerson, close.confirmedCount).text;
-    expect(msg).toBe('「東方球場」球敘已關閉報名，不再接受新報名。');
+    expect(msg).toBe('「東方球場」球敘報名已截止，不再接受新報名。');
     expect(msg).not.toContain('最終每人費用');
   });
 });

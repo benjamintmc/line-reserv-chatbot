@@ -132,6 +132,6 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     await handler.handleEvent(groupTextEvent('開團 2026/08/15 07:30 東方球場 16人 2200元', { messageId: 'o1' }));
     await handler.handleEvent(groupTextEvent('確認', { messageId: 'o2' }));
     const out = await handler.handleEvent(groupTextEvent('關閉報名', { messageId: 'o3' }));
-    expect(textOf(out)).toContain('已關閉報名');
+    expect(textOf(out)).toContain('報名已截止');
   });
 });

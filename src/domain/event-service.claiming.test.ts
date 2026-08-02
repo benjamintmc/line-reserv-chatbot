@@ -91,7 +91,7 @@ describe('EventService 授權簡化（D-006）', () => {
     await openEventBy(svc, X);
     const r = await svc.closeEvent({ groupId: G, executorLineUserId: X, messageId: nextMid() });
     expect(r.kind).toBe('ok');
-    expect((await t.events.findActiveByGroup(G))?.status).toBe('closed');
+    expect((await t.events.findLatestDisplayable(G))?.status).toBe('closed');
   });
 
   it('[D-006 AC-3] 建立者（非 super-admin）可取消活動', async () => {
@@ -148,7 +148,7 @@ describe('EventService 授權簡化（D-006）', () => {
     await openEventBy(svc, X);
     const r = await svc.closeEvent({ groupId: G, executorLineUserId: S, messageId: nextMid() });
     expect(r.kind).toBe('ok');
-    expect((await t.events.findActiveByGroup(G))?.status).toBe('closed');
+    expect((await t.events.findLatestDisplayable(G))?.status).toBe('closed');
   });
 
   it('[D-006 AC-8] 取消活動不刪 registrations（含 soft-delete 列）', async () => {

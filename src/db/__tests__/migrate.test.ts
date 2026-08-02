@@ -26,19 +26,20 @@ describe('migrate runner + schema 約束（PG）', () => {
     }
   });
 
-  it('[D-007 AC-5] migrate 冪等：再次執行不重複套用（applied 空、skipped 全部）', async () => {
+  it('[D-007 AC-5 / D-008 AC-8] migrate 冪等：再次執行不重複套用（含 0003，applied 空、skipped 全部）', async () => {
     const client = await t.pool.connect();
     try {
       const result = await runMigrations(client);
       expect(result.applied).toHaveLength(0);
       expect(result.skipped).toContain('0001_init');
-      // D-005：migrations 目錄現含 0001_init 與 0002_billing_modes → 共 2 筆。
       expect(result.skipped).toContain('0002_billing_modes');
+      // D-008：新增獨立 0003（合併 event_datetime + 重定義 ux_events_active_group）。
+      expect(result.skipped).toContain('0003_merge_event_datetime');
     } finally {
       client.release();
     }
     const count = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM schema_migrations');
-    expect(Number(count.rows[0]!.n)).toBe(2);
+    expect(Number(count.rows[0]!.n)).toBe(3);
   });
 
   it('[D-007 AC-5] 建表等義：5 表 + schema_migrations 齊備、partial unique index 存在', async () => {
@@ -72,15 +73,33 @@ describe('migrate runner + schema 約束（PG）', () => {
     }
   });
 
-  it('[D-001 AC-9] 同 group 第二場 active 被 ux_events_active_group 拒絕（PG 23505）', async () => {
+  it('[D-008 AC-8] 0003 後 events 有 event_datetime（NOT NULL）、無 event_date/event_time；ux predicate = {draft,open}', async () => {
+    // event_datetime 存在且 NOT NULL。
+    const cols = await t.pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'events'`,
+    );
+    const colMap = new Map(cols.rows.map((r) => [r.column_name, r.is_nullable]));
+    expect(colMap.get('event_datetime')).toBe('NO'); // NOT NULL
+    expect(colMap.has('event_date')).toBe(false); // 已 drop
+    expect(colMap.has('event_time')).toBe(false); // 已 drop
+    // ux_events_active_group 的 predicate 已移除 closed。
+    const idxdef = await t.pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_events_active_group'`,
+    );
+    const def = idxdef.rows[0]!.indexdef;
+    expect(def).toMatch(/status = ANY|draft.*open|status IN/); // 含 draft/open
+    expect(def).not.toContain('closed'); // closed 已移除（釋放條件 a）
+  });
+
+  it('[D-001 AC-9] 同 group 第二場 active（draft）被 ux_events_active_group 拒絕（PG 23505）', async () => {
     const { host } = await seedEvent(t, { capacity: 4, groupId: 'G-dup' });
     // 同 group 已有一場 open（active），再建一場 draft（亦 active）→ 唯一約束拒絕。
     await expect(
       t.events.create({
         groupId: 'G-dup',
         hostUserId: host.id,
-        eventDate: '2026-09-01',
-        eventTime: '08:00',
+        eventDatetime: '2026-09-01T00:00:00Z',
         location: '大溪高球場',
         capacity: 4,
         status: 'draft',
@@ -88,21 +107,22 @@ describe('migrate runner + schema 約束（PG）', () => {
     ).rejects.toThrow(/unique/i);
   });
 
-  it('[D-001 AC-9] closed 亦屬 active：同 group 已 closed 時第二場 active 仍被拒', async () => {
-    // 補強：active = {draft, open, closed}，closed 不可再開第二場。
+  it('[D-001 AC-9 / D-008 AC-1] closed 已釋放：closed 旁可再開一場 open（不擋團）', async () => {
+    // D-008 反轉：closed 移出 active 集合 → 不再擋新開團（原「closed 亦屬 active」失效）。
     const { host, event } = await seedEvent(t, { capacity: 4, groupId: 'G-closed' });
-    await t.events.updateStatus(event.id, 'closed'); // 仍屬 active 集合
-    await expect(
-      t.events.create({
-        groupId: 'G-closed',
-        hostUserId: host.id,
-        eventDate: '2026-09-01',
-        eventTime: '08:00',
-        location: '大溪高球場',
-        capacity: 4,
-        status: 'open',
-      }),
-    ).rejects.toThrow(/unique/i);
+    await t.events.updateStatus(event.id, 'closed'); // closed 已離開 active 集合
+    const next = await t.events.create({
+      groupId: 'G-closed',
+      hostUserId: host.id,
+      eventDatetime: '2026-09-01T00:00:00Z',
+      location: '大溪高球場',
+      capacity: 4,
+      status: 'open',
+    });
+    expect(next.id).toBeGreaterThan(event.id);
+    // findActiveByGroup 只回 open（closed 不在集合）；顯示集 latest-by-id 取較新 open。
+    expect((await t.events.findActiveByGroup('G-closed'))?.id).toBe(next.id);
+    expect((await t.events.findLatestDisplayable('G-closed'))?.id).toBe(next.id);
   });
 
   it('[D-001 AC-9] 原活動轉終態後，同 group 可再建 active', async () => {
@@ -111,8 +131,7 @@ describe('migrate runner + schema 約束（PG）', () => {
     const next = await t.events.create({
       groupId: 'G-reuse',
       hostUserId: host.id,
-      eventDate: '2026-09-01',
-      eventTime: '08:00',
+      eventDatetime: '2026-09-01T00:00:00Z',
       location: '大溪高球場',
       capacity: 4,
       status: 'open',
@@ -127,8 +146,7 @@ describe('migrate runner + schema 約束（PG）', () => {
       t.events.create({
         groupId: 'G-cap0',
         hostUserId: host.id,
-        eventDate: '2026-08-01',
-        eventTime: '07:30',
+        eventDatetime: '2026-07-31T23:30:00Z',
         location: 'X',
         capacity: 0,
       }),
@@ -142,8 +160,7 @@ describe('migrate runner + schema 約束（PG）', () => {
       t.events.create({
         groupId: 'G-price',
         hostUserId: host.id,
-        eventDate: '2026-08-01',
-        eventTime: '07:30',
+        eventDatetime: '2026-07-31T23:30:00Z',
         location: 'X',
         capacity: 4,
         pricePerPerson: -1,
@@ -155,8 +172,8 @@ describe('migrate runner + schema 約束（PG）', () => {
     const { event, host } = await seedEvent(t, { capacity: 2, groupId: 'G-chk' });
     await expect(
       t.pool.query(
-        `INSERT INTO events (group_id, host_user_id, event_date, event_time, location, capacity, price_per_person, status, created_at, updated_at)
-         VALUES ('G-x', $1, '2026-08-01', '07:30', 'X', 1, 0, 'foo', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')`,
+        `INSERT INTO events (group_id, host_user_id, event_datetime, location, capacity, price_per_person, status, created_at, updated_at)
+         VALUES ('G-x', $1, '2026-08-14T23:30:00Z', 'X', 1, 0, 'foo', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')`,
         [host.id],
       ),
     ).rejects.toThrow(/check/i);

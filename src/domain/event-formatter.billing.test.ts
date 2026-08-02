@@ -17,8 +17,7 @@ function evt(over: Partial<EventRow>): EventRow {
     id: 1,
     group_id: 'G',
     host_user_id: 1,
-    event_date: '2026-08-15',
-    event_time: '07:30',
+    event_datetime: '2026-08-14T23:30:00Z',
     location: '東方球場',
     capacity: 16,
     price_per_person: 0,
@@ -85,14 +84,14 @@ describe('event-formatter 計費 + 中性化（D-005 §5 / §7）', () => {
     // 注意 event.settled_per_person 為 pre-close 快照（可能 NULL）；formatClosed 只認傳入值。
     const e = evt({ price_mode: 'split_venue', venue_fee: 3000, price_per_person: 0, settled_per_person: null });
     const text = formatClosed(e, 429, 7).text;
-    expect(text).toContain('「東方球場」球敘已關閉報名');
+    expect(text).toContain('「東方球場」球敘報名已截止');
     expect(text).toContain('本場最終每人費用：429 元（場地費 3000 元 ÷ 正取 7 人，除不盡無條件進位；多收部分不另找零）');
   });
 
   it('[D-005 AC-8] formatClosed per_person：不附結算列', () => {
     const e = evt({ price_mode: 'per_person', price_per_person: 2200 });
     const text = formatClosed(e, null, 5).text;
-    expect(text).toBe('「東方球場」球敘已關閉報名，不再接受新報名。');
+    expect(text).toBe('「東方球場」球敘報名已截止，不再接受新報名。');
   });
 
   it('[D-005 AC-11] 取消活動回覆中性化「球敘」', () => {
