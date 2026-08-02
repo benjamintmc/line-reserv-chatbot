@@ -195,6 +195,9 @@ describe('D-008 單場名額自動釋放', () => {
       [G],
     );
     expect(Number(active.rows[0]!.n)).toBe(1);
+    // nit-2：勝者於交易內、落敗者於 catch(23505) 分支之另一交易皆清 conversation → 不卡 awaiting_confirm。
+    expect(await t.conversations.get('U-1')).toBeUndefined();
+    expect(await t.conversations.get('U-2')).toBeUndefined();
   });
 
   it('[D-008 AC-9] signup 鎖內以 getById 重讀最新列 re-check（見 done → event_ended、不插槽、無超賣）', async () => {
@@ -209,6 +212,57 @@ describe('D-008 單場名額自動釋放', () => {
     spy.mockRestore();
     expect(r.kind).toBe('event_ended');
     expect(await t.registrations.countConfirmed(ev.id)).toBe(0); // 不插槽、無超賣
+  });
+
+  it('[D-008 AC-9] signup 鎖內 re-check：仍 open 但鎖內已過期（非 done 分支）→ event_ended、不插槽', async () => {
+    // 補強：AC-9 的第二種鎖內失效——read 於交易外未過期、進交易後鎖內重讀見「同列已跨過 event_datetime」
+    //（status 仍 open、但 isExpired 為真），isOpenForSignup(fresh) 亦須為 false → event_ended、不插槽。
+    const ev = await createEvent(t, { eventDatetime: FUTURE_ISO, status: 'open', capacity: 4 });
+    const reg = makeReg(t);
+    const spy = vi
+      .spyOn(EventRepository.prototype, 'getById')
+      .mockResolvedValue({ ...ev, status: 'open', event_datetime: PAST_ISO });
+    const r = await reg.signup({ groupId: G, executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9b', count: 1 });
+    spy.mockRestore();
+    expect(r.kind).toBe('event_ended');
+    expect(await t.registrations.countConfirmed(ev.id)).toBe(0);
+  });
+
+  it('[D-008 AC-9] cancel(-N) 亦於鎖內以 getById re-check：見 done → event_ended、不取消（對稱 signup）', async () => {
+    // 補強：AC-9 鎖內 re-check 對 -N 的對稱覆蓋。既有 AC-4 只驗「交易外」過期即拒；此驗「交易內」被 flip。
+    // 先於未過期 open 佈一筆 confirmed（否則 candidates 空 → nothing_to_cancel 早退、不進交易）。
+    const ev = await createEvent(t, { eventDatetime: FUTURE_ISO, status: 'open', capacity: 4 });
+    const owner = await t.users.upsert('U-a', 'A');
+    await t.runImmediate(ev.id, (repos) =>
+      repos.registrations.insertSlots(
+        { eventId: ev.id, ownerUserId: owner.id, displayName: 'A', kind: 'self', status: 'confirmed' },
+        1,
+      ),
+    );
+    const reg = makeReg(t);
+    // 鎖內 getById 模擬被並行 flip 為 done → cancel re-check 見非 open → event_ended、不取消。
+    const spy = vi
+      .spyOn(EventRepository.prototype, 'getById')
+      .mockResolvedValue({ ...ev, status: 'done' });
+    const r = await reg.cancel({ groupId: G, executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9c', count: 1 });
+    spy.mockRestore();
+    expect(r.kind).toBe('event_ended');
+    // 該 confirmed 列未被取消 → 名單不變。
+    expect(await t.registrations.countConfirmed(ev.id)).toBe(1);
+  });
+
+  it('[D-008 AC-11] closed 且已過期仍分類為 closed（status 優先於過期，不誤標 ended）', async () => {
+    // 補強：displayPhase 先判 status==='closed'（不論時間，event-status.ts §2）。closed 且 event_datetime 已過
+    //（closed 後時間也可能流逝）須仍為 phase='closed'「報名已截止」，不得被誤分類為 'ended'「活動已結束」。
+    await createEvent(t, { eventDatetime: PAST_ISO, status: 'closed' });
+    const reg = makeReg(t);
+    const list = await reg.getListView({ groupId: G, messageId: nextMid() });
+    expect(list.kind).toBe('ok');
+    if (list.kind !== 'ok') return;
+    expect(list.phase).toBe('closed'); // status 優先於過期，非 'ended'
+    const text = formatList(list.view, list.phase).text;
+    expect(text).toContain('（報名已截止）');
+    expect(text).not.toContain('（活動已結束）');
   });
 
   it('[D-008 AC-7] event_datetime 存 UTC + 過期判定跨午夜邊界（純轉換）', () => {
