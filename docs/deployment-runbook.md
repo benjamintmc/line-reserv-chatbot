@@ -36,9 +36,9 @@ PowerShell：
 $env:DATABASE_URL = "postgres://user:pw@ep-xxx.ap-southeast-1.aws.neon.tech/dbname?sslmode=require"  # 直連（非 -pooler）
 npm run db:migrate
 ```
-預期輸出：`[migrate] 本次套用：0001_init, 0002_billing_modes`。重跑會顯示 `已套用略過`（冪等）。
+預期輸出（全新 DB）：`[migrate] 本次套用：0001_init, 0002_billing_modes, 0003_merge_event_datetime`。重跑會顯示 `已套用略過`（冪等）。
 
-> 未來 D-008（單場自動釋放）實作後會多一個 `0003_merge_event_datetime`，屆時同樣對直連再跑一次 `npm run db:migrate` 即可。
+> `0003_merge_event_datetime`（D-008 T-014，單場自動釋放）已交付：合併 `event_date`+`event_time` → `event_datetime`（UTC）並重定義 `ux_events_active_group` 為 {draft,open}。既有已上線環境升級時，對直連再跑一次 `npm run db:migrate` 即會套用 0003（backfill 台灣本地→UTC 等義、drop 舊兩欄）。
 
 **驗證**（可用 Neon Console SQL Editor）：`\dt` 或 `SELECT tablename FROM pg_tables WHERE schemaname='public';` 應見 `users`、`events`、`registrations`、`conversation_states`、`processed_events`、`schema_migrations`。
 

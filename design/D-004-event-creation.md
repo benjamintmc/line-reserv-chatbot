@@ -560,3 +560,4 @@ close/cancel 無 active → 目前沒有進行中的活動。
 
 > **兩 blocker（B1/B2）已於設計正文補齊，architect 零 blocker。** 待使用者最終 APPROVED 即可派 T-008 實作。
 > **後續動作（orchestrator 分派，不阻擋 D-004）**：①派 architect 回寫 D-001 §7/§4「draft 不物化」註記（順帶修 backlog 記的 D-001 §9 command parser 誤歸措辭）②LESSONS 登記「拒絕回覆的 mark/不 mark 去重政策不對稱」（D-003 nit-3 + D-004 §9 同型，第 2 次出現＝回寫候選）。
+| 2026-08-02 | **errata（D-008 T-014 套用）**：confirm flip + closed 釋放 + formatClosed 用詞 | §4 confirm 交易內、insert 前：未過期 active → `already_active`（清 conversation，nit-1）、過期 open → `updateStatus('done')` flip 後同交易建立（原子，G1）；`CreateEventInput` `eventDate`/`eventTime` → `eventDatetime`（`taipeiToUtcIso` 合併）。§5 close/cancel：closed 不再由 `findActiveByGroup` 返回 → `already_closed` 不可達（保留防禦）、二次關閉→`no_active`、過期 open→`no_active`（OP-7 不 flip）。§8 (E) `formatClosed` 用詞「已關閉報名」→「報名已截止」（B1，與名單 closed 標籤收斂）；(I)/(D) 日期改衍生 `event_datetime`。來源：D-008 §五 D-004（APPROVED）。 |

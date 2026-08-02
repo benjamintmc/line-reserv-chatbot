@@ -252,3 +252,6 @@ CMD ["node", "dist/index.js"]
 | 2026-08-01 | architect-reviewer R2 複審 2 blocker 修訂 | **B1 定案路線 A**（交易 runner 注入 client-bound `TxRepos` 束；拒斥 AsyncLocalStorage，理由：R2 正確性顯式化/編譯器強制 > 最小 diff，避免隱式跨連線靜默超賣）→ 更新 §2/§3/G1/G2、AC-3。**B2 定案 (a) INTEGER IDENTITY（int4）**（`pg` 天然回 `number`、schema.ts 真不動，免行程級 `setTypeParser`；放棄 BIGINT+parser）→ 更新 §6/§2/G6，新增 AC-12。nit：N1（migrate 走 Neon 直連 + startup 退路用 `pg_advisory_xact_lock`）→ §9 step2/OP-6/G7；N2（§5 回覆遺失正名）→ §5；N3（insertSlot RETURNING）→ §6/T-012。§4 補冷啟延遲預算。design-reviewer 3 nit（延遲實測/AC-4 端到端/同秒 seq tie-break）→ §9 step7、AC-4、新增 AC-13。 |
 
 > **OP-1~7 全數定案（2026-07-31）**，B1/B2 blocker 與 nit 已於 2026-08-01 修訂（設計正文與裁決一致）。§2/§3/G1/G2/§6/G6 已自洽（路線 A 的交易閉包改動與 G2 允許清單一致；int4 選擇與「schema.ts 介面不變」一致）。送 architect-reviewer 複審；design-reviewer 已 APPROVED（無 user-facing 退化）。雙審通過即待使用者最終 APPROVED，解鎖 T-012。
+
+## 討論紀錄（Orchestrator 維護）補列
+| 2026-08-02 | **註記（D-008 T-014 套用、原文不動邏輯、待 architect 追認）**：新增 0003 + 鎖內 getById re-check | §6「無 0003」→ 新增 `0003_merge_event_datetime.sql`（post-T-012，D-008）；§2 `EventRow` 改 `event_datetime`（0001 的 `event_date`/`event_time` 由 0003 演進）；§3 `runImmediate` 之 `SELECT…FOR UPDATE` 後新增**鎖內 `getById` 重讀**（供 D-008 過期 re-check，nit-2；不改防超賣鎖語意）；新增 `EventReader.findLatestDisplayable` 唯讀原語（符 N-new-2 pool-bound 只曝讀方法）。權威來源 D-008（APPROVED），**待 architect 追認**。 |

@@ -404,3 +404,6 @@ awaiting_price_mode ──「場地費」──► awaiting_venue_fee ──(合
 | unit-tester | **通過**（211 tests 全綠、AC 99/99、無 bug）；DB 層確認 AC-3/7/12/16、既有測試調整為反映新行為；補 3 整合強化（主辦自移 confirmedCount=0 保底、結算以 soft-delete 後正取數為分母） |
 
 > **T-009 標 DONE（2026-07-31）**。文件校正已套用：§5.1 formatClosed 三參數 errata、D-004 §8/AC-18 補 errata 指向 D-005 §3（主辦佔 seq=1）。build 綠、211 tests、AC 99/99、lint 0 error。真機跨試（2 群組×2 計費）待使用者執行。
+
+## 討論紀錄（Orchestrator 維護）補列
+| 2026-08-02 | **errata（D-008 T-014 套用）**：顯示層 phase 化去暫估 + formatClosed 用詞 | 金額計算邏輯不變；名單顯示 phase 化——`feeLine` closed 取 `settled_per_person`（凍結快照）、ended 取 `perPersonAmount(event,K)`，二者去「暫估…關閉報名後結算」；`estimatedTotal` 於 closed/ended 標「總金額」（去「預估/暫估」）；`formatClosed` 首句「報名已截止」（與 D-004 (E) 一致，split 追加最終攤額列不變）；event 日期改衍生 `event_datetime`（顯示字面台灣本地一致，斷言值多不變）。來源：D-008 §五 D-005（APPROVED）。 |
