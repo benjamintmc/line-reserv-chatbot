@@ -1,30 +1,33 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
+import type { PoolClient } from 'pg';
 import { config } from '../config';
 
-/** better-sqlite3 連線 handle 型別別名（供 repository / migrate 使用）。 */
-export type Db = Database.Database;
+export type { Pool, PoolClient };
 
 /**
- * 連線工廠：建立 better-sqlite3 連線並套用 D-001 §0 / ADR-002 的 PRAGMA。
- *
- * - `journal_mode=WAL`：並發讀寫與耐用性。
- * - `foreign_keys=ON`：啟用 FK 約束（G8）。
- * - `busy_timeout=5000`：寫鎖競爭時等待，配合 IMMEDIATE 交易序列化（ADR-002）。
- *
- * DB 檔路徑走環境變數（`config.databasePath`），不寫死、不進版控；
- * 檔案型路徑會自動建立其所屬目錄（`:memory:` 除外）。
+ * 可執行查詢的連線 handle：`Pool`（自動借還一次連線，適合單筆唯讀）或
+ * `PoolClient`（交易期間 checkout 的固定連線，交易內所有查詢須綁同一個，G1/G4）。
+ * repository 建構子接此型別（取代 better-sqlite3 的 `Db`）。
  */
-export function openDb(path: string = config.databasePath): Db {
-  if (path !== ':memory:') {
-    mkdirSync(dirname(path), { recursive: true });
-  }
-  const db = new Database(path);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
-  return db;
+export type Queryable = Pool | PoolClient;
+
+/**
+ * 連線工廠：建立 `pg.Pool`（D-007 §5）。
+ *
+ * - `max: 2`（G4）：Cloud Run 可能起多實例，每實例小 pool + Neon PgBouncer 兩層防連線爆量。
+ * - `ssl`：連線字串含 `sslmode=require`（Neon pooled）時啟用 TLS；本機 docker postgres 無此參數 → 不啟用。
+ *   Neon 憑證由平台簽發，MVP 以 `rejectUnauthorized:false` 相容（不驗 CA 鏈，僅加密傳輸）。
+ *
+ * 連線字串走環境變數（`config.databaseUrl` = `DATABASE_URL`），不寫死、不進版控（G6）。
+ * app runtime 用 pooled（-pooler）字串；migrate 走直連（見 migrate.ts / runbook）。
+ */
+export function createPool(connectionString: string = config.databaseUrl): Pool {
+  const requireSsl = /[?&]sslmode=require/.test(connectionString);
+  return new Pool({
+    connectionString,
+    max: 2,
+    ssl: requireSsl ? { rejectUnauthorized: false } : undefined,
+  });
 }
 
 export { nowIso } from './time';

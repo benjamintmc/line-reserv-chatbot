@@ -1,10 +1,14 @@
--- 0001_init.sql — D-001 資料模型初始 schema（SQLite 方言）
+-- 0001_init.sql — D-001 資料模型初始 schema（PostgreSQL 方言，D-007 §6）
 --
--- 重要約定：
---   * 時間欄一律「應用層寫入」UTC ISO-8601，**不使用 DEFAULT CURRENT_TIMESTAMP**（G11）。
---   * 布林以 INTEGER(0/1) + CHECK 表達（D-001 §0）。
+-- 由 SQLite 版轉出，語意 1:1 等義（G5）。與 SQLite 檔的差異僅方言處：
+--   * 代理主鍵：INTEGER GENERATED ALWAYS AS IDENTITY（int4；B2 定案）。
+--     不採 BIGINT——pg 預設把 int8(OID 20) 解析為 string，會使 schema.ts 的 id:number/FK 執行期實為 string（G6）。
+--     int4 由 pg 天然回 number，Row number 前提成立。MVP 值域永不觸 int4 上限（~21 億）。
+--   * 布林 is_host：SMALLINT 0/1 + CHECK（OP-7；保 UserRow number 型別）。
+-- 其餘一律不變：
+--   * 時間欄一律「應用層寫入」UTC ISO-8601 TEXT，**不使用 DEFAULT CURRENT_TIMESTAMP**（G11、OP-4）。
 --   * 金額 price_per_person 為整數新台幣元（D-001 §0）。
---   * FK 與 CHECK 約束不得省略（G8）；連線須 PRAGMA foreign_keys=ON。
+--   * FK 與 CHECK 約束不得省略（G8）；列舉一律 TEXT + CHECK（不用原生 ENUM，利遷移）。
 -- 一經合併不得修改本檔；schema 演進以新序號檔新增（D-001 §8）。
 
 -- migration 追蹤表（runner 亦以 IF NOT EXISTS 保證存在，D-001 §8）。
@@ -15,18 +19,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 -- 1. users：一位 LINE 使用者一列；display_name 為最近互動快照（D-001 §1）。
 CREATE TABLE users (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  line_user_id TEXT    NOT NULL,
-  display_name TEXT    NOT NULL,
-  is_host      INTEGER NOT NULL DEFAULT 0 CHECK (is_host IN (0, 1)),
-  created_at   TEXT    NOT NULL,
-  updated_at   TEXT    NOT NULL
+  id           INTEGER  GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  line_user_id TEXT     NOT NULL,
+  display_name TEXT     NOT NULL,
+  is_host      SMALLINT NOT NULL DEFAULT 0 CHECK (is_host IN (0, 1)),
+  created_at   TEXT     NOT NULL,
+  updated_at   TEXT     NOT NULL
 );
 CREATE UNIQUE INDEX ux_users_line_user_id ON users (line_user_id);
 
 -- 2. events：一場球聚一列；同 group 至多一場 active（D-001 §2、G3）。
 CREATE TABLE events (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  id               INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   group_id         TEXT    NOT NULL,
   host_user_id     INTEGER NOT NULL REFERENCES users (id),
   event_date       TEXT    NOT NULL, -- 顯示文字 YYYY-MM-DD（Q2 裁決）
@@ -47,7 +51,7 @@ CREATE INDEX ix_events_group_status ON events (group_id, status);
 
 -- 3. registrations：一名額一列（per-slot，ADR-001）；取消採 soft-delete（Q3、G9）。
 CREATE TABLE registrations (
-  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  id                   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   event_id             INTEGER NOT NULL REFERENCES events (id) ON DELETE CASCADE,
   owner_user_id        INTEGER NOT NULL REFERENCES users (id),
   display_name         TEXT    NOT NULL, -- 報名當下快照；proxy 時為輸入名字（NFR-4、G5）

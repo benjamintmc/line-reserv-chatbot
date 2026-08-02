@@ -1,0 +1,24 @@
+# 本機 / CI 測試用 Postgres（D-007 OP-5）。
+# 僅供本機測試，帳密固定、非 secret（真 prod DATABASE_URL 走環境變數、不進版控）。
+#
+# 用法（本機 session PATH 眉角見完工報告）：
+#   docker compose up -d          # 起 postgres:16-alpine
+#   DATABASE_URL_TEST=postgres://golf:golf@localhost:5433/golf_test npm test
+#   docker compose down -v        # 清乾淨
+#
+# port 用 5433（對外）避免撞本機既有 5432；容器內仍 5432。
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: golf-reserv-pg-test
+    environment:
+      POSTGRES_USER: golf
+      POSTGRES_PASSWORD: golf
+      POSTGRES_DB: golf_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U golf -d golf_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

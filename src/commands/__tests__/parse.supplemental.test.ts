@@ -3,6 +3,8 @@
 // unit-tester 獨立補強：針對 D-002 邊界與 Guardrail 的漏測補齊。
 // 不放寬任何斷言；每個測試對應既有 AC 或 Guardrail，於名稱標註。
 // 覆核角度：檢查順序、不對稱邊界、正規化白名單範圍、proxyName 截斷邊界。
+//
+// D-005 §6.1：一行式 create_event_oneline 輸出新增 priceMode（裸費用 → 'per_person'）。
 
 import { describe, expect, it } from 'vitest';
 import { parseCommand } from '../parse';
@@ -46,6 +48,7 @@ describe('parseCommand 補強：一行式日期/時間邊界（AC-8 / AC-9 / AC-
       location: '東方球場',
       capacity: 16,
       price: 2200,
+      priceMode: 'per_person',
     });
   });
 
@@ -80,6 +83,7 @@ describe('parseCommand 補強：capacity 上限邊界（AC-22 / MAX_CAPACITY）'
       location: '東方球場',
       capacity: 1000,
       price: 2200,
+      priceMode: 'per_person',
     });
     expect(parseCommand('開團 2026/08/15 07:30 東方球場 1001人 2200')).toMatchObject({
       type: 'invalid',
@@ -150,6 +154,7 @@ describe('parseCommand 補強：全形空格與前後空白對各指令（AC-15 
       location: '東方球場',
       capacity: 16,
       price: 2200,
+      priceMode: 'per_person',
     });
   });
 });

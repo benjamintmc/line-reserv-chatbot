@@ -3,14 +3,24 @@
 // D-002 §2/§3/§3.1/§4：`parseCommand(text)` 純解析層。
 // 純函式（G2/G8）：無副作用、無 I/O、不讀 env、不觸時鐘/亂數、任何輸入皆不拋例外，
 // 相同輸入必得相同輸出；最壞情況回 { type:'unknown' }。
+//
+// D-004 OP-9/G7：一行式欄位驗證改為複用 commands/validators.ts（單一 source of truth，
+// 與逐步問答 create-flow 共用同一組規則）；本檔不再自持一套 date/time/capacity/price regex。
+// D-005 §6.1：第 5 欄（費用）改呼叫 validateFee，依前綴判定 per_person / split_venue。
 
 import type { InvalidCommandKind, ParsedCommand } from './types';
-import { MAX_CAPACITY, MAX_COUNT } from './types';
+import { MAX_COUNT } from './types';
 import {
   equalsIgnoreAsciiCase,
   normalizeProxyName,
   normalizeWhitelist,
 } from './normalize';
+import {
+  validateCapacity,
+  validateDate,
+  validateFee,
+  validateTime,
+} from './validators';
 
 const UNKNOWN: ParsedCommand = { type: 'unknown' };
 
@@ -121,6 +131,8 @@ function parseCountCommand(
 /**
  * §4 一行式開團。`args` 為丟棄首 token（開團/新活動）後的剩餘 token（皆已正規化）。
  * `raw` 為原始輸入，供 invalid 帶回。
+ * 欄位驗證複用 commands/validators.ts（單一 source of truth，D-004 G7/AC-22）。
+ * D-005 §6.1：第 5 欄改呼叫 validateFee，據 mode 填 priceMode/price/venueFee。
  */
 function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
   const command: InvalidCommandKind = 'create_event';
@@ -129,7 +141,7 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     return { type: 'invalid', command, reason: 'create_wrong_arity', raw };
   }
 
-  const [dateTok, timeTok, locationTok, capacityTok, priceTok] = args as [
+  const [dateTok, timeTok, locationTok, capacityTok, feeTok] = args as [
     string,
     string,
     string,
@@ -137,94 +149,47 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     string,
   ];
 
-  // 檢查順序：date → time → capacity → price，多欄同錯回第一個（AC-24）。
-  const date = parseDate(dateTok);
-  if (date === null) {
-    return { type: 'invalid', command, reason: 'create_bad_date', raw };
+  // 檢查順序：date → time → capacity → fee，多欄同錯回第一個（AC-24）。
+  const date = validateDate(dateTok);
+  if (!date.ok) {
+    return { type: 'invalid', command, reason: date.reason, raw };
   }
 
-  const time = parseTime(timeTok);
-  if (time === null) {
-    return { type: 'invalid', command, reason: 'create_bad_time', raw };
+  const time = validateTime(timeTok);
+  if (!time.ok) {
+    return { type: 'invalid', command, reason: time.reason, raw };
   }
 
-  const capacity = parseCapacity(capacityTok);
-  if (capacity === null) {
-    return { type: 'invalid', command, reason: 'create_bad_capacity', raw };
+  const capacity = validateCapacity(capacityTok);
+  if (!capacity.ok) {
+    return { type: 'invalid', command, reason: capacity.reason, raw };
   }
 
-  const price = parsePrice(priceTok);
-  if (price === null) {
-    return { type: 'invalid', command, reason: 'create_bad_price', raw };
+  const fee = validateFee(feeTok);
+  if (!fee.ok) {
+    return { type: 'invalid', command, reason: fee.reason, raw };
+  }
+
+  if (fee.value.mode === 'split_venue') {
+    return {
+      type: 'create_event_oneline',
+      date: date.value,
+      time: time.value,
+      location: locationTok,
+      capacity: capacity.value,
+      price: 0,
+      priceMode: 'split_venue',
+      venueFee: fee.value.amount,
+    };
   }
 
   return {
     type: 'create_event_oneline',
-    date,
-    time,
+    date: date.value,
+    time: time.value,
     location: locationTok,
-    capacity,
-    price,
+    capacity: capacity.value,
+    price: fee.value.amount,
+    priceMode: 'per_person',
   };
-}
-
-/** `YYYY/MM/DD` 或 `YYYY-MM-DD`；月 1–12、日 1–31；零填充輸出 `YYYY-MM-DD`。失敗回 null。 */
-function parseDate(tok: string): string | null {
-  const m = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(tok);
-  if (m === null) {
-    return null;
-  }
-  const year = m[1] ?? '';
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (month < 1 || month > 12 || day < 1 || day > 31) {
-    return null;
-  }
-  return `${year}-${pad2(month)}-${pad2(day)}`;
-}
-
-/** `H:MM` 或 `HH:MM`；時 0–23、分 0–59；零填充輸出 `HH:MM`。失敗回 null。 */
-function parseTime(tok: string): string | null {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(tok);
-  if (m === null) {
-    return null;
-  }
-  const hour = Number(m[1]);
-  const minute = Number(m[2]);
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return null;
-  }
-  return `${pad2(hour)}:${pad2(minute)}`;
-}
-
-/** 去尾綴 `人`；須為 `1 <= capacity <= MAX_CAPACITY` 的整數。失敗回 null。 */
-function parseCapacity(tok: string): number | null {
-  const digits = stripSuffix(tok, '人');
-  if (!/^\d+$/.test(digits)) {
-    return null;
-  }
-  const value = Number(digits);
-  if (value < 1 || value > MAX_CAPACITY) {
-    return null;
-  }
-  return value;
-}
-
-/** 去尾綴 `元`；須為 `price >= 0` 的整數。失敗回 null。 */
-function parsePrice(tok: string): number | null {
-  const digits = stripSuffix(tok, '元');
-  if (!/^\d+$/.test(digits)) {
-    return null;
-  }
-  return Number(digits);
-}
-
-/** 若字串以 `suffix` 結尾則去除該單一尾綴，否則原樣回傳。 */
-function stripSuffix(s: string, suffix: string): string {
-  return s.endsWith(suffix) ? s.slice(0, -suffix.length) : s;
-}
-
-/** 整數零填充為兩位字串。 */
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
 }

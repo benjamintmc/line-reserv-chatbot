@@ -32,10 +32,11 @@
     - **代報名（定案 #4）**：支援 `+1 名字`（例：`+1 陳大哥`）代非 LINE 用戶報名；該名額記錄 `owner_user_id`（代報者）；取消用 `-1 名字`，**僅原代報者或主辦人**可取消。
   - **FR-2 名單查詢**：`名單`／`list` 回覆活動資訊 + 依序名單（含序號）+ 已報名/上限 + 每人價格 + 預估總金額；無活動時回「目前沒有開放報名的活動」。
   - **FR-3 活動建立（主辦人限定）**：`開團`／`新活動` 觸發，收集 日期/時間/地點/人數上限/每人價格；支援一行式（`開團 2026/08/15 07:30 東方球場 16人 2200元`）與逐步問答兩種；建立前顯示摘要待 `確認`；`關閉報名`、`取消活動` 管理狀態。
-  - **FR-4 主辦人管理（後台）**：Admin 以 LINE `userId` 增/刪主辦人；MVP 以環境變數或資料表 + CLI/API 實作；提供 `我的ID`（私訊）讓用戶查自己的 userId。
+  - **FR-6 單場名額自動釋放（2026-08-01 定案，決策 #8）**：同群單場（決策 #3）的「唯一進行中活動」限制，於下列任一條件成立時**自動釋放**，主辦人**無需**再輸入 `取消活動` 即可開新團——(a) 已 `關閉報名`（status `closed`）；(b) 已過 `event_datetime`（活動開始時間已過，台灣時間；判定式 `NOW() > event_datetime`）。因部署為 serverless（Cloud Run `min-instances=0`、**無背景排程/cron**），此判定採**惰性 on-read**（於 `開團`／`名單` 等時機即時計算），過期活動於名單顯示為「已結束」（status `done`）。設計 D-008。
+  - **FR-4 主辦人授權（2026-07-31 定案，決策 #7＝開團人擁有模型）**：`開團` 群內任何人皆可；`關閉報名`/`取消活動` 限該活動建立者（`event.host_user_id`）或 env `ADMIN_USER_IDS`（super-admin，跨群安全網）。提供 `我的ID` 讓用戶查自己的 userId。設計 D-006（授權簡化）。
   - **FR-5 訊息規範**：只回應可識別指令，其餘忽略；全繁體中文。
 - **候補與代報名納入 MVP**（定案 #2、#4，見上 FR-1）。
-- **明確不做（Non-goals）**：同群組同時多場活動（MVP 限一場，定案 #3）；球組編排（每組 4 人）與收款統計（v2，定案 #5）；執行期 Admin 後台指令／網頁介面（定案 #6，MVP 以環境變數設定 host 白名單，保留 `我的ID` 供 Admin 蒐集 userId）。
+- **明確不做（Non-goals）**：同群組同時多場活動（MVP 限一場，定案 #3）；球組編排（每組 4 人）與收款統計（v2，定案 #5）；Admin 網頁後台／執行期增刪主辦人指令／群內管理人認領（**2026-07-31 決策 #7**：授權改「開團全開 + 關閉/取消限建立者或 env super-admin」；不做網頁後台、不做管理人認領）。
 
 ## 限制
 - **技術偏好/限制**：Node.js + TypeScript + Fastify（或 Express）+ `@line/bot-sdk`；MVP 資料庫 SQLite（`better-sqlite3`），無持久磁碟平台改用 PostgreSQL（Supabase / Neon 免費層）。託管於任一支援 HTTPS 平台（Render / Fly.io / Cloud Run），開發期用 ngrok。LINE 端須關閉自動回覆、開啟 webhook 與加入群組權限。
@@ -50,7 +51,7 @@
 
 ## 資料模型（草案，見 requirements §6）
 - `users`：`line_user_id` UNIQUE、`display_name`（最近快照）、`is_host`。
-- `events`：`group_id`、`host_user_id`、`event_date`、`event_time`、`location`、`capacity`、`price_per_person`、`status`（draft/open/closed/cancelled/done）。
+- `events`：`group_id`、`host_user_id`、`event_datetime`（**決策 #8：合併原 `event_date`+`event_time` 為單一時間欄，存 UTC ISO-8601；輸入為台灣本地日期時間、應用層轉 UTC，利 `NOW() > event_datetime` 過期判定**）、`location`、`capacity`、`price_per_person`、`price_mode`、`venue_fee`、`settled_per_person`、`status`（draft/open/closed/cancelled/done）。**注**：D-001~D-006 實作期為 `event_date`/`event_time` 兩欄（顯示文字）；決策 #8（D-008）將於 T-012 PG 移植落地後合併為 `event_datetime`（migration 0003）。
 - `registrations`：因需支援候補 FIFO 遞補與代報名，建議改為**一名額一列（per-slot）**而非單純 `count`：`event_id`、`owner_user_id`（報名／代報者）、`display_name`（報名當下快照，代報名為輸入的名字）、`kind`（self / proxy）、`status`（confirmed / waitlist）、`seq`（報名序，供 FIFO 遞補與名單編號）、`created_at`。實際 schema 由 architect 於 M1 定案（見 `docs/adr/`）。
 - `conversation_states`：逐步開團問答用（`line_user_id` PK、`state`、`payload`）。
 - `processed_events`：webhook 冪等去重（`message_id` PK）。
@@ -64,8 +65,8 @@
 | `開團 <日期> <時間> <地點> <人數> <價格>` | 主辦人 | 一行式建立活動 |
 | `開團` | 主辦人 | 進入逐步問答建立流程 |
 | `確認` / `取消` | 主辦人 | 開團流程中確認或放棄 |
-| `關閉報名` | 主辦人 | 停止接受報名 |
-| `取消活動` | 主辦人 | 取消進行中活動並公告 |
+| `關閉報名` | 主辦人 | 停止接受報名（決策 #8：closed 後即釋放單場名額，可直接開新團） |
+| `取消活動` | 主辦人 | 取消進行中活動並公告（決策 #8 後為**選用**：關閉報名或活動過期會自動釋放，無需再手動取消才能開新團） |
 | `我的ID` | 全員（私訊） | 回覆該用戶的 LINE userId |
 
 ## 里程碑（見 requirements §8）
@@ -73,7 +74,7 @@
 - **M1** 資料層與指令解析（0.5–1 天）：DB schema + migration；command parser 含全形 `＋１`、`+0`、`+99` 上限保護的單元測試。
 - **M2** 報名核心（1 天）：`+N`/`-N` 追加與取消、額滿判斷、transaction 防超賣、webhook 去重、名單訊息（MVP 純文字）。
 - **M3** 開團流程（1–1.5 天）：一行式解析、逐步問答 state machine + 確認、權限檢查、`關閉報名`/`取消活動`。
-- **M4** 主辦人管理與輔助（0.5 天）：`我的ID`、host 白名單管理（CLI 或簡單 admin API）。
+- **M4** 主辦人授權（開團人擁有 + super-admin 安全網）：`開團` 全開；`關閉報名`/`取消活動` 限建立者或 super-admin；`我的ID` 輔助。設計 D-006（授權簡化，決策 #7）。
 - **M5** 部署與驗收（0.5 天）：正式部署、環境變數、webhook 切換、實機群組測試。
 
 ## 決策紀錄（原待確認事項，已於 2026-07-22 定案）
@@ -83,6 +84,17 @@
 4. 代報名 `+1 名字` → **納入 MVP**；記 `owner_user_id`；`-1 名字` 取消，限原代報者或主辦人。
 5. 球組編排與收款統計 → **不含，列 v2 候選**。
 6. Admin 後台 → **MVP 不含**；以環境變數設 host 白名單，保留 `我的ID` 供蒐集 userId。
+7. **（2026-07-31 定案，取代 #6；曾短暫考慮「群內管理人認領」後改採更精簡的「開團人擁有」模型）** 授權採**開團人擁有 + super-admin 安全網**：
+   - **開團**：群內**任何人皆可**（不需授權/白名單）。
+   - **關閉報名 / 取消活動**：**只有該活動建立者（`event.host_user_id`）或 env `ADMIN_USER_IDS`（super-admin）**。
+   - **env `ADMIN_USER_IDS`＝super-admin 安全網**：跨群，可取消任何卡住的活動（唯一破口——建立者落跑/亂開時的救援）。
+   - **不需** `group_admins` 表、不做管理人認領指令、不做網頁後台。授權來源＝`event.host_user_id`（D-003 報名 override 已用）∪ super-admin。設計見 D-006（授權簡化）、里程碑 M4。
+   - 註：曾一度設計「群內 `管理人設定`/`我是管理人` 認領最多 3 位」（D-006 DRAFT），經評估「同群單場已防亂 + 資料結構精簡」後**作廢該方案**，改採本模型。
+8. **（2026-08-01 定案）單場名額自動釋放**（見 FR-6）：同群單場限制（決策 #3 不變——仍限一場「進行中」）改為**條件自動釋放**，免手動 `取消活動` 才能開新團：
+   - **釋放條件（任一）**：`關閉報名`（status `closed`）**或** 已過活動開始時間（`NOW() > event_datetime`）。等價判定式：一場活動**仍擋新團**僅當 `status IN ('draft','open') AND event_datetime >= NOW()`；亦即 `ux_events_active_group` 的 active 集合**移除 `closed`**（`closed`/`cancelled`/`done` 皆不擋），過期未結案的 `open` 場由 `event_datetime` 判定式排除。
+   - **資料模型變更**：合併 `event_date`+`event_time` → 單一 `event_datetime`（UTC ISO-8601；輸入台灣本地、應用層轉 UTC）。開團問答仍可分別問日期/時間再合併儲存。
+   - **serverless 惰性判定**：Cloud Run `min-instances=0` **無 cron**，過期不靠背景任務翻狀態，於 `開團`/`名單` 等 on-read 時機即時計算；過期活動顯示「已結束」（`done`）。
+   - **風險 R2**：資料 migration（合併欄位）+ `ux_events_active_group` 唯一約束變更（資料完整性/併發相鄰）。設計 D-008，**於 T-012（PG 移植）落地後實作**（不併入 T-012，避免違反其「忠實移植、商業零改」鐵律）。
 
 ## 關鍵使用者旅程（供 e2e-tester 使用）
 1. **開團 → 公告 → 報名**：主辦人 `開團 2026/08/15 07:30 東方球場 16人 2200元` → `確認` → 群組公告 → 成員 `+2` → bot 回名單含 `名字`、`名字(2)` 與剩餘名額。

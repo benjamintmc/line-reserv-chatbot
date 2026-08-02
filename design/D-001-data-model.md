@@ -5,6 +5,13 @@
 - 關聯：Brief 章節「資料模型（草案）」§51–56 / 「決策紀錄」§79–85 / 「成功長什麼樣子」§8–14 / 「關鍵使用者旅程」§87–91 ・ 任務 T-004 ・ 設計 D-001
 - 相關 ADR：ADR-001（per-slot 而非 count；含 soft-delete 增訂）、ADR-002（防超賣併發策略；含取消交易鎖語意）
 
+> **澄清註記索引（errata，不改 schema/約束、不改 APPROVED 狀態）**：本文件累積的一致性註記——
+> (1)「draft 不物化」（見 §2、§4、§7 內以「澄清註記（errata 2026-07-31）」標示處；來源：D-004 OP-5 裁決 + architect-reviewer D-004 裁定 3）；
+> (2) §9 目錄歸屬措辭修正（command parser 屬 `src/commands/`；來源：D-002 nit-4）；
+> (3) **§2 events schema 三欄擴充**（`price_mode`/`venue_fee`/`settled_per_person`；來源：D-005 §1，見 §2「澄清註記（errata 2026-07-31，來源 D-005）」標示處）；
+> (4) **G2 carve-out**（write-first 交易內盲插首列主辦名額為 IMMEDIATE 要求的合理例外；來源：architect-reviewer D-005 裁定點 3 與條件 A-B1，見 §二 G2 下澄清註記）。
+> (3)(4) 為本次（errata 2026-07-31，來源 D-005）新增，詳見文末討論紀錄。
+
 ## 一、設計內容
 
 本文件把 Brief 資料模型草案落地為可實作的正式 schema，涵蓋 5 張表：
@@ -97,7 +104,27 @@ webhook 冪等（NFR-2）、同 group 單一進行中活動（定案 #3）、**�
     - SQLite：`CREATE UNIQUE INDEX ux_events_active_group ON events(group_id) WHERE status IN ('draft','open','closed');`
     - PostgreSQL：語法相同（皆支援 partial index）。
     - 效果：同 group 已有 active 活動時，插入/轉入第二場 active 會被唯一約束拒絕。
+    - **澄清註記（errata 2026-07-31；來源：D-004 OP-5 裁決 + architect-reviewer D-004 裁定 3）**：MVP 由
+      `conversation_states` 承載「draft 階段」，**不物化 `events.status='draft'`**（見 §4 建議、§7 澄清註記、
+      D-004 OP-5 裁決）；故實務 active 集合為 {open, closed}。上述 `WHERE ... IN ('draft','open','closed')`
+      仍保留 `'draft'` 為**無害的向前相容**——若日後改為物化 draft 佔名額，此約束即自動生效，**無需改 schema**。
+      本次僅補註，**不改 index 定義**。
   - 查詢用索引：`CREATE INDEX ix_events_group_status ON events(group_id, status);`（查某群目前活動）。
+- **澄清註記（errata 2026-07-31，來源 D-005 §1）：events schema 三欄擴充**——D-005（APPROVED）經 migration
+  `0002_billing_modes.sql` 為 `events` 增訂三欄，屬本文件 §2 schema 的向後相容擴充：
+  - `price_mode TEXT NOT NULL DEFAULT 'per_person' CHECK (price_mode IN ('per_person','split_venue'))`
+    —— 計費模式（每人固定價 / 場地費總額均攤）。
+  - `venue_fee INTEGER`，欄位級 `CHECK (venue_fee IS NULL OR venue_fee > 0)`
+    —— 場地費總額；`split_venue` 時 `> 0`、`per_person` 時 NULL（跨欄位一致性由應用層邊界層強制，見 D-005 §1.3/G4）。
+  - `settled_per_person INTEGER NULL`
+    —— `關閉報名`(split) 時於同交易快照的**最終每人攤額**；未關閉或 per_person 模式維持 NULL。
+  - **backfill**：SQLite `ADD COLUMN ... NOT NULL DEFAULT 'per_person'` 使既有列自動回填
+    `price_mode='per_person'`、`venue_fee=NULL`、`settled_per_person=NULL`——既有活動一律視為每人固定價、
+    **行為零回歸**，無需額外 `UPDATE`。
+  - **不觸碰既有 index 與約束**：`ux_events_active_group`、`ix_events_group_status`、`status` CHECK、
+    既有欄位（含 `price_per_person`）之型別/約束皆不變（migration 0002 只 `ADD COLUMN`，不 rebuild）。
+  - **D-005 §1 為此擴充之權威來源**（完整 DDL、一致性約束、OP-3/OP-4 裁定均在該處）；**本註記為 D-001
+    對應收尾**，僅在 §2 標明擴充事實與零回歸，不在此重述完整 DDL、不改本文件 §2 既有欄位表。
 
 ---
 
@@ -193,6 +220,14 @@ webhook 冪等（NFR-2）、同 group 單一進行中活動（定案 #3）、**�
 - **與 events 的關係**：MVP 建議「開團問答期間資料存於 `conversation_states.payload`，直到
   `確認` 才 `INSERT events`」。好處：draft 列不長期滯留；且 `確認` 時的 INSERT open 會直接受
   §2 partial unique index 檢驗 → 兩位主辦人同時完成問答時，第二個 `確認` 被 DB 拒絕（單一進行中活動的安全網）。
+- **澄清註記（errata 2026-07-31；來源：D-004 OP-5 裁決 + architect-reviewer D-004 裁定 3）**：上述
+  「直到 `確認` 才 INSERT events」即 D-004 定案的**「draft 不物化」**——MVP **不寫入 `events.status='draft'` 列**，
+  `確認` 時 INSERT 的 status 直接為 `'open'`。§7 狀態機文字保留的 `draft → open`/`draft → cancelled` 為
+  **概念轉移**（描述「開團問答期 → 公告 / 放棄」的語意），實作上「draft 階段」全由本表（`conversation_states`）
+  承載、**不對應任何 events 列**：`draft → open` 落地為單次 `INSERT events(status='open')`；`draft → cancelled`
+  （放棄）對應本表列的清除（`ConversationRepository.delete`），不涉及 events 列。§2 `ux_events_active_group` 的
+  `WHERE` 含 `'draft'` 屬向前相容保留（見 §2 澄清註記），MVP 下不會命中 draft 列。此註記與本節上一點的既有建議
+  一致，僅把 §7 狀態機字面與本節建議之間的張力講清楚，避免後續讀者誤讀為「MVP 會產生 `status='draft'` 列」。
 - TTL：逾時（如 30 分鐘無互動）由應用層/排程清理；schema 以 `updated_at` 支撐，不在 DB 設 TTL。
 
 ---
@@ -289,6 +324,14 @@ draft ──► open ──► closed
 - `closed → open`（重新開放，選配）、`closed → cancelled`、`closed → done`。
 - `cancelled`、`done` 為終態，不可再轉移。
 - **active 集合 = {draft, open, closed}**，受 §2 partial unique index 約束（同 group 至多一場）。
+- **澄清註記（errata 2026-07-31；來源：D-004 OP-5 裁決 + architect-reviewer D-004 裁定 3）**：本狀態機保留
+  `draft` 節點為完整性描述，但 **MVP 不物化 `events.status='draft'`**——「draft 階段」由 `conversation_states`
+  承載（§4 建議、D-004 OP-5 裁決）。因此上列 `draft → open`/`draft → cancelled` 在 MVP 為**概念轉移**：
+  `確認` 時直接 `INSERT events(status='open')`，即概念上的 `draft → open` 一步落地為**單次 INSERT open**
+  （無中間 draft 列）；`draft → cancelled`（放棄）對應 `conversation_states` 的清除，**不涉及 events 列**。
+  故 MVP **實務 active 集合為 {open, closed}**；§2 `ux_events_active_group` 的 `WHERE` 仍列 `'draft'` 為
+  無害的向前相容（若日後改為物化 draft 佔名額，約束自動生效，無需改 schema）。此註記不改變任何合法轉移
+  定義或 status CHECK 值域（仍含 `'draft'`），僅澄清「draft 在 MVP 不被物化」。
 - 註：`取消活動`（→ cancelled）為狀態轉移，**不刪 registrations 列**，其報名/取消稽核一併保留。
 
 #### registrations：佇列位置（status）× 有效性（cancelled_at）
@@ -344,7 +387,9 @@ draft ──► open ──► closed
 | `src/db/repositories/*.ts` | 資料存取封裝（`user-repository.ts`/`event-repository.ts`/`registration-repository.ts`/`conversation-repository.ts`/`processed-event-repository.ts`）；報名/取消寫入以 **IMMEDIATE 交易**封裝（ADR-002），取消一律 soft-delete；時間戳於此層以 UTC ISO-8601 產生 | db/index、schema | domain（報名/開團邏輯） |
 
 - `DATABASE_URL`（或 SQLite 檔路徑）走環境變數（`config.ts`），不寫死路徑、不進版控。
-- domain 層（`src/domain/`，D-002/D-003）只透過 repository 存取，不直接下 SQL。
+- domain 層（`src/domain/`，報名/開團商業邏輯，D-003 起）只透過 repository 存取，不直接下 SQL；
+  **指令解析（command parser，D-002）依 CLAUDE.md §4 置於 `src/commands/`**（D-002 已如此實作），
+  非 `src/domain/`。（errata 2026-07-31；來源：D-002 nit-4，修正原本括號將 command parser 誤與 domain 並列的措辭。）
 
 ### 範圍內
 - 上述 5 張表 + `schema_migrations` 的完整欄位、型別（SQLite/PG 對映）、約束、索引。
@@ -368,6 +413,15 @@ draft ──► open ──► closed
   有效正取數以 `COUNT(*) WHERE status='confirmed' AND cancelled_at IS NULL` 聚合（ADR-001）。
 - **G2**：不得在無 **IMMEDIATE 交易（SQLite）/ 列鎖 `FOR UPDATE`（PostgreSQL）** 保護下寫入
   或取消 `registrations`（防超賣，ADR-002；取消觸發遞補故同受此交易語意保護）。
+  - **澄清註記（errata 2026-07-31；來源：architect-reviewer D-005 裁定點 3 與條件 A-B1）：G2 IMMEDIATE 要求的合理例外（carve-out）**——
+    「**event 建立當下、在 write-first 交易（同交易已先 `markProcessed` 寫入而取得 RESERVED 鎖）內，對該新建 event 盲插首列主辦名額**」
+    （D-005 §3 主辦自動登記，經 `RegistrationRepository.insertSlot` 於 `db.inTransaction===true` 時產生 seq=1 的 self confirmed 列）
+    為 G2 IMMEDIATE 要求的**合理例外**，於 DEFERRED 交易內執行不視為 G2 違規。理由：
+    (a) 此插入**無 read-decide-write 容量判定**——不依當前正取數決定是否接受，不比對 capacity，故無「兩處同時判斷可用名額」的競態面；
+    (b) 該 event 於交易提交前尚不存在，**無任何並行 signup 能觀察或寫入其名額**，DEFERRED 在此已**等效序列化、無超賣風險**
+    （architect-reviewer D-005 裁定點 3 已論證 DEFERRED 對「建立當下插入第一列」足夠）。
+    此例外**不改 G2 值域、不改 schema**，**亦不放寬**一般報名/取消（`+N`/`-N`/遞補等 read-decide-write 寫入）仍須 IMMEDIATE 的要求；
+    僅澄清邊界，避免未來實作者/reviewer 將「DEFERRED 交易內以 `insertSlot` 盲插主辦首列」誤判為 G2 違規。
 - **G3**：不得允許同一 `group_id` 同時存在多於一場 active（status ∈ {draft,open,closed}）活動；
   必須以 partial unique index（`ux_events_active_group`）於 DB 層強制（定案 #3）。
 - **G4**：不得使用 `any` 型別（`src/db/schema.ts` 須為每表列定義具體 TS 介面）；不得把任何 secret
@@ -435,3 +489,8 @@ draft ──► open ──► closed
 | 2026-07-22 | Q3 取消策略 | 採 soft-delete 保留稽核（改硬刪除為標記 cancelled_at / cancelled_by_user_id；status 維持 confirmed/waitlist，有效性以 cancelled_at IS NULL 判定） |
 | 2026-07-22 | architect-reviewer 審查 | 建議 APPROVED；issue-1（§0 時間戳）採方案(b) errata 修正，新增 G11/AC-13；G9 措辭收斂。nit-3→D-002、nit-4→D-003、nit-5→已補 AC-2 測試備註 |
 | 2026-07-22 | 最終核可 | 使用者 APPROVED，解鎖 T-004 實作 |
+| 2026-07-31 | errata 澄清：draft 不物化（§2/§4/§7） | 補澄清註記（**不改 schema/約束、不改 APPROVED 狀態**）：MVP 由 `conversation_states` 承載「draft 階段」、不物化 `events.status='draft'`；`確認` 時直接 `INSERT events(status='open')`。§7 `draft → open`/`draft → cancelled` 為概念轉移，實務 active 集合為 {open, closed}。`ux_events_active_group` 的 `WHERE` 保留 `'draft'` 為無害的向前相容（日後物化 draft 即自動生效，無需改 schema）。status CHECK 值域不變（仍含 `'draft'`）。來源：D-004 OP-5 裁決 + architect-reviewer D-004 裁定 3。 |
+| 2026-07-31 | errata 措辭：§9 command parser 目錄歸屬 | 修正 §9 原括號將 command parser 誤與 domain 並列的措辭；澄清指令解析（D-002 command parser）依 CLAUDE.md §4 置於 `src/commands/`（D-002 已如此實作），非 `src/domain/`。純措辭修正，不動分層設計。來源：D-002 nit-4。 |
+| 2026-07-31 | errata 澄清：§2 events schema 三欄擴充 | 補澄清註記（**不改本文件 schema DDL/約束、不改 APPROVED 狀態**）：指向 D-005（APPROVED）migration 0002 為 events 增 `price_mode`（`per_person`/`split_venue`，DEFAULT `per_person`）、`venue_fee`（split>0、per_person NULL）、`settled_per_person`（關閉報名(split)最終攤額，否則 NULL）三欄；說明用途、backfill 既有列一律 per_person/NULL 零回歸、不觸碰任何既有 index 與約束。D-005 §1 為此擴充之權威來源、本文件 §2 為對應收尾。來源：D-005 §1。 |
+| 2026-07-31 | errata 澄清：G2 carve-out（主辦自動登記首列） | 於 G2 下補澄清註記（**不改 G2 值域/schema/狀態機、不改 APPROVED 狀態**）：event 建立當下、在 write-first 交易內盲插首列主辦名額（D-005 §3，經 insertSlot 產 seq=1 self confirmed）為 G2 IMMEDIATE 要求的合理例外——因無 read-decide-write 容量判定、event 提交前不存在故無並行 signup，DEFERRED 已等效序列化、無超賣風險；例外不放寬一般報名/取消仍須 IMMEDIATE 的要求，僅避免誤判 DEFERRED 內 insertSlot 首列違規。來源：architect-reviewer D-005 裁定點 3 與條件 A-B1。 |
+| 2026-08-02 | **註記（D-008 T-014 套用、原文不動邏輯、待 architect 追認）**：events schema／active 集合演進 | `event_date`/`event_time`（顯示文字兩欄）→ 單一 `event_datetime`（UTC ISO TEXT，migration 0003 合併）；§0 型別對映新增 `event_datetime`、移除舊兩欄；`ux_events_active_group` 的 WHERE／active 集合 {draft,open,closed}→{draft,open}、`ACTIVE_EVENT_STATUSES` 移除 closed、新增 `DISPLAYABLE_EVENT_STATUSES`={draft,open,closed}；`done` 增訂過期 open 惰性 flip 物化路徑（僅內部釋放槽、不顯示）；§0 Q2（date/time 維持文字）被 Brief 決策 #8 取代（改存 UTC 供過期判定）；AC-9 前提改 {draft,open}+closed 不擋。權威來源 D-008（APPROVED），本列為 D-001 收尾註記，**待 architect 追認**。 |
