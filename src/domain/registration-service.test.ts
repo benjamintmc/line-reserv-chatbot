@@ -140,6 +140,64 @@ describe('RegistrationService', () => {
     expect(await t.registrations.countConfirmed(event.id)).toBe(2);
   });
 
+  it('[D-003 AC-21] 遞補額度＝剩餘名額：整批候補留下的擱置空位一併回收（capacity=10/9 正取/+2 候補，-1 → 兩列全遞補）', async () => {
+    const { event } = await seedEvent(t, { capacity: 10, groupId: 'G' });
+    const svc = makeService(t);
+    await svc.signup({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'm1', count: 9 });
+    // available=1 < 2 → 整批候補（G1），此時空 1 位無人可用＝擱置空位。
+    const w = await svc.signup({ groupId: 'G', executorLineUserId: 'U-z', executorDisplayName: 'Z', messageId: 'm2', count: 2, proxyName: '陳先生' });
+    expect(w.kind === 'ok' && w.outcome).toBe('waitlisted');
+    expect(await t.registrations.countConfirmed(event.id)).toBe(9);
+
+    // 取消 1 正取 → 剩餘名額 = 10 − 8 = 2（本次釋出 1 + 既有擱置 1）→ 兩列陳先生一併遞補。
+    const cancel = await svc.cancel({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'm3', count: 1 });
+    expect(cancel.kind).toBe('ok');
+    if (cancel.kind !== 'ok') return;
+    expect(cancel.promoted).toHaveLength(2);
+    expect(cancel.promoted.map((r) => r.display_name)).toEqual(['陳先生', '陳先生']);
+    for (const r of cancel.promoted) {
+      expect((await t.registrations.getById(r.id))!.status).toBe('confirmed');
+    }
+    expect(await t.registrations.countConfirmed(event.id)).toBe(10);
+    expect(await t.registrations.listWaitlist(event.id)).toHaveLength(0);
+  });
+
+  it('[D-003 AC-21] 遞補額度上界為容量：正取已滿 -1 只補 1 列（不超賣、FIFO；quota<批次人數時允許拆批＝已知限制）', async () => {
+    const { event } = await seedEvent(t, { capacity: 10, groupId: 'G' });
+    const svc = makeService(t);
+    await svc.signup({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'm1', count: 10 });
+    await svc.signup({ groupId: 'G', executorLineUserId: 'U-z', executorDisplayName: 'Z', messageId: 'm2', count: 2, proxyName: '陳先生' });
+    await svc.signup({ groupId: 'G', executorLineUserId: 'U-w', executorDisplayName: 'W', messageId: 'm3', count: 1 });
+    expect(await t.registrations.listWaitlist(event.id)).toHaveLength(3);
+
+    const cancel = await svc.cancel({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'm4', count: 1 });
+    expect(cancel.kind).toBe('ok');
+    if (cancel.kind !== 'ok') return;
+    // quota = 10 − 9 = 1：只補最小 seq 一列，正取數不超過 capacity。
+    expect(cancel.promoted).toHaveLength(1);
+    expect(cancel.promoted[0]!.display_name).toBe('陳先生');
+    expect(await t.registrations.countConfirmed(event.id)).toBe(10);
+    // 已知限制（Backlog）：`+2 陳先生` 被拆為 1 正取 + 1 候補；W 仍依 FIFO 排其後。
+    const rest = await t.registrations.listWaitlist(event.id);
+    expect(rest.map((r) => r.display_name)).toEqual(['陳先生', 'W']);
+  });
+
+  it('[D-003 AC-21] 正取已滿時取消候補列不觸發遞補（quota=0，與 AC-5 一致）', async () => {
+    const { event } = await seedEvent(t, { capacity: 2, groupId: 'G' });
+    const svc = makeService(t);
+    await svc.signup({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'm1', count: 2 });
+    await svc.signup({ groupId: 'G', executorLineUserId: 'U-b', executorDisplayName: 'B', messageId: 'm2', count: 1 });
+    await svc.signup({ groupId: 'G', executorLineUserId: 'U-c', executorDisplayName: 'C', messageId: 'm3', count: 1 });
+
+    const cancel = await svc.cancel({ groupId: 'G', executorLineUserId: 'U-b', executorDisplayName: 'B', messageId: 'm4', count: 1 });
+    expect(cancel.kind).toBe('ok');
+    if (cancel.kind !== 'ok') return;
+    expect(cancel.cancelled).toBe(1);
+    expect(cancel.promoted).toHaveLength(0); // 正取仍滿 → quota=0，C 不遞補
+    expect(await t.registrations.countConfirmed(event.id)).toBe(2);
+    expect((await t.registrations.listWaitlist(event.id)).map((r) => r.display_name)).toEqual(['C']);
+  });
+
   it('[D-003 AC-5] 混合持有 2 正取+1 候補，-1 先退候補（高 seq）、不觸發遞補', async () => {
     const { event } = await seedEvent(t, { capacity: 2, groupId: 'G' });
     const svc = makeService(t);

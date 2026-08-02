@@ -300,17 +300,22 @@ export class RegistrationService {
       if (fresh === undefined || !isOpenForSignup(fresh, nowIso())) {
         return { kind: 'event_ended' };
       }
-      // B1 修：freedConfirmed 取「鎖內實際取消的 confirmed 列數」（cancelByIds 之 RETURNING），
-      // 非交易外快照 toCancel.filter(...)。並發下同列被兩 cancel 鎖定時，第二者實取 0、freedConfirmed=0，
-      // 不多遞補 → 有效正取數永不超過 capacity（G8）。SQLite 同步版無此窗；async 讓點激活之。
-      const { cancelled, freedConfirmed } = await repos.registrations.cancelByIds(
+      const { cancelled } = await repos.registrations.cancelByIds(
         toCancel.map((r) => r.id),
         executor.id,
       );
+      // B2 修（D-003 errata）：遞補額度取「鎖內當下剩餘名額」，非本次釋出數 freedConfirmed。
+      // G1 整批候補會留下擱置空位（capacity=10/confirmed=9 時 +2 整批候補，該 1 位無人可用），
+      // freedConfirmed 只看本次釋出量 → 該空位永久無法回收。以剩餘名額為額度即一併回收。
+      // 亦承接 B1：countConfirmed 為鎖內真值（已含本次 soft-delete），並發下同列被兩 cancel
+      // 鎖定時第二者實取 0、正取數未變 → quota=0 不多遞補 → 有效正取數永不超過 capacity（G8）。
+      const confirmedAfter = await repos.registrations.countConfirmed(event.id);
+      const promotionQuota = fresh.capacity - confirmedAfter;
       let promoted: RegistrationRow[] = [];
-      if (freedConfirmed > 0) {
-        // G8：FIFO 遞補，數量 ≤ 本次實際釋出正取數。
-        const picks = await repos.registrations.pickWaitlistForPromotion(event.id, freedConfirmed);
+      if (promotionQuota > 0) {
+        // G8：FIFO 遞補，數量 ≤ 剩餘名額（上界為容量 → 不超賣）。
+        // 已知限制（Backlog）：以列為單位 LIMIT，quota < 候補隊首批次人數時會拆批。
+        const picks = await repos.registrations.pickWaitlistForPromotion(event.id, promotionQuota);
         const promotedN = await repos.registrations.promoteByIds(picks.map((r) => r.id));
         if (promotedN !== picks.length) {
           // nit-5 防禦性斷言：交易內恆相等；不等記異常並以回讀為準。

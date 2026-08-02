@@ -1,0 +1,3 @@
+# shell 腳本一律 LF：Windows checkout 若帶 CRLF，bash 會在 `done < <(...)` 等語法上
+# 報 `syntax error near unexpected token`（harness/checks/check_commit_trace.sh 曾因此無法執行）。
+*.sh text eol=lf
