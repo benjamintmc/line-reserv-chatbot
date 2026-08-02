@@ -101,6 +101,22 @@ gcloud run deploy golf-reserv-chatbot \
 
 ---
 
+## 附錄：上線座標（2026-08-02 已部署）
+
+> 本節記錄實際上線的環境參數，供重部署 / 交接查閱。
+
+| 項目 | 值 |
+|---|---|
+| **GCP 專案 / region** | `group-chatbot-504305` / `asia-east1` |
+| **Cloud Run service** | `golf-reserv-chatbot`（`min-instances=0`、`concurrency=4`、`--allow-unauthenticated`） |
+| **Service URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app` |
+| **LINE Webhook URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app/webhook`（已 Verify + 真機冒煙通過） |
+| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag `:v1` |
+| **DB（Neon）** | host `ep-old-cherry-az822uzr`（Singapore）；app runtime 用 **pooled**（`-pooler`）、migrate 用直連；已套用 migration 0001/0002/0003 |
+| **驗證** | `GET /health` → 200 `{"status":"ok"}`；4 個 env vars 已設（`DATABASE_URL`/`LINE_CHANNEL_SECRET`/`LINE_CHANNEL_ACCESS_TOKEN`/`ADMIN_USER_IDS`），`DEBUG_WEBHOOK` 未設（生產關閉） |
+
+> 待收斂（post-MVP）：secret 目前以 `--set-env-vars` 明文帶 → 可改 Secret Manager；`--min-instances=0` 冷啟遺失窗口 → 需消除可切 `--min-instances=1`（犧牲 $0）。
+
 ## 附錄：常見問題
 
 - **改了程式要重新部署**：重跑步驟 3（build/push 新 tag，如 `:v2`）+ 步驟 4（`gcloud run deploy` 指新 image）。
