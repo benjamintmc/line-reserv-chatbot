@@ -130,14 +130,21 @@ type ListResult =
 1. `processedRepo.markProcessed(messageId)` → `false` → 中止回 `duplicate`。
 2. `{ cancelled, freedConfirmed } = registrationRepo.cancelByIds(toCancel.map(r=>r.id), executor.id)`（soft-delete：設 `cancelled_at` / `cancelled_by_user_id = executor.id`；主辦人代取消時稽核欄記主辦人，對接 D-001 AC-12；G3 禁硬 DELETE）。
 3. `freedConfirmed`＝**本次鎖內實際取消且原 `status='confirmed'` 的列數**（由 `cancelByIds` 的 `RETURNING status` 於同一 FOR UPDATE 交易內得出；本次實際釋出的正取名額數，不分自取消或主辦代取消）。**不得**以交易外快照 `toCancel.filter(...)` 推導（B1 errata，見文末「已定案／errata」）。
-4. **FIFO 遞補（定案 #2）**：若 `freedConfirmed > 0`：
-   - `picks = registrationRepo.pickWaitlistForPromotion(event.id, freedConfirmed)`（有效候補中最小 seq 起，至多 `freedConfirmed` 列；已取消列自動排除）。
+4. **FIFO 遞補（定案 #2；B2 errata 修正額度算法）**：取消後於**同一鎖內**重算可用名額
+   `promotionQuota = fresh.capacity − registrationRepo.countConfirmed(event.id)`（`fresh` 為鎖內重讀的 event 列，`countConfirmed` 已含本次 soft-delete 結果）。若 `promotionQuota > 0`：
+   - `picks = registrationRepo.pickWaitlistForPromotion(event.id, promotionQuota)`（有效候補中最小 seq 起，至多 `promotionQuota` 列；已取消列自動排除）。
+   - **不得**以 `freedConfirmed`（本次釋出正取數）當額度（B2 errata）：G1「整批候補」會留下**擱置空位**（如 capacity=10、confirmed=9 時 `+2` 整批候補，該 1 位無人可用），`freedConfirmed` 只看「本次釋出量」而看不到既有擱置空位，導致空位永久無法回收。以「當下剩餘名額」為額度即同時回收本次釋出與既有擱置空位。
+   - 同理**觸發條件**由 `freedConfirmed > 0` 放寬為 `promotionQuota > 0`：取消**候補列**亦可能讓擱置空位重新塞得下隊首（如上例候補批由 2 縮為 1），此時應遞補。`promotionQuota` 以容量為上界，故仍不超賣。
    - `const promotedN = registrationRepo.promoteByIds(picks.map(r=>r.id))`（waitlist→confirmed，seq 不變；G8）。
    - **防禦性斷言（nit-5 採納）**：同步 IMMEDIATE 交易內 `promotedN` 應恆等於 `picks.length`（picks 皆為剛選出的有效 waitlist 列，無競態）；若 `promotedN !== picks.length` 記錄異常（log error，屬不預期狀態），並以實際遞補列 `getById` 回讀為準，避免通知與資料不一致。
    - `promoted = picks`（供 @ 通知）。
 5. 交易回傳 `{ cancelled, promoted }`。
 
-**遞補數守恆（G8）**：遞補列數 ≤ `freedConfirmed`（本次釋出正取數），故最終有效正取數永不超過 `capacity`（不超賣）；被取消的候補列不釋出正取名額、不觸發遞補。**主辦人代取消 confirmed 代報名額同樣觸發 FIFO 遞補**（與自取消一致）。
+**遞補數守恆（G8；B2 errata）**：遞補列數 ≤ `promotionQuota = capacity − 鎖內有效正取數`，故最終有效正取數永不超過 `capacity`（不超賣）。**主辦人代取消 confirmed 代報名額同樣觸發 FIFO 遞補**（與自取消一致）。
+
+> B2 errata 前後差異：舊版以 `freedConfirmed` 為額度且僅在其 `> 0` 時遞補，會讓 G1 整批候補產生的擱置空位永久無法回收（回報情境：capacity=10、confirmed=9、`+2 陳先生` 整批候補 → 某人 `-1` 後只遞補 1 位，仍空 1 位）。新版額度為「當下剩餘名額」，該情境兩列一併遞補。原「被取消的候補列不觸發遞補」的敘述隨之收斂為：**取消候補列不新增名額，但若當下仍有剩餘名額且候補隊首塞得下，仍會遞補**；正取滿（`promotionQuota = 0`）時行為與舊版一致（AC-5 不受影響）。
+
+**已知限制（拆批，記 Backlog）**：`pickWaitlistForPromotion` 以列為單位 `LIMIT`，當 `promotionQuota` < 候補隊首批次人數時會**拆散整批**（如剩 1 位、隊首為 `+2` → 1 列遞補為正取、1 列留候補），與 G1 進場時的整批原子性不對稱。使用者裁決（2026-08-02）：**本次先允許拆批**，整批原子遞補列為後續優化（需新增 `batch_id` 欄位，屬 migration ⇒ R2）。
 
 **交易後**：重查 `view` → formatter 組出：取消結果 + 更新後名單 + 剩餘名額；若 `promoted.length>0` 追加**遞補通知訊息**（§4）。
 
@@ -333,7 +340,7 @@ type ListResult =
 - **G5（不回 unknown）**：`unknown` 一律不觸發任何回覆或 markProcessed（FR-5 防洗版）；handler 對 `unknown` 回空訊息陣列。
 - **G6（有效性過濾）**：名單顯示、正取計數、`available`、遞補選取、`-N` 定位一律經**帶 `cancelled_at IS NULL`** 的 repo 原語（`countConfirmed`/`listConfirmed`/`listWaitlist`/`findActiveByOwner`/`findActiveProxy`/`findActiveProxyByName`/`pickWaitlistForPromotion`）；不得自行拼 SQL 或以含已取消列的集合計數/顯示。（D-001 G10）
 - **G7（去重持久化）**：有副作用指令（signup/cancel）不得在未經 `processedRepo.markProcessed`（且與副作用同交易）下寫入；不得僅靠記憶體去重。（NFR-2、D-001 G6）
-- **G8（遞補守恆／FIFO）**：遞補數不得超過本次取消釋出的正取名額數（`freedConfirmed`）；遞補一律 `pickWaitlistForPromotion`（最小 seq 有效候補優先）→ `promoteByIds`，不得跳序或超額致有效正取數 > `capacity`。
+- **G8（遞補守恆／FIFO；B2 errata 修訂）**：遞補數不得超過**鎖內重算的剩餘名額** `promotionQuota = capacity − 有效正取數`（**不得**改用 `freedConfirmed`＝本次釋出數，該值看不到 G1 整批候補留下的擱置空位）；`capacity` 與正取數皆須於同一 `runImmediate` 交易內取得（`fresh.capacity` / `countConfirmed`），不得用交易外快照。遞補一律 `pickWaitlistForPromotion`（最小 seq 有效候補優先）→ `promoteByIds`，不得跳序或超額致有效正取數 > `capacity`。
 - **G9（快照不回溯）**：不得修改既有 `registrations.display_name`；代報名 `owner_user_id` 一律為傳訊人 user.id，`display_name` 為輸入名字（沿用 D-001 G5、定案 #4）。
 - **G10（不直接下 SQL）**：`src/domain/` 不得出現任何 SQL 字串或直接存取 `db`；一律透過 repository 原語（D-001 §9）。
 - **G11（禁 any）**：`src/domain/` 與改寫後 `handler.ts` 不得使用 `any`；domain 結果與 mention 描述子皆具名定型。
@@ -362,6 +369,7 @@ type ListResult =
 - [ ] **AC-18（主辦代取消多筆同名歧義）**：不同 owner 各代報一個「陳大哥」（共 2 列，seq 不同），主辦人 `-1 陳大哥` → 依「先候補後正取、組內高 seq 先」取 1 列（即較新者）soft-delete；另一「陳大哥」保留。（驗證：unit test / §3 多筆同名定案）
 - [ ] **AC-19（群組取名，非 getProfile）**：新成員（未加 bot 好友）`+1` → handler 以 `getGroupMemberProfile(groupId, userId)` 取得其群組顯示名並存為快照（非 `getProfile` 而落入「使用者」佔位）；取名失敗時 fallback 既有 `users.display_name`→「使用者」。（驗證：unit test，handler + mock client / NFR-4、nit-2、§7）
 - [ ] **AC-20（cancel 遞補不超賣：鎖內釋出數）**：capacity=2、confirmed=[r1,r2]、waitlist=[w1,w2]，兩則不同 messageId 的 cancel 於交易外皆定位到同一正取列 r2，各自 FOR UPDATE 交易（真並行）→ 序列化後第二者 `cancelByIds` 實取 0、`freedConfirmed=0` 不遞補；最終有效正取數 ≤ capacity（=2，非 3），只實際釋出的 1 個正取對應遞補 1 筆候補。（驗證：PG 真並行整合測試，d007-postgres / B1 errata、G8、ADR-002）
+- [ ] **AC-21（遞補額度＝剩餘名額，回收擱置空位）**：capacity=10、confirmed=9、某人 `+2 陳先生` → 整批候補（正取仍 9，空 1 位）；此時任一正取者 `-1` → 鎖內 `promotionQuota = 10 − 8 = 2`，**兩列陳先生一併遞補**為 confirmed（有效正取 = 10、候補清空、遞補通知含 2 人），非只遞補 1 列。另：`promotionQuota` 上界為容量 → 遞補後有效正取數 ≤ capacity（不超賣）；正取已滿時（`promotionQuota = 0`）取消候補列不觸發遞補（與 AC-5 一致）。（驗證：unit test，registration-service / B2 errata、G8、定案 #2）
 
 ---
 
@@ -408,4 +416,5 @@ type ListResult =
 | 2026-07-31 | T-006 實作後 architect-reviewer 複審 | 建議 APPROVED（零 blocker，G1~G11 逐條 PASS）；裁決 (A) LINE mention 改 TextMessageV2+substitution 可接受（已補 §4 errata，不需 ADR）、(B) ownerDisplayName→subjectDisplayName + ListResult 增 duplicate 語意等價可接受（已補 §1.1 errata）；nit-2（freedConfirmed 取交易外快照，MVP 單實例安全，多實例才需改）、nit-3（no_open_event 時 list 有 mark、signup/cancel 未 mark 之行為不對稱）、nit-4（display_name 含字面 `{`/`}` 極低風險）記 task-board 備查 |
 | 2026-07-31 | T-006 unit-tester 獨立覆核 | 124 tests 全綠、AC 58/58、未揪出實作 bug；補 11 個真覆蓋測試（整批候補分支、AC-2 大批併發、AC-5 組內高 seq、AC-11 cancel 冪等、AC-14 多筆遞補 index 位移等）。提醒 better-sqlite3 首次冷跑一次性 flake（環境層，記 Backlog） |
 | 2026-08-01 | T-012 architect-reviewer R2 blocker B1（cancel 遞補超賣競態） | 已修：freedConfirmed 改由 `cancelByIds` 之 RETURNING（鎖內實際取消 confirmed 數）得出，取代交易外快照；新增 `[D-003 AC-20]` 回歸（PG 真並行）；§3 step 2/3 與「已定案／errata」補記。待 architect-reviewer 複審封閉 |
+| 2026-08-02 | **errata B2（遞補額度算錯，使用者回報 bug）**：`freedConfirmed` → `promotionQuota` | 現象：capacity=10、confirmed=9、`+2 陳先生` 整批候補後，某人 `-1` 只遞補 1 位、仍空 1 位。根因＝G8 以 `freedConfirmed`（本次釋出數）為遞補額度，看不到 G1 整批候補留下的**擱置空位**。修正：§3 step 4 / G8 改為鎖內重算 `promotionQuota = fresh.capacity − countConfirmed()`，觸發條件由 `freedConfirmed > 0` 放寬為 `promotionQuota > 0`；新增 AC-21。**使用者裁決**：整批原子遞補（避免 quota < 批次人數時拆批）先允許拆批，列後續優化（需 `batch_id`，R2），記 task-board Backlog |
 | 2026-08-02 | **errata（D-008 T-014 套用）**：findOpenEvent 拆分 + 鎖內 re-check + 名單 phase | `findOpenEvent` → `findOpenEventForSignup`（open ∧ 未過期，否則 `event_ended`/`no_open_event`）+ `findEventForDisplay`（`findLatestDisplayable`，顯示集 {draft,open,closed}，回 `phase`）；signup/cancel 新增 `event_ended`、`runImmediate` **鎖內以 `getById(event.id)` 重讀最新列** re-check（非 stale，nit-2/AC-9）；`getListView` 帶 `phase`；list-formatter `eventHeader` 日期改衍生 `event_datetime`、`feeLine` phase 化、ended/closed 去「剩餘名額」與「暫估/預估」、新增 closed/ended 標題。既有 AC 於 live（未過期 open）下仍成立。來源：D-008 §五 D-003（APPROVED）。 |
