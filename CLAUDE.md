@@ -5,11 +5,11 @@
 
 ## 0. 專案概要（每個新專案必填）
 
-- **專案名稱**：高爾夫球聚 LINE Chatbot（`golf-reserv-chatbot`）
-- **一句話描述**：整合在 LINE 群組中的高爾夫球聚活動報名 chatbot，成員輸入 `+1` 即完成報名，主辦人可透過對話建立活動。
-- **目標使用者**：高爾夫球聚 LINE 群組的一般成員、主辦人（Host）、系統管理員（Admin）。
-- **技術棧**：Node.js + TypeScript + Fastify + `@line/bot-sdk`；MVP 資料庫用 SQLite（`better-sqlite3`），無持久磁碟平台可切換 PostgreSQL（Supabase / Neon）。
-- **部署目標**：任一支援 HTTPS 的平台（Render / Fly.io / Cloud Run）；開發期以 ngrok 對接 LINE webhook。
+- **專案名稱**：約球 LINE Chatbot（repo 名 `golf-reserv-chatbot` 沿用自初版，未更名以免影響部署座標）
+- **一句話描述**：常駐 LINE 群組的約球報名 chatbot——任何成員可 `開團` 建立活動，其他人輸入 `+1` 即完成報名，額滿自動轉候補並依序遞補。**球種中性**：活動只有「時間／場地／人數／費用」四要素，不預設也不限定球種；使用者可見文案一律中性（D-005 §3 決議），**新增文案不得引入特定球種用語**。
+- **目標使用者**：約球 LINE 群組的一般成員、開團的人（活動建立者）、系統管理員（`ADMIN_USER_IDS`）。
+- **技術棧**：Node.js 20+ / TypeScript / Fastify 5 / `@line/bot-sdk` 9 / **PostgreSQL（`pg`）**。版本以 §4 為準。
+- **部署目標**：Cloud Run（`asia-east1`，min-instances=0）+ Neon Postgres，已於 2026-08-02 上線；開發期以 cloudflared / ngrok 對接 LINE webhook。
 - **不做什麼（Non-goals）**：MVP 不做同群組多場並行活動（限一場）、球組編排與收款統計（v2）、執行期 Admin 後台指令／網頁介面（以環境變數設 host）。**候補（waitlist）與代報名（`+1 名字`）已納入 MVP**。決策紀錄見 `docs/00-project-brief.md`。
 
 ## 1. 運作模式
