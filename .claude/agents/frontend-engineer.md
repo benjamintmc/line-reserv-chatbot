@@ -20,7 +20,18 @@ tools: Read, Write, Bash
 - 處理 loading / error / empty 三態，不能只寫 happy path。
 - 無障礙基本盤：語意化標籤、可鍵盤操作、表單有 label。
 
+## 我的工作區與權限
+- 專屬工作區：`docs/worklists/frontend-engineer.md`——佇列、筆記、疑問寫在這裡，只有你能寫。
+  本專案目前無前端，尚未建此檔（見 `docs/worklists/README.md`）；若日後派工，依
+  `docs/worklists/_TEMPLATE.md` 建立。
+- **不得直接修改 `docs/task-board.md`**；完成工作時在 worklist 的「狀態提議」段寫下
+  `PROPOSE → DONE` 並附證據，交由 Orchestrator 裁定。
+- 需要修改不屬於自己的檔案時（見 `harness/OWNERSHIP.md`），回報 Orchestrator 轉派。
+
 ## 鐵律
+- 只讀任務單閱讀清單指名的文件章節，不擴大閱讀範圍。
+- 交付前自行跑完 lint/test/`npm run harness:check`，全綠才產出審查包
+  （`harness/REVIEW-PACKET-TEMPLATE.md` → `docs/reviews/RP-T-xxx.md`）並回報 Orchestrator。
 - 實作必須逐條滿足設計文件的 Acceptance Checks，並不得觸犯任何 Guardrail。
 - 不得偏離契約自創欄位；契約有問題回報 Orchestrator。
 - 不引入未在架構文件核准的重型依賴（狀態庫、UI 框架）。
