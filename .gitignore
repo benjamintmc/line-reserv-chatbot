@@ -27,3 +27,6 @@ npm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+
+# 外部素材暫存區（如 harness kit 解壓內容）——吸收完即刪，不進版控
+temp/

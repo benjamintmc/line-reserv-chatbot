@@ -1,19 +1,19 @@
 # Task Board（任務看板）
 
-> 擁有者：orchestrator。這是跨 session、跨模型的共同記憶，每次派工前後必須更新。
+> 擁有者：orchestrator，**唯一可寫者**（見 `harness/OWNERSHIP.md`）。跨 session、跨模型的共同記憶。
+> 各角色以 `docs/worklists/<role>.md` 的「狀態提議」提出 `PROPOSE → DONE`，由 orchestrator 驗證後裁定。
+> 只保留未完成 + 最近 10 筆 DONE，其餘見 `docs/task-board-archive.md`。
 
 ## 目前階段：**已上線（PROD LIVE，2026-08-02）**。T-012（PG 移植）DONE + T-014（單場自動釋放，D-008）DONE，R2 全通過、271 tests 綠、AC 142/142。**部署完成**：依 `docs/deployment-runbook.md` 走完 Neon 建DB→直連 migrate(0001/0002/0003)→build/push image→Cloud Run deploy→LINE webhook Verify→真機冒煙，全數通過。線上座標見 runbook 附錄「上線座標」。Service：`https://golf-reserv-chatbot-1006751446489.asia-east1.run.app`（GCP `group-chatbot-504305` / `asia-east1` / min-instances=0 / Neon 免費層 = $0/月）。後續選項：`--min-instances=1` 消除冷啟遺失窗口（犧牲 $0）、Secret Manager 收斂 secret（post-MVP）
+>
+> **2026-08-05 harness 1.4.0 升級完成（T-016）**：補齊三代框架缺件、回填 CLAUDE.md、
+> 反向文件化 01-architecture 與 02 指令契約（原為空白模板）、修好 3 個會產生錯誤訊號的 checks
+> 缺陷並加上 GitHub Actions。下一步建議：**T-017 LESSONS 回寫清償**（5 項已達門檻卻從未回寫）。
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
-| T-001 | 完成 project brief（彙整 requirements） | – | R0 | orchestrator | DONE | docs/00-project-brief.md | 已彙整 + 6 項決策定案 |
-| T-002 | M0 專案骨架 + echo bot | – | R0 | backend-engineer | DONE | package.json, tsconfig.json, src/ | 2026-07-22 已驗證：npm install（235 packages）、build（tsc 無錯）、test（vitest 3/3 通過）、實際啟動並確認 `/health` 回 200 |
-| T-003 | 本機安裝 Node.js 20+ | – | – | 使用者 | DONE | – | 確認 Node v24.18.0 / npm 11.16.0，已解除阻塞 |
-| T-004 | M1 DB schema + migration | D-001（APPROVED） | R1 | backend-engineer | DONE | src/db/ | 2026-07-23 完成：build 綠、40 tests、AC 13/13、architect-reviewer Guardrails 零違反、unit-tester 真實覆蓋覆核。收尾項見 Backlog（.sql 複製、ADR-003） |
-| T-005 | M1 command parser（+N/-N/名單/開團） | D-002（APPROVED） | R1 | backend-engineer | DONE | src/commands/ | 2026-07-23 完成：build 綠、83 tests、AC 39/39、architect-reviewer 審 D-002 通過、unit-tester 獨立覆核無 bug（補 17 邊界測試） |
 | T-006 | M2 報名核心（signup/cancel/list domain + webhook 接線） | D-003（APPROVED） | R1 | backend-engineer | DONE | src/domain/, src/webhook/, src/db/repositories/registration-repository.ts, src/server.ts | 2026-07-31 完成：build 綠、124 tests 全綠、AC 58/58（AC-1~AC-19）、architect-reviewer 複審零 blocker G1~G11 逐條 PASS、unit-tester 獨立覆核未揪 bug（補 11 測試）。新增 findActiveProxyByName、domain 三檔、handler 改 async+DI。D-003 §4/§1.1 errata 已同步。e2e AC-17 待整合階段（見 Backlog） |
-| T-007 | M2 真實 LINE 跨試（cloudflared，手動 seed open 活動） | – | R0（測試支援） | orchestrator + 使用者 | DONE | scripts/seed-open-event.ts, docs/integration-test-m2-line.md | 2026-07-31 使用者於真實 LINE 群組跨試**全數通過**：名單/+N/整批候補/取消觸發 @遞補（textV2 mention 藍字可點）/代報名 +N名字/-N名字/+99 靜默/閒聊不回覆 皆符預期。通道用 cloudflared quick tunnel（免帳號）。踩雷紀錄見 LESSONS |
 | T-011 | 授權簡化實作（開團移除授權、關閉/取消改認 host_user_id∪super-admin、我的ID 接線、super-admin 空警告）+ D-004 授權 errata | D-006（APPROVED） | R2 | backend-engineer | DONE | src/domain/, src/webhook/, src/server.ts, src/index.ts, design/D-004 | 2026-07-31 完成：build 綠、**234 tests 全綠**、AC 114/114、lint 0。**R2 三關全通過**（architect+design 零 blocker、unit-tester 無 bug 補 canManageEvent false 分支+稽核欄）。D-004 errata 回寫+inline 指標。順帶修 vitest flake（fileParallelism:false）。e2e 待整合階段 |
 | T-010 | 逐步問答計費併為單題 awaiting_fee（真機跨試回饋；複用 validateFee、容忍空白） | D-005 §6.2 修訂 | R1 | backend-engineer | DONE | src/domain/create-flow.ts, event-formatter.ts, src/commands/validators.ts | 2026-07-31 完成：計費兩題併一題、validateFee 容忍空白、一行式零回歸。build 綠、214 tests、AC 99/99、lint 0 error。R1 兩關通過（unit-tester 無 bug 補 arity 守護、design-reviewer APPROVED）。採納 nit：提問換行分列 + 重問補「取消」 |
 | T-009 | 計費模式擴充實作（price_mode/venue_fee/settled_per_person + migration 0002、均攤估算/結算、主辦自動登記、文案中性化、開團計費語法） | D-005（APPROVED） | R2 | backend-engineer | DONE | src/db/, src/commands/, src/domain/, src/webhook/ | 2026-07-31 完成：build 綠、**211 tests 全綠**、AC 99/99、lint 0 error。**R2 三關全通過**（architect+design APPROVED 零 blocker、unit-tester 無 bug 補 3 測試）。文件校正：D-005 §5.1/D-004 AC-18 errata。e2e/真機跨試待整合階段 |
@@ -28,7 +28,12 @@
 | D-008 | 單場名額自動釋放（決策 #8）：合併 event_datetime、closed/過期自動釋放、ux_events_active_group active 集合移除 closed、惰性 on-read 過期判定、過期顯示 done | – | R2 | architect | **APPROVED（2026-08-02）** — R2 雙審通過（architect 零 blocker + design B1/B2 修訂後封閉）、使用者最終核可、剩餘名額列微選＝移除。5 Guardrails / 13 AC。解鎖 T-014 |
 | T-014 | 單場自動釋放實作（migration 0003 合併 event_datetime + 改 ux active 集合、event-service 過期判定/開團 flip、findOpenEventForSignup/findEventForDisplay 三讀取點、phase 名單 formatter、create-flow 存 UTC datetime、鎖內 getById 重讀）＋套用預列 errata（D-001/D-003/D-004/D-005/D-007） | D-008（APPROVED） | R2 | backend-engineer | **DONE（2026-08-02）**。單場自動釋放完整實作：0003 合併 event_datetime + 索引去 closed、開團惰性 flip 過期 open→done、三讀取點、phase 名單（已結束/已截止去暫估、移除剩餘名額列）、UTC+8 轉換、鎖內 getById 重讀防超賣。**R2 三關全通過**：architect-reviewer 零 blocker（G1~G5、errata 追認正確）、design-reviewer PASS（文案逐字符 §8）、unit-tester PASS（**37 檔 271 tests 綠**、補 4 案、零 bug）。build/lint 0、AC 142/142。errata 套 D-003/D-004/D-005 + D-001/D-007 追認。行為變更（依設計）：closed 不再能取消活動→no_active。部署 runbook 已含 0003 |
 | T-015 | **bug 修復（使用者回報）**：遞補額度算錯致擱置空位無法回收 | D-003 errata B2 | R1 | orchestrator（直接實作） | **DONE（2026-08-02）**。現象：capacity=10、正取 9、`+2 陳先生` 整批候補後某人 `-1`，只遞補 1 位、仍空 1 位。根因＝D-003 G8 以 `freedConfirmed`（本次釋出數）為遞補額度，看不到 G1 整批候補留下的**擱置空位**（實作與舊設計一致 ⇒ 設計缺口非實作偏離）。修法：`registration-service.cancel` 改於鎖內重算 `promotionQuota = fresh.capacity − countConfirmed()`，觸發條件由 `freedConfirmed > 0` 放寬為 `promotionQuota > 0`（取消候補列亦可能讓擱置空位重新可用）；額度上界為容量 ⇒ 不超賣，並承接 B1 併發語意。先寫 D-003 errata（§3 step 4 / G8 / AC-21 / 討論紀錄）再實作。**274 tests 綠、AC 143/143、lint 0**。已知限制（使用者裁決先允許）：quota < 候補隊首批次人數時會拆批，見 Backlog |
-| T-013 | 使用者安裝 Docker Desktop（PG-only 本機/CI 測試前置） | – | – | 使用者 | **DONE（2026-08-01）** — per-user 裝於 `%LOCALAPPDATA%\Programs\DockerDesktop`（不在 Program Files）；已在 User PATH。既有 shell session PATH 為安裝前快照，呼叫 docker 前需 prepend `…\DockerDesktop\resources\bin` |
+
+## harness 維運任務
+| ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
+|---|---|---|---|---|---|
+| T-016 | **harness 1.1.0 → 1.4.0 升級 + 文件斷層修補**（框架缺件、CLAUDE.md 回填、反向文件化 01/02、checks 跨平台修正 + CI） | – | R1 | orchestrator | **DONE（2026-08-05）**。五個階段全完成：①1.2/1.3/1.4 三代缺件補齊（TOKEN-BUDGET/OWNERSHIP/審查包/worklists/2 支 check）②CLAUDE.md 補 §4 指令表、§4.5 既有專案現況、§8/§9，並校正 fastify 4→5、移除已不存在的 better-sqlite3 ③01-architecture 與 02 指令契約由 codebase 反向產生（原為空白模板）④修 3 個 checks 缺陷（cp950 假紅、Windows 路徑 no-op 假綠、粗體 APPROVED 漏檢）+ `npm run harness:check` + GitHub Actions ⑤本次歸檔。**驗證**：lint 0、build 綠、274 tests 全綠零回歸、4 項反向測試確認新檢查真的會抓 |
+| T-017 | **LESSONS 回寫清償**：5 項達門檻項目轉為具體落點（CLAUDE.md 條文 / D-000 模板欄位 / reviewer checklist / 自動檢查），逐條交使用者核可後生效並補「已回寫紀錄」 | – | R1 | orchestrator | **BACKLOG**。門檻項目：①拒絕回覆去重政策不對稱（×3）②errata 治理成本（×3）③conversation state 三件套（×2）④鎖內決策輸入通則（×2）⑤user-facing 詞彙全域掃描（×2）。另 orchestrator `git add -A` 誤掃 agent WIP（×1）已直接落入 orchestrator 角色檔。**回寫機制自建立以來從未實際運轉過，「已回寫紀錄」表是空的** |
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
