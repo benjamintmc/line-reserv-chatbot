@@ -100,6 +100,35 @@ repository 不做決策。指令解析在 `src/commands/`，**不在** `src/doma
 - 流程與線上座標見 `docs/deployment-runbook.md`（含 Neon 建 DB → 直連 migrate → build/push → deploy → LINE Verify → 冒煙）。
 - `PORT` 由 Cloud Run 注入；`/health` 不依賴 DB，供平台探活。
 
+## LINE 平台限制（2026-07-31 對照官方文件驗證；2026-08-05 自 task-board 移入）
+
+- **既有接線全數與官方文件相符**：①mention 用 `textV2` + `substitution`（`{type:'mention',mentionee:{type:'user',userId}}`，placeholder `{mN}`）②reply `messages` `maxItems: 5`（本專案最多 2 則）③`getGroupMemberProfile` 回 `displayName` 且**涵蓋未加 bot 好友的群組成員**（印證 AC-19/NFR-4）④驗簽與 replyToken 用法正確。
+- **⚠️ 帳號等級限制**：「取群組成員 ID 清單」(`GET /group/{id}/members/ids`) **需 verified 或 premium 官方帳號**；「取單一成員 profile」(`getGroupMemberProfile`) **所有帳號皆可**。本專案只用後者（userId 一律來自 webhook 事件），故不受限。若要做「@全員」「列出未報名者」等需**列舉**成員的功能則會撞到此限。
+- **⚠️ 目前完全不用 `pushMessage`**：全系統只有 `replyMessage`（`src/server.ts`），因此不消耗 LINE 的主動訊息額度。**任何「主動提醒」類功能都會打破這個前提**——費用結構見下節。
+
+## 訊息費用結構（2026-08-05 查證，供「主動提醒」類功能評估）
+
+**計費規則（官方 Messaging API 文件）**
+- **`replyMessage` 不計費**（"Sending methods that are not counted as message count: Reply messages"）。這就是本專案至今零訊息成本的原因。
+- **`push` / `multicast` / `broadcast` / `narrowcast` 全部計費**，且**以「收訊人數」計，不是以請求數計**："The number of messages is counted by the number of people you send a message to."
+- **⚠️ 推播到群組 = 按群組總人數計費**。對 30 人的群推一則提醒＝**30 則**，即使只有 12 人報名。
+- 超出額度時 **API 回錯誤且訊息不會送出**（不是自動扣款）——提醒功能會靜默失效，需監控用量端點。
+
+**台灣方案（未稅）**
+
+| 方案 | 月費 | 免費則數 | 超出 |
+|---|---|---|---|
+| 輕用量 | 0 | 200 則 | **不可加購**（直接卡住） |
+| 中用量 | 800 | 3,000 則 | 不可加購 |
+| 高用量 | 1,200 | 6,000 則 | 每則 NT$0.2 起（階梯累進） |
+
+**對本專案的試算**（每場 12 位正取、每週一場）
+- **推播給正取者本人**：12 則/場 → 免費層可支應約 **16 場/月**（≒ 4 個群組各週一場）。
+- **推播到群組**：30 人群組 = 30 則/場，且會吵到沒報名的人 → **成本高、體驗差，不建議**。
+- ⇒ 設計上應走**個別推播（multicast 給正取者）**，且費用與**群組人數無關、只與報名人數有關**。
+
+**⚠️ 待實測的前提**：個別推播要求對方**已將官方帳號加為好友**。群組成員若從未加好友，可能推不到（LINE 對非好友的 push 行為需實測確認）。此點決定「提醒」能否覆蓋全部報名者，**應在設計前先用真帳號驗證**。
+
 ## 【技術債】現況清單
 
 登記於 task-board Backlog，此處建立交叉索引：
