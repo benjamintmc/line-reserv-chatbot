@@ -31,12 +31,12 @@ jobs:
       DATABASE_URL_TEST: postgres://golf:golf@localhost:5433/golf_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # check_commit_trace 需要歷史；淺 clone 會讓 --since 掃不到東西。
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: npm
