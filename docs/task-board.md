@@ -51,11 +51,11 @@
 | （無）| T-012 已於 2026-08-01 解阻塞（Docker Desktop 就緒，T-013 DONE） | – |
 
 ## Backlog（含暫緩的 TODO）
-- **（新功能，使用者提出 2026-08-05）「我的球聚」個人待辦查詢**：使用者加官方帳號好友後，於**一對一聊天**輸入 `球聚`，回覆他**跨所有群組**已報名（含候補）且**尚未結束**的球聚清單。**風險：R1**，但若需為 `registrations.owner_user_id` 建索引則升 **R2**（migration，CLAUDE.md §4.5）。**動工前必須先有 D-009 設計文件**。已盤點的實作前提與待決策：
+- **（新功能，使用者提出 2026-08-05）「我的球聚」個人待辦查詢**：使用者加官方帳號好友後，於**一對一聊天**輸入 `球聚`（裁決：**不在群組內生效**），回覆他**跨所有群組**、**已正取**且**尚未結束**的球聚清單。**功能意圖（使用者定調）：列出所有「已經確定的」球敘，讓他知道自己該去哪幾場即可**——候補不算確定，故不列出。**風險：R1**，但若需為 `registrations.owner_user_id` 建索引則升 **R2**（migration，CLAUDE.md §4.5）。**動工前必須先有 D-009 設計文件**（規格已定，可直接派 architect）。已盤點的實作前提：
   - **① 兩個必改的既有守門**：`handler.ts:342` 把所有非群組訊息直接丟棄（1:1 訊息目前**完全不會被解析**）；`:341` 只收 `message` 型別，`follow`（加好友）未接線——若要在加好友當下主動推說明訊息需一併處理。
-  - **② 需要本專案第一條跨群組讀取路徑**：現行 `registration-repository` 全部以 `eventId` 為界、`event-repository` 以 `groupId` 為界，無任何以人為軸的查詢。新增 `registrations JOIN events WHERE owner_user_id=? AND cancelled_at IS NULL`，reviewer 須逐條確認**使用者只看得到自己的列**。過期語意**必須沿用 D-008 惰性 on-read 判定**，否則會列出 status 仍為 open 的殭屍球聚；「尚未完成」建議為 `event_datetime > now() AND status ∈ {open, closed}`（closed＝已截止但活動未到，仍應顯示）。
-  - **③【缺資料，需使用者裁決】`events` 沒存群組名稱**，只有 `group_id`，跨群清單無法告訴使用者「這是哪一團」。選項：(a) 只用日期＋地點辨識（零成本，可能不夠）(b) 呼叫 `getGroupSummary`（每群一次 API，需確認帳號等級限制，參照「LINE 平台限制」段的前例）(c) 開團時快照群組名入 events（⇒ migration ⇒ R2）。
-  - **④ 待決策**：代報名列（`kind='proxy'`）是否一併顯示（建議顯示並標示「代 XXX 報名」，取消責任在代報者）；`球聚` 是否同時在群組內生效（若是，D-002 dispatch 表需增列，並與 `名單` 的語意明確區隔）。
+  - **② 需要本專案第一條跨群組讀取路徑**：現行 `registration-repository` 全部以 `eventId` 為界、`event-repository` 以 `groupId` 為界，無任何以人為軸的查詢。新增 `registrations JOIN events WHERE owner_user_id=? AND cancelled_at IS NULL AND status='confirmed'`（候補不列出），reviewer 須逐條確認**使用者只看得到自己的列**。**刻意取捨（符合功能意圖）**：只候補、無正取的活動不出現在清單中——查候補狀態請於該群組用 `名單`。過期語意**必須沿用 D-008 惰性 on-read 判定**，否則會列出 status 仍為 open 的殭屍球聚；「尚未完成」建議為 `event_datetime > now() AND status ∈ {open, closed}`（closed＝已截止但活動未到，仍應顯示）。
+  - **③【已裁決 2026-08-05】不顯示群組名**：使用者裁定清單只需時間、場地等活動本身資訊，毋須辨識來自哪個群組。⇒ 不呼叫 `getGroupSummary`、**不需為此開 migration**，`events` 現有欄位已足夠，本項維持 R1。（`group_id` 仍作為查詢與去重的內部鍵，只是不出現在回覆中。）
+  - **④【已裁決 2026-08-05】代報名一併呈現，逐列條列**。每列格式：`YYYY-MM-DD HH:MM {{場地}} {{代報名|自己}} {{人數}}人`——以（活動 × `kind`）分組、同組合併計數；日期分隔符**對齊既有 formatter 的 `-`**（`event-formatter.ts:24`／`utcIsoToTaipei`），不另創格式。查詢條件為 `owner_user_id`（代報者即 owner，取消責任在他身上）。
 
 - **（後續優化，使用者裁決 2026-08-02／T-015 衍生）整批原子遞補**：`pickWaitlistForPromotion` 以**列**為單位 `LIMIT`，當剩餘名額 < 候補隊首批次人數時會**拆散整批**（剩 1 位、隊首 `+2 陳先生` → 1 列轉正取、1 列留候補），與 G1 進場「整批不部分接受」的原子性不對稱。使用者已裁決**本次先允許拆批**。實作需求：`registrations` 新增 `batch_id` 欄位（同批共用；`0001_init.sql` 現無此欄，`seq` 無法可靠推斷批次）→ 屬 **migration ⇒ R2**（需 D-003 或新設計文件 + 雙 reviewer）。另需決策：額度塞不下隊首批次時採「跳過該批、遞補得下的後批」（不留空位但可能插隊）或「整批卡住等待」（嚴格 FIFO 但留空位）。回歸測試已釘住現行拆批行為：`[D-003 AC-21]` 第 2 案。
 - ~~M1 起導入 better-sqlite3~~ **已過時（2026-08-05 清理）**：T-012 PG-only 移植後該依賴已完全移除，ADR-003 僅存歷史意義。
@@ -77,4 +77,4 @@
 - **⚠️ 帳號等級限制（影響未來功能，非 MVP 阻擋）**：「取群組成員 ID 清單」(`GET /group/{id}/members/ids`) **需 verified 或 premium 官方帳號**；但「取單一成員 profile」(`getGroupMemberProfile`) **所有帳號皆可**。本專案只用單一成員 profile（userId 一律來自 webhook 事件），故**不受此限**。若未來要做「@全員」「列出未報名者」等需列舉成員的功能 → 需 verified/premium 帳號，屆時評估（記 M4 規劃）。
 
 ## 決策待辦（需使用者裁決）
-- （無）CLAUDE.md §4 版本註記已於 2026-07-23 經使用者同意加註指向 ADR-003。
+- （無）「我的球聚」的五項決策已於 2026-08-05 全數裁決完畢（群組名、代報名、顯示格式、日期分隔符、候補、群組內是否生效），見 Backlog 該條——已具備開 D-009 設計文件的條件。
