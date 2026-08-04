@@ -13,11 +13,9 @@
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
-| T-006 | M2 報名核心（signup/cancel/list domain + webhook 接線） | D-003（APPROVED） | R1 | backend-engineer | DONE | src/domain/, src/webhook/, src/db/repositories/registration-repository.ts, src/server.ts | 2026-07-31 完成：build 綠、124 tests 全綠、AC 58/58（AC-1~AC-19）、architect-reviewer 複審零 blocker G1~G11 逐條 PASS、unit-tester 獨立覆核未揪 bug（補 11 測試）。新增 findActiveProxyByName、domain 三檔、handler 改 async+DI。D-003 §4/§1.1 errata 已同步。e2e AC-17 待整合階段（見 Backlog） |
 | T-011 | 授權簡化實作（開團移除授權、關閉/取消改認 host_user_id∪super-admin、我的ID 接線、super-admin 空警告）+ D-004 授權 errata | D-006（APPROVED） | R2 | backend-engineer | DONE | src/domain/, src/webhook/, src/server.ts, src/index.ts, design/D-004 | 2026-07-31 完成：build 綠、**234 tests 全綠**、AC 114/114、lint 0。**R2 三關全通過**（architect+design 零 blocker、unit-tester 無 bug 補 canManageEvent false 分支+稽核欄）。D-004 errata 回寫+inline 指標。順帶修 vitest flake（fileParallelism:false）。e2e 待整合階段 |
 | T-010 | 逐步問答計費併為單題 awaiting_fee（真機跨試回饋；複用 validateFee、容忍空白） | D-005 §6.2 修訂 | R1 | backend-engineer | DONE | src/domain/create-flow.ts, event-formatter.ts, src/commands/validators.ts | 2026-07-31 完成：計費兩題併一題、validateFee 容忍空白、一行式零回歸。build 綠、214 tests、AC 99/99、lint 0 error。R1 兩關通過（unit-tester 無 bug 補 arity 守護、design-reviewer APPROVED）。採納 nit：提問換行分列 + 重問補「取消」 |
 | T-009 | 計費模式擴充實作（price_mode/venue_fee/settled_per_person + migration 0002、均攤估算/結算、主辦自動登記、文案中性化、開團計費語法） | D-005（APPROVED） | R2 | backend-engineer | DONE | src/db/, src/commands/, src/domain/, src/webhook/ | 2026-07-31 完成：build 綠、**211 tests 全綠**、AC 99/99、lint 0 error。**R2 三關全通過**（architect+design APPROVED 零 blocker、unit-tester 無 bug 補 3 測試）。文件校正：D-005 §5.1/D-004 AC-18 errata。e2e/真機跨試待整合階段 |
-| T-008 | M3 開團流程（開團/確認/關閉報名/取消活動 + event 狀態機 + host 白名單 + 逐步問答 conversation_states） | D-004（APPROVED） | R2 | backend-engineer | DONE | src/domain/, src/webhook/, src/commands/, src/db/tx.ts, src/server.ts | 2026-07-31 完成：build 綠、165 tests 全綠、AC 80/80（含 D-004 AC-1~22）、lint 0 error。**R2 三關全通過**：architect-reviewer 零 blocker（窄捕捉追認 PASS）、design-reviewer 零 blocker、unit-tester 無 bug（補 3 強化測試）。文件校正已套用（§4/§9）。e2e 留整合階段（AC-18 開團→報名銜接 + AC-17 主辦override） |
 
 ## M5 部署（Cloud Run + Neon PG）任務
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
@@ -53,6 +51,12 @@
 | （無）| T-012 已於 2026-08-01 解阻塞（Docker Desktop 就緒，T-013 DONE） | – |
 
 ## Backlog（含暫緩的 TODO）
+- **（新功能，使用者提出 2026-08-05）「我的球聚」個人待辦查詢**：使用者加官方帳號好友後，於**一對一聊天**輸入 `球聚`，回覆他**跨所有群組**已報名（含候補）且**尚未結束**的球聚清單。**風險：R1**，但若需為 `registrations.owner_user_id` 建索引則升 **R2**（migration，CLAUDE.md §4.5）。**動工前必須先有 D-009 設計文件**。已盤點的實作前提與待決策：
+  - **① 兩個必改的既有守門**：`handler.ts:342` 把所有非群組訊息直接丟棄（1:1 訊息目前**完全不會被解析**）；`:341` 只收 `message` 型別，`follow`（加好友）未接線——若要在加好友當下主動推說明訊息需一併處理。
+  - **② 需要本專案第一條跨群組讀取路徑**：現行 `registration-repository` 全部以 `eventId` 為界、`event-repository` 以 `groupId` 為界，無任何以人為軸的查詢。新增 `registrations JOIN events WHERE owner_user_id=? AND cancelled_at IS NULL`，reviewer 須逐條確認**使用者只看得到自己的列**。過期語意**必須沿用 D-008 惰性 on-read 判定**，否則會列出 status 仍為 open 的殭屍球聚；「尚未完成」建議為 `event_datetime > now() AND status ∈ {open, closed}`（closed＝已截止但活動未到，仍應顯示）。
+  - **③【缺資料，需使用者裁決】`events` 沒存群組名稱**，只有 `group_id`，跨群清單無法告訴使用者「這是哪一團」。選項：(a) 只用日期＋地點辨識（零成本，可能不夠）(b) 呼叫 `getGroupSummary`（每群一次 API，需確認帳號等級限制，參照「LINE 平台限制」段的前例）(c) 開團時快照群組名入 events（⇒ migration ⇒ R2）。
+  - **④ 待決策**：代報名列（`kind='proxy'`）是否一併顯示（建議顯示並標示「代 XXX 報名」，取消責任在代報者）；`球聚` 是否同時在群組內生效（若是，D-002 dispatch 表需增列，並與 `名單` 的語意明確區隔）。
+
 - **（後續優化，使用者裁決 2026-08-02／T-015 衍生）整批原子遞補**：`pickWaitlistForPromotion` 以**列**為單位 `LIMIT`，當剩餘名額 < 候補隊首批次人數時會**拆散整批**（剩 1 位、隊首 `+2 陳先生` → 1 列轉正取、1 列留候補），與 G1 進場「整批不部分接受」的原子性不對稱。使用者已裁決**本次先允許拆批**。實作需求：`registrations` 新增 `batch_id` 欄位（同批共用；`0001_init.sql` 現無此欄，`seq` 無法可靠推斷批次）→ 屬 **migration ⇒ R2**（需 D-003 或新設計文件 + 雙 reviewer）。另需決策：額度塞不下隊首批次時採「跳過該批、遞補得下的後批」（不留空位但可能插隊）或「整批卡住等待」（嚴格 FIFO 但留空位）。回歸測試已釘住現行拆批行為：`[D-003 AC-21]` 第 2 案。
 - M1 起導入 better-sqlite3（M0 暫不加，避免 native build 影響骨架驗證）。
 - 代報名（`+1 名字`）與候補遞補的 e2e 案例補入 e2e-tester 清單。
