@@ -20,7 +20,16 @@ tools: Read, Write, Bash
 - 資料庫 schema 變更一律以 migration 檔管理。
 - 敏感設定走環境變數，並更新 `.env.example`。
 
+## 我的工作區與權限
+- 專屬工作區：`docs/worklists/backend-engineer.md`——佇列、筆記、疑問寫在這裡，只有你能寫。
+- **不得直接修改 `docs/task-board.md`**；完成工作時在 worklist 的「狀態提議」段寫下
+  `PROPOSE → DONE` 並附證據，交由 Orchestrator 裁定。
+- 需要修改不屬於自己的檔案時（見 `harness/OWNERSHIP.md`），回報 Orchestrator 轉派。
+
 ## 鐵律
+- 只讀任務單閱讀清單指名的文件章節，不擴大閱讀範圍。
+- 交付前自行跑完 `npm run lint` / `npm test` / `npm run harness:check`，全綠才產出審查包
+  （`harness/REVIEW-PACKET-TEMPLATE.md` → `docs/reviews/RP-T-xxx.md`）並回報 Orchestrator。
 - 實作必須逐條滿足設計文件的 Acceptance Checks，並不得觸犯任何 Guardrail。
 - 契約凍結後不得擅改回應結構；有困難回報 Orchestrator 走變更流程。
 - 不在 handler 裡寫商業邏輯。

@@ -7,6 +7,13 @@
 """
 import re, sys, pathlib
 
+# Windows 主控台常為 cp950/cp437，直接 print ✓ 會丟 UnicodeEncodeError 使成功的檢查
+# 反而以 exit≠0 收場（假紅）。強制 UTF-8 輸出，並以 replace 保底。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "design"
 DEFAULT_DIRS = ["tests", "test", "src", "app", "e2e"]
@@ -17,7 +24,9 @@ def approved_docs():
         if "TEMPLATE" in p.name or "examples" in str(p.parent):
             continue
         text = p.read_text(encoding="utf-8")
-        m = re.search(r"狀態[:：]\s*(\w+)", text)
+        # `\*{0,2}` 容許 `狀態：**APPROVED**`：原 regex 認不出粗體，會讓整份設計的 AC
+        # 不納入覆蓋統計而假綠（D-004 的 22 條 AC 曾因此漏檢，見 LESSONS 2026-07-31）。
+        m = re.search(r"狀態[:：]\s*\*{0,2}(\w+)", text)
         if m and m.group(1).upper() == "APPROVED":
             did = re.match(r"(D-\d+)", p.name).group(1)
             acs = sorted(set(re.findall(r"\bAC-(\d+)", text)), key=int)

@@ -1,10 +1,15 @@
 # DEFINITION OF DONE — 驗收標準
 
 ## 通用（所有任務）
-- [ ] `python3 harness/checks/check_ac_coverage.py` 通過（有 AC 的任務）
+- [ ] `npm run harness:check` 全綠（＝ `check_ac_coverage` + `check_doc_budget` + `check_board_sync`；
+      本專案一律用此入口，勿直接呼叫 `python3`，理由見 CLAUDE.md §4）
+- [ ] `check_doc_budget` 無警告（或已提出切檔計畫；既有豁免清單見 `harness/doc-budget-exempt.txt`）
+- [ ] R1/R2 任務已產出審查包 `docs/reviews/RP-T-xxx.md`
 - [ ] commit 符合可追溯格式（`harness/checks/check_commit_trace.sh`）
 - [ ] 產出存放於任務單指定路徑
-- [ ] `docs/task-board.md` 已更新狀態與產出連結
+- [ ] 實作者已在自己的 worklist 提出 `PROPOSE → DONE` 並附證據
+- [ ] Orchestrator 驗證後於 `docs/task-board.md` 裁定並登錄產出連結
+- [ ] `check_board_sync` 通過（無未裁定提議、無幽靈任務）
 - [ ] 沒有未登記的 TODO（暫緩項目已寫入 Backlog）
 
 ## 架構文件（architect）

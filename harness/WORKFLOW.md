@@ -35,6 +35,12 @@ BACKLOG → READY → IN_PROGRESS → IN_REVIEW → TESTING → DONE
 
 派工時每個任務必標 R0/R1/R2；R0 簡化流程、R2 加嚴（雙 reviewer + e2e 必測）。
 
+## 上下文成本規則
+
+派工單必須含**閱讀清單**（檔案#章節），不得只寫「請參考文件」；
+預設閱讀範圍與其餘成本規則見 `harness/TOKEN-BUDGET.md`。
+機器關卡（lint/test/checks）全綠前不得送模型審查。
+
 ## 派工規則
 
 1. 每個 feature 的實作任務，必須同時滿足：對應設計文件 APPROVED + 相關契約凍結。

@@ -1,4 +1,16 @@
-harness-version: 1.1.0
+harness-version: 1.4.0
 changelog:
+  - 1.4.0: 既有專案導入指南 + adopt.sh 安全複製腳本
+  - 1.3.0: 分散式工作區（per-role worklist）+ 集中式狀態真相、寫入權矩陣、提議/裁定分離、同步檢查
+  - 1.2.0: 上下文預算機制（閱讀清單、文件切檔、關卡順序、審查包、模型分級、歸檔、快取友善排序）
   - 1.1.0: design-first 機制、AC 自動覆蓋檢查、可追溯 commit、風險分級、LESSONS 回寫、OpenAPI SoT、黃金範例、交接快照模板
   - 1.0.0: 初版（orchestrator + 8 subagents、文件契約、workflow、DoD、可攜性指南）
+
+# 本專案的在地化偏離（2026-08-05 由 1.1.0 直升 1.4.0 時記錄）
+project-deviations:
+  - CLAUDE.md 章節編號不採 kit v1.4.0 排法：§0–§7 凍結（6 處 APPROVED 文件硬引用「CLAUDE.md §5＝風險分級」），
+    新內容改以 §4.5 / §8 / §9 插入。
+  - docs/worklists/ 只建 4 份實際使用的角色（backend-engineer / architect / architect-reviewer /
+    design-reviewer），其餘依 _TEMPLATE.md 隨用隨建；理由見 docs/worklists/README.md。
+  - checks 一律經 `npm run harness:check` 呼叫，不直接用 `python3`（本機 python3 為 Windows Store stub）。
+  - check_doc_budget 對導入日前既有的 8 份 D 文件豁免行數上限，清單見 harness/doc-budget-exempt.txt。

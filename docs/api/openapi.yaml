@@ -1,13 +1,88 @@
-# 契約的機器可讀 source of truth（擁有者：api-contract-designer）
-# docs/02-api-contract.md 是本檔的人讀視圖；兩者衝突時以本檔為準。
-# 前端以本檔 codegen 型別（如 openapi-typescript）；後端可用本檔做回應驗證。
+# 機器可讀的 HTTP 面（擁有者：api-contract-designer）
+#
+# 範圍限縮說明：本專案的對外介面是 LINE 群組**對話**，不是 REST。使用者面的契約
+# （指令語法、回覆範本、去重政策）在 docs/02-api-contract.md，那份才是需要凍結的介面。
+# 本檔只描述 LINE 平台會呼叫的兩條 HTTP endpoint，沒有前端 codegen 消費者。
 openapi: 3.1.0
 info:
-  title: "{{PROJECT_NAME}} API"
-  version: "0.0.0"   # 未凍結；凍結時升為 1.0.0 並鎖定
-paths: {}
+  title: 高爾夫球聚 LINE Chatbot — HTTP 面
+  version: "0.1.0" # 由既有實作反向產生（2026-08-05），未凍結
+  description: |
+    僅供平台呼叫。使用者面的指令契約見 docs/02-api-contract.md。
+
+servers:
+  - url: https://golf-reserv-chatbot-1006751446489.asia-east1.run.app
+    description: PROD（Cloud Run / asia-east1）
+
+paths:
+  /health:
+    get:
+      summary: 存活探針
+      description: 不依賴 DB，供 Cloud Run 探活；DB 不通時仍應回 200。
+      responses:
+        '200':
+          description: 服務存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /webhook:
+    post:
+      summary: LINE Messaging API webhook 入口
+      description: |
+        以 raw body + `x-line-signature` 做 HMAC 驗簽，失敗即 401。
+
+        **回應時序（D-007 §4 / G3）**：先 await 完成所有事件處理（含 replyMessage）
+        才回 200。serverless 於回應送出後可能凍結 CPU，先回 200 會導致回覆漏送。
+        單一事件處理失敗只記 log、不中止其他事件，整體仍回 200。
+
+        冪等：以事件的 `message.id` 寫入 `processed_events` 去重
+        （**目前政策不對稱**，見 docs/02-api-contract.md）。
+      parameters:
+        - name: x-line-signature
+          in: header
+          required: true
+          schema: { type: string }
+          description: LINE 以 channel secret 對 raw body 產生的 HMAC-SHA256（base64）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  description: LINE webhook event 陣列；型別以 @line/bot-sdk 的 WebhookEvent 為準。
+                  items: { type: object }
+      responses:
+        '200':
+          description: 已處理完畢（含回覆送出）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '401':
+          description: 驗簽失敗或缺少 channel secret
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignatureError' }
+
 components:
   schemas:
+    SignatureError:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string, const: invalid signature }
+    # CLAUDE.md §4 的統一錯誤格式；目前無對外消費者，供日後管理 API 沿用。
     Error:
       type: object
       required: [code, message]
