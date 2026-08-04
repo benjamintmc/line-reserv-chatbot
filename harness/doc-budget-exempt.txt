@@ -1,0 +1,18 @@
+# check_doc_budget.py 的行數上限豁免清單
+#
+# 規則（CLAUDE.md §4.5）：harness 導入日 2026-08-05 之前既有的設計文件不回溯滿足
+# 120 行上限。這些文件皆已 APPROVED 且對應功能已上線，切檔的回歸風險大於收益。
+#
+# **新增的設計文件不得列入此檔**——120 行上限對它們仍然有效。
+# 若某份既有文件因新任務被大幅改寫，應同時評估切檔並將其移出本清單。
+#
+# 路徑為相對於 repo 根目錄的 posix 格式，每行一個。
+
+design/D-001-data-model.md
+design/D-002-command-parser.md
+design/D-003-registration-core.md
+design/D-004-event-creation.md
+design/D-005-billing-modes.md
+design/D-006-admin-claiming.md
+design/D-007-postgres-migration.md
+design/D-008-auto-release-slot.md

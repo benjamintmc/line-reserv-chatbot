@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test-harness:
+    runs-on: ubuntu-latest
+
+    # 測試為 PG-only（D-007）：repository 層直接打真 Postgres，不做 in-memory fake。
+    # port 對外 5433 與 docker-compose.yml 一致，讓本機與 CI 用同一組連線字串。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: golf
+          POSTGRES_PASSWORD: golf
+          POSTGRES_DB: golf_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U golf -d golf_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      DATABASE_URL_TEST: postgres://golf:golf@localhost:5433/golf_test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # check_commit_trace 需要歷史；淺 clone 會讓 --since 掃不到東西。
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # 關卡順序（CLAUDE.md §9）：先機器、後模型。任一失敗即擋下，不浪費模型審查。
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      # --strict：doc_budget 超標即失敗（既有 8 份設計文件已列入
+      # harness/doc-budget-exempt.txt 豁免，見 CLAUDE.md §4.5）
+      - name: Harness checks
+        run: npm run harness:check -- --strict
+
+      # 可追溯 commit 格式自 harness 導入日起生效，不回溯檢查更早的歷史。
+      # 日期帶時區：git 把裸日期當 UTC，會漏掉當日 08:00 前（+08:00）的 commit。
+      - name: Commit trace (自 harness 導入日起)
+        run: bash harness/checks/check_commit_trace.sh --since "2026-08-05T00:00:00+08:00"

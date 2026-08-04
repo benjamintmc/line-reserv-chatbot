@@ -16,7 +16,8 @@
     "db:seed": "tsx scripts/seed-open-event.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "harness:check": "node scripts/harness-check.mjs"
   },
   "dependencies": {
     "@line/bot-sdk": "^9.5.0",

@@ -6,6 +6,13 @@
 """
 import re, sys, pathlib
 
+# Windows 主控台常為 cp950/cp437，直接 print ✓ 會丟 UnicodeEncodeError，
+# 使成功的檢查反而以 exit≠0 收場（假紅）。強制 UTF-8 輸出，並以 replace 保底。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BOARD = ROOT / "docs/task-board.md"
 WL = ROOT / "docs/worklists"
@@ -17,7 +24,8 @@ def main():
     board_ids = set(re.findall(r"\b(T-\d+)\b", board))
     issues = []
     for f in sorted(WL.glob("*.md")):
-        if f.name.startswith("_"):
+        # `_TEMPLATE.md` 與 `README.md` 是說明文件，不是任何角色的工作區。
+        if f.name.startswith("_") or f.name == "README.md":
             continue
         text = f.read_text(encoding="utf-8")
         # 提議段落
