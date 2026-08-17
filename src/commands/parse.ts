@@ -7,9 +7,10 @@
 // D-004 OP-9/G7：一行式欄位驗證改為複用 commands/validators.ts（單一 source of truth，
 // 與逐步問答 create-flow 共用同一組規則）；本檔不再自持一套 date/time/capacity/price regex。
 // D-005 §6.1：第 5 欄（費用）改呼叫 validateFee，依前綴判定 per_person / split_venue。
+// D-011：新增 `分組`（`{M}場 [{R}輪] [單打]`）與 `下一輪` 解析。
 
 import type { InvalidCommandKind, ParsedCommand } from './types';
-import { MAX_COUNT } from './types';
+import { MAX_COUNT, MAX_GROUP_PARAM } from './types';
 import {
   equalsIgnoreAsciiCase,
   normalizeProxyName,
@@ -65,6 +66,9 @@ export function parseCommand(text: string): ParsedCommand {
   if (s === '關閉報名') {
     return { type: 'close_event' };
   }
+  if (s === '下一輪') {
+    return { type: 'group_next' };
+  }
   if (equalsIgnoreAsciiCase(s, '我的id')) {
     return { type: 'my_id' };
   }
@@ -77,6 +81,14 @@ export function parseCommand(text: string): ParsedCommand {
       return { type: 'create_event_start' };
     }
     return parseOnelineCreate(tokens.slice(1), text);
+  }
+
+  // D-011：分組（`分組` 均分／`分組 {M}場 [{R}輪] [單打]` 多輪）。
+  if (head === '分組') {
+    if (tokens.length === 1) {
+      return { type: 'group', strategy: 'balanced', mode: 'doubles' };
+    }
+    return parseGroupRounds(tokens.slice(1), text);
   }
 
   // 9. `+` 開頭 → 報名；10. `-` 開頭 → 取消（§3.1）。
@@ -126,6 +138,50 @@ function parseCountCommand(
     return { type, count };
   }
   return { type, count, proxyName };
+}
+
+/**
+ * D-011 §1 分組多輪參數：`{M}場 [{R}輪] [單打]`（token 順序不拘、單打選填）。
+ * 數字已於 normalizeWhitelist 全形→半形；場/輪數 1..MAX_GROUP_PARAM，否則 group_bad_args。
+ */
+function parseGroupRounds(args: string[], raw: string): ParsedCommand {
+  const command: InvalidCommandKind = 'group';
+  const bad: ParsedCommand = { type: 'invalid', command, reason: 'group_bad_args', raw };
+
+  let courts: number | undefined;
+  let rounds: number | undefined;
+  let mode: 'singles' | 'doubles' = 'doubles';
+
+  for (const tok of args) {
+    if (tok === '單打') {
+      mode = 'singles';
+      continue;
+    }
+    if (tok === '雙打') {
+      mode = 'doubles';
+      continue;
+    }
+    const mCourt = /^(\d+)場$/.exec(tok);
+    const mRound = /^(\d+)輪$/.exec(tok);
+    if (mCourt !== null) {
+      const v = Number(mCourt[1]);
+      if (v < 1 || v > MAX_GROUP_PARAM) return bad;
+      courts = v;
+    } else if (mRound !== null) {
+      const v = Number(mRound[1]);
+      if (v < 1 || v > MAX_GROUP_PARAM) return bad;
+      rounds = v;
+    } else {
+      return bad;
+    }
+  }
+
+  if (courts !== undefined && rounds !== undefined) {
+    return { type: 'group', strategy: 'rounds', mode, courts, rounds };
+  }
+  if (courts !== undefined) return { type: 'group', strategy: 'rounds', mode, courts };
+  if (rounds !== undefined) return { type: 'group', strategy: 'rounds', mode, rounds };
+  return { type: 'group', strategy: 'rounds', mode };
 }
 
 /**

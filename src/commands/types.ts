@@ -14,8 +14,11 @@ export const MAX_PROXY_NAME_LEN = 20;
 /** 一行式開團 capacity 上限（sanity 保護；events.capacity CHECK>0，D-001 §2）。 */
 export const MAX_CAPACITY = 1000;
 
+/** 分組 場數/輪數 上限（sanity；沿用 MAX_COUNT 量級，D-011 §1）。 */
+export const MAX_GROUP_PARAM = 20;
+
 /** 畸形但可辨識為某指令嘗試時，標記是哪個指令家族。 */
-export type InvalidCommandKind = 'signup' | 'cancel' | 'create_event';
+export type InvalidCommandKind = 'signup' | 'cancel' | 'create_event' | 'group';
 
 /**
  * 畸形原因（供 D-003/webhook 決定是否回提示；D-002 不決定要不要回覆）。
@@ -28,7 +31,8 @@ export type InvalidReason =
   | 'create_bad_time' // 時間格式/範圍錯
   | 'create_bad_capacity' // 人數非正整數
   | 'create_bad_price' // 價格非非負整數（per_person）
-  | 'create_bad_venue_fee'; // 場地費非正整數（split_venue；D-005 §6.1 / OP-2）
+  | 'create_bad_venue_fee' // 場地費非正整數（split_venue；D-005 §6.1 / OP-2）
+  | 'group_bad_args'; // 分組參數畸形（D-011 §1；非 {M}場/{R}輪/單打 或超界）
 
 export type ParsedCommand =
   // 報名（含代報名）：count>=1；proxyName 存在即代報名（kind='proxy'）
@@ -63,6 +67,16 @@ export type ParsedCommand =
   | { type: 'cancel_event' }
   // 我的ID（私訊回 userId）
   | { type: 'my_id' }
+  // 分組（D-011）：strategy='balanced'（`分組` 均分）/ 'rounds'（`分組 {M}場…` 多輪輪替）
+  | {
+      type: 'group';
+      strategy: 'balanced' | 'rounds';
+      mode: 'singles' | 'doubles';
+      courts?: number; // 僅 rounds；未帶 → service 以 floor(N/courtSize) 預設
+      rounds?: number; // 僅 rounds；未帶 → 不設上限
+    }
+  // 分組：`下一輪`（讀進行中 grouping session 產下一輪）
+  | { type: 'group_next' }
   // 可辨識為某指令嘗試，但參數畸形；帶原因供上層決定是否回提示
   | { type: 'invalid'; command: InvalidCommandKind; reason: InvalidReason; raw: string }
   // 完全無法辨識（群組閒聊、+0/-0、sign 後非數字等）→ webhook 一律不回覆（FR-5）

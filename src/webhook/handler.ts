@@ -14,6 +14,9 @@
 // D-008 T-014：signup/cancel 新增 event_ended → 拒絕文案（formatEventEnded）；
 // 名單依 domain 傳回之 phase（live/ended/closed）組版（formatList(view, phase)）。
 //
+// D-011 T-018：新增 `分組`/`下一輪` 接線 → GroupingService。conversation_states 同一列也被開團問答用，
+// 故頂層攔截只攔非 'grouping' 狀態（開團 awaiting_*），grouping session 交由 parseCommand→`下一輪` 讀取。
+//
 // **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any。
 // unknown / 無流程 confirm·abort / 未攔截雜訊一律不回覆、不 markProcessed（G9）。
 
@@ -38,6 +41,12 @@ import type {
   CancelResult as EventCancelResult,
   InvalidOnelineResult,
 } from '../domain/event-service';
+import type {
+  GroupingService,
+  BalancedResult,
+  StartRoundsResult,
+  NextRoundResult,
+} from '../domain/grouping-service';
 import {
   formatSignup,
   formatCancel,
@@ -66,6 +75,14 @@ import {
   formatRaceLost,
   formatConfirmReprompt,
 } from '../domain/event-formatter';
+import {
+  formatPartition,
+  formatRound,
+  formatInsufficientForRounds,
+  formatNoGroupingSession,
+  formatRoundsExhausted,
+  formatGroupFormatHelp,
+} from '../domain/grouping-formatter';
 
 /**
  * 取群組成員顯示名的最小介面（結構相容 `messagingApi.MessagingApiClient.getGroupMemberProfile`）。
@@ -78,6 +95,7 @@ export interface GroupProfileClient {
 export interface WebhookHandlerDeps {
   service: RegistrationService;
   eventService: EventService;
+  grouping: GroupingService;
   users: UserRepository;
   conversations: ConversationReader;
   profile: GroupProfileClient;
@@ -87,6 +105,11 @@ export interface WebhookHandlerDeps {
 export interface WebhookHandler {
   /** 處理單一 WebhookEvent，回傳待 reply 的 LINE 訊息陣列（空陣列＝不回覆）。 */
   handleEvent(event: WebhookEvent): Promise<messagingApi.Message[]>;
+}
+
+/** 純文字 LINE 訊息（分組回覆無 mention，直接組 TextMessage）。 */
+function textMessage(text: string): messagingApi.Message {
+  return { type: 'text', text };
 }
 
 /** MessageDescriptor → LINE 訊息：無 mention→TextMessage；含 mention→TextMessageV2 + substitution。 */
@@ -203,6 +226,58 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return [];
       case 'ok':
         return [toLineMessage(formatList(result.view, result.phase))]; // D-008 §8(3)：phase 化
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  // ── D-011 render（分組；中性純文字，無 mention） ───────────────────────
+  function renderBalanced(result: BalancedResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'no_open_event':
+        return [toLineMessage(formatNoOpenEvent())];
+      case 'not_authorized':
+        return [toLineMessage(formatNotAuthorized())]; // (H′) 沿用；裁決 #4 不放寬
+      case 'balanced':
+        return [textMessage(formatPartition(result.result))];
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderStartRounds(result: StartRoundsResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'no_open_event':
+        return [toLineMessage(formatNoOpenEvent())];
+      case 'not_authorized':
+        return [toLineMessage(formatNotAuthorized())];
+      case 'duplicate':
+        return [];
+      case 'insufficient':
+        return [textMessage(formatInsufficientForRounds())];
+      case 'round':
+        return [textMessage(formatRound(result.round))];
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function renderNextRound(result: NextRoundResult): messagingApi.Message[] {
+    switch (result.kind) {
+      case 'no_session':
+        return [textMessage(formatNoGroupingSession())];
+      case 'duplicate':
+        return [];
+      case 'exhausted':
+        return [textMessage(formatRoundsExhausted())];
+      case 'round':
+        return [textMessage(formatRound(result.round))];
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -348,8 +423,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
 
     // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
     // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。
+    // D-011：grouping session（state='grouping'）**不**在此攔截——它不吞任意訊息，
+    // 交由 parseCommand 讓 `下一輪`（及其他指令）正常分派（AC-24 已知取捨：開團與分組 session 互斥）。
     const conv = await deps.conversations.get(userId);
-    if (conv !== undefined) {
+    if (conv !== undefined && conv.state !== 'grouping') {
       const hostDisplayName = await resolveDisplayName(groupId, userId);
       const result = await deps.eventService.continueFlow({
         groupId,
@@ -390,6 +467,30 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'list': {
         const result = await deps.service.getListView({ groupId, messageId });
         return renderList(result);
+      }
+      // D-011：分組（`分組` 均分 / `分組 {M}場…` 多輪）與 `下一輪` ─────────
+      case 'group': {
+        if (cmd.strategy === 'balanced') {
+          const result = await deps.grouping.groupBalanced({
+            groupId,
+            executorLineUserId: userId,
+            messageId,
+          });
+          return renderBalanced(result);
+        }
+        const result = await deps.grouping.startRounds({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+          courts: cmd.courts,
+          rounds: cmd.rounds,
+          mode: cmd.mode,
+        });
+        return renderStartRounds(result);
+      }
+      case 'group_next': {
+        const result = await deps.grouping.nextRound({ executorLineUserId: userId, messageId });
+        return renderNextRound(result);
       }
       // D-004 M3 開團流程（D-006：開團全開，無授權前置） ────────────────
       case 'create_event_oneline': {
@@ -452,10 +553,13 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         // D-006 §3：接線回 (MyID)——傳訊人自身 userId（群回、唯讀、不 mark）。
         return [toLineMessage(formatMyId(userId))];
       case 'invalid': {
-        // create_event 類 → 格式提示 (K′)（D-006：開團全開，無非授權分支）；signup/cancel 類 → 靜默。
+        // create_event 類 → 格式提示 (K′)；group 類 → 分組格式提示；signup/cancel 類 → 靜默。
         if (cmd.command === 'create_event') {
           const result = deps.eventService.handleInvalidOneline();
           return renderInvalidOneline(result);
+        }
+        if (cmd.command === 'group') {
+          return [textMessage(formatGroupFormatHelp())];
         }
         return [];
       }

@@ -10,6 +10,7 @@ import { ConversationRepository } from './db/repositories/conversation-repositor
 import { ProcessedEventRepository } from './db/repositories/processed-event-repository';
 import { RegistrationService } from './domain/registration-service';
 import { EventService } from './domain/event-service';
+import { GroupingService } from './domain/grouping-service';
 import { createWebhookHandler, type WebhookHandler } from './webhook/handler';
 import { lineClient } from './line/client';
 
@@ -49,9 +50,20 @@ export function buildHandler(): WebhookHandler {
     runInTransaction,
     superAdminUserIds: config.adminUserIds,
   });
+  // D-011：分組 domain（唯讀名單 + 純函式分組；策略B session 僅暫存 conversation_states）。
+  // 授權沿用 canManageEvent（裁決 #4 不放寬）；rng 預設 Math.random（prod 隨機、可重跑重骰）。
+  const grouping = new GroupingService({
+    events,
+    users,
+    registrations,
+    conversations,
+    runInTransaction,
+    superAdminUserIds: config.adminUserIds,
+  });
   return createWebhookHandler({
     service,
     eventService,
+    grouping,
     users,
     conversations,
     profile: lineClient,

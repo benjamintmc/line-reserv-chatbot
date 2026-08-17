@@ -4,9 +4,21 @@ import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
 import { EventService } from '../domain/event-service';
 import { createWebhookHandler, type GroupProfileClient, type WebhookHandler } from './handler';
+import { GroupingService } from '../domain/grouping-service';
 
 /** 建立群組文字訊息事件（測試用最小 shape）。 */
-function groupTextEvent(
+function makeGroupingSvc(t: TestDb): GroupingService {
+  return new GroupingService({
+    events: t.events,
+    users: t.users,
+    registrations: t.registrations,
+    conversations: t.conversations,
+    runInTransaction: t.runInTransaction,
+    superAdminUserIds: [],
+  });
+}
+
+"function "groupTextEvent(
   text: string,
   opts: { userId?: string; messageId?: string; groupId?: string } = {},
 ): WebhookEvent {
@@ -47,6 +59,7 @@ function makeHandler(
 ): WebhookHandler {
   const service = opts.service ?? makeService(t);
   return createWebhookHandler({
+    grouping: makeGroupingSvc(t),
     service,
     eventService: makeEventService(t, opts.superAdminUserIds ?? []),
     users: t.users,
@@ -115,6 +128,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
       getGroupMemberProfile: vi.fn().mockRejectedValue(new Error('404 not friend')),
     };
     const handler = createWebhookHandler({
+    grouping: makeGroupingSvc(t),
       service,
       eventService: makeEventService(t),
       users: t.users,

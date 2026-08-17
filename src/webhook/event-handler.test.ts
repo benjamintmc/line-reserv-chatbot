@@ -4,11 +4,23 @@ import { createTestDb, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
 import { EventService } from '../domain/event-service';
 import { createWebhookHandler, type GroupProfileClient, type WebhookHandler } from './handler';
+import { GroupingService } from '../domain/grouping-service';
 
 const HOST = 'U-host';
 const G = 'G';
 
-function groupTextEvent(
+function makeGroupingSvc(t: TestDb): GroupingService {
+  return new GroupingService({
+    events: t.events,
+    users: t.users,
+    registrations: t.registrations,
+    conversations: t.conversations,
+    runInTransaction: t.runInTransaction,
+    superAdminUserIds: [],
+  });
+}
+
+"function "groupTextEvent(
   text: string,
   opts: { userId?: string; messageId?: string; groupId?: string } = {},
 ): WebhookEvent {
@@ -42,6 +54,7 @@ function makeHandler(t: TestDb, superAdminUserIds: string[] = [HOST]): WebhookHa
     logError: () => {},
   });
   return createWebhookHandler({
+    grouping: makeGroupingSvc(t),
     service,
     eventService,
     users: t.users,
