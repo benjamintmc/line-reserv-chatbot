@@ -18,14 +18,13 @@ function mulberry32(seed: number): RandomFn {
 const HOST = 'U-host';
 const G = 'G-1';
 
-function makeService(t: TestDb, superAdmins: string[] = []): GroupingService {
+function makeService(t: TestDb): GroupingService {
   return new GroupingService({
     events: t.events,
     users: t.users,
     registrations: t.registrations,
     conversations: t.conversations,
     runInTransaction: t.runInTransaction,
-    superAdminUserIds: superAdmins,
     rng: mulberry32(123),
   });
 }
@@ -114,7 +113,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     expect(res.kind).toBe('no_open_event');
   });
 
-  it('not_authorized：非主辦非 super-admin → not_authorized（裁決 #4 不放寬）', async () => {
+  it('not_authorized：非主辦（含 super-admin）→ not_authorized（errata host-only；super-admin 亦拒）', async () => {
     const { host, event } = await seedEvent(t, { capacity: 8, groupId: G, hostLineId: HOST });
     await seedConfirmed(t, event.id, host.id, ['客A', '客B', '客C', '客D']);
     const res = await makeService(t).groupBalanced({
@@ -123,6 +122,12 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
       messageId: 'g1',
     });
     expect(res.kind).toBe('not_authorized');
+    // 排除 super-admin：非該場 host_user_id 一律拒（errata；service 已不知 admin 概念）。
+    const adminRes = await makeService(t).groupBalanced({ groupId: G, executorLineUserId: 'U-admin', messageId: 'g2' });
+    expect(adminRes.kind).toBe('not_authorized');
+    // host 通過（sanity）。
+    const hostRes = await makeService(t).groupBalanced({ groupId: G, executorLineUserId: HOST, messageId: 'g3' });
+    expect(hostRes.kind).toBe('balanced');
   });
 
   it('[D-011 AC-24] 策略B session 存於 conversation_states（state=grouping、payload JSON）', async () => {

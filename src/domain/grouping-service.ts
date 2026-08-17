@@ -3,7 +3,8 @@
 // D-011：分組 orchestration（handler → service → repository，遵「不在 handler 寫商業邏輯」）。
 // 唯讀名單（listConfirmed + buildRoster）+ 純函式分組（grouping.ts）；策略B session 僅暫存於
 // 既有 conversation_states（經注入 runInTransaction 的 client-bound conversations repo）——
-// 不寫 events/registrations/users（G1/G5）。授權沿用 canManageEvent（host ∪ super-admin，裁決 #4）。
+// 不寫 events/registrations/users（G1/G5）。
+// 授權（errata 2026-08-17，取代裁決 #4 canManageEvent）：**僅該 event 的 host_user_id**、排除 super-admin。
 //
 // 嚴禁 any。rng 可注入（預設 Math.random），供測試以固定 seed 重現。
 
@@ -33,7 +34,6 @@ export interface GroupingServiceDeps {
   registrations: RegistrationReader;
   conversations: ConversationReader;
   runInTransaction: TransactionRunner;
-  superAdminUserIds: ReadonlyArray<string>;
   rng?: RandomFn;
 }
 
@@ -76,7 +76,6 @@ export class GroupingService {
   private readonly registrations: RegistrationReader;
   private readonly conversations: ConversationReader;
   private readonly tx: TransactionRunner;
-  private readonly superAdmins: ReadonlySet<string>;
   private readonly rng: RandomFn;
 
   constructor(deps: GroupingServiceDeps) {
@@ -85,13 +84,14 @@ export class GroupingService {
     this.registrations = deps.registrations;
     this.conversations = deps.conversations;
     this.tx = deps.runInTransaction;
-    this.superAdmins = new Set(deps.superAdminUserIds);
     this.rng = deps.rng ?? Math.random;
   }
 
-  /** 授權：super-admin ∪ 活動建立者（唯讀，不寫任何列；同 D-006 canManageEvent）。 */
-  private async canManageEvent(event: EventRow, executorLineUserId: string): Promise<boolean> {
-    if (this.superAdmins.has(executorLineUserId)) return true;
+  /**
+   * 授權（errata 2026-08-17，取代裁決 #4 canManageEvent）：**僅該 event 的 host_user_id**。
+   * 唯讀（不寫任何列）；**排除 super-admin**——分組/下一輪僅開放主辦人本人。
+   */
+  private async isHost(event: EventRow, executorLineUserId: string): Promise<boolean> {
     const executor = await this.users.getByLineUserId(executorLineUserId);
     return executor !== undefined && executor.id === event.host_user_id;
   }
@@ -106,7 +106,7 @@ export class GroupingService {
   async groupBalanced(input: BalancedInput): Promise<BalancedResult> {
     const active = await this.events.findActiveByGroup(input.groupId);
     if (active === undefined) return { kind: 'no_open_event' };
-    if (!(await this.canManageEvent(active, input.executorLineUserId))) {
+    if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
     const labels = await this.loadLabels(active.id);
@@ -117,7 +117,7 @@ export class GroupingService {
   async startRounds(input: StartRoundsInput): Promise<StartRoundsResult> {
     const active = await this.events.findActiveByGroup(input.groupId);
     if (active === undefined) return { kind: 'no_open_event' };
-    if (!(await this.canManageEvent(active, input.executorLineUserId))) {
+    if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
     const labels = await this.loadLabels(active.id);
@@ -140,7 +140,11 @@ export class GroupingService {
     });
   }
 
-  /** `下一輪`：讀 grouping session → 產下一輪 → 寫回；無 session/達上限有對應結果。 */
+  /**
+   * `下一輪`：讀 grouping session → 產下一輪 → 寫回；無 session/達上限有對應結果。
+   * **host-only 天然成立**：session 以主辦 line_user_id 為主鍵，只有啟動分組的主辦人自己的
+   * 訊息能讀到其 `grouping` session（非主辦——含 super-admin——查無 session → no_session）。
+   */
   async nextRound(input: NextRoundInput): Promise<NextRoundResult> {
     const conv = await this.conversations.get(input.executorLineUserId);
     if (conv === undefined || conv.state !== GROUPING_STATE || conv.payload === null) {

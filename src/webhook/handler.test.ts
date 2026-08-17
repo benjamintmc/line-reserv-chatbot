@@ -14,7 +14,6 @@ function makeGroupingSvc(t: TestDb): GroupingService {
     registrations: t.registrations,
     conversations: t.conversations,
     runInTransaction: t.runInTransaction,
-    superAdminUserIds: [],
   });
 }
 

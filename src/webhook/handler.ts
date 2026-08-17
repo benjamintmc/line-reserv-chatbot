@@ -81,6 +81,7 @@ import {
   formatInsufficientForRounds,
   formatNoGroupingSession,
   formatRoundsExhausted,
+  formatGroupNotHost,
   formatGroupFormatHelp,
 } from '../domain/grouping-formatter';
 
@@ -239,7 +240,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'no_open_event':
         return [toLineMessage(formatNoOpenEvent())];
       case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())]; // (H′) 沿用；裁決 #4 不放寬
+        return [textMessage(formatGroupNotHost())]; // errata：分組 host-only（非主辦含 super-admin 皆拒）
       case 'balanced':
         return [textMessage(formatPartition(result.result))];
       default: {
@@ -254,7 +255,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'no_open_event':
         return [toLineMessage(formatNoOpenEvent())];
       case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())];
+        return [textMessage(formatGroupNotHost())]; // errata：分組 host-only
       case 'duplicate':
         return [];
       case 'insufficient':

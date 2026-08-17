@@ -5,6 +5,7 @@ import {
   formatInsufficientForRounds,
   formatNoGroupingSession,
   formatRoundsExhausted,
+  formatGroupNotHost,
   formatGroupFormatHelp,
 } from './grouping-formatter';
 import type { PartitionResult, Round } from './grouping';
@@ -32,7 +33,7 @@ describe('D-011 §4 中性組版', () => {
     assertNeutral(out);
   });
 
-  it('[D-011 AC-15] 策略B 雙打：第 r 輪 下 甲場：A、B vs C、D、輪空列', () => {
+  it('[D-011 AC-15] 策略B 雙打：第 r 輪 下 A場：A、B vs C、D、輪空列', () => {
     const round: Round = {
       round: 1,
       courts: [
@@ -42,11 +43,11 @@ describe('D-011 §4 中性組版', () => {
       sitOut: ['X', 'Y'],
     };
     const out = formatRound(round);
-    expect(out).toBe('第 1 輪\n甲場：A、B vs C、D\n乙場：E、F vs G、H\n輪空：X、Y');
+    expect(out).toBe('第 1 輪\nA場：A、B vs C、D\nB場：E、F vs G、H\n輪空：X、Y');
     assertNeutral(out);
   });
 
-  it('[D-011 AC-20] 策略B 單打：甲場：A vs B（無「、」隊友）、無輪空則略', () => {
+  it('[D-011 AC-20] 策略B 單打：A場：A vs B（無「、」隊友）、無輪空則略', () => {
     const round: Round = {
       round: 2,
       courts: [
@@ -56,7 +57,7 @@ describe('D-011 §4 中性組版', () => {
       sitOut: [],
     };
     const out = formatRound(round);
-    expect(out).toBe('第 2 輪\n甲場：A vs B\n乙場：C vs D');
+    expect(out).toBe('第 2 輪\nA場：A vs B\nB場：C vs D');
     expect(out).not.toContain('輪空');
     assertNeutral(out);
   });
@@ -67,6 +68,7 @@ describe('D-011 §4 中性組版', () => {
     assertNeutral(formatInsufficientForRounds());
     assertNeutral(formatNoGroupingSession());
     assertNeutral(formatRoundsExhausted());
+    assertNeutral(formatGroupNotHost());
     assertNeutral(formatGroupFormatHelp());
   });
 
@@ -79,13 +81,13 @@ describe('D-011 §4 中性組版', () => {
     expect(out).toBe('第 1 組：A、B、C、D、E\n（人數 5，暫不拆組）');
   });
 
-  it('天干場名遞補：>10 場以「第 N 場」表示', () => {
-    const courts = Array.from({ length: 11 }, (_, i) => ({
+  it('場地名遞補：>26 場以「第 N 場」表示', () => {
+    const courts = Array.from({ length: 27 }, (_, i) => ({
       teamA: [`a${i}`],
       teamB: [`b${i}`],
     }));
     const out = formatRound({ round: 1, courts, sitOut: [] });
-    expect(out).toContain('癸場：a9 vs b9');
-    expect(out).toContain('第 11 場：a10 vs b10');
+    expect(out).toContain('Z場：a25 vs b25');
+    expect(out).toContain('第 27 場：a26 vs b26');
   });
 });

@@ -58,7 +58,6 @@ export function buildHandler(): WebhookHandler {
     registrations,
     conversations,
     runInTransaction,
-    superAdminUserIds: config.adminUserIds,
   });
   return createWebhookHandler({
     service,

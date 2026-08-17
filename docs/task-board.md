@@ -13,7 +13,7 @@
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
-| T-018 | 分組實作（策略A 均分／策略B 逐輪 `nextRound`＋單打、`分組`/`下一輪` parser、handler + `conversation_states` session、中性組版） | D-011（APPROVED） | R1 | backend-engineer | CODE_DONE／待機器驗證 | src/domain/grouping*.ts, src/commands/, src/webhook/, src/server.ts | 2026-08-17 已 commit 於分支 `feat/D-011-grouping`（4 測試檔、24 AC 標記、無 any）。**靜態審查雙 PASS**（architect：service 分層/session 互斥 OK；design：文案中性 OK）。**待家中機器跑 lint/build/test（docker PG:5433）綠 → 標 DONE**。偏差 grouping-service.ts 審查 PASS |
+| T-018 | 分組實作（策略A 均分／策略B 逐輪 `nextRound`＋單打、`分組`/`下一輪` parser、handler + `conversation_states` session、中性組版） | D-011（APPROVED） | R1 | backend-engineer | CODE_DONE／待機器驗證 | src/domain/grouping*.ts, src/commands/, src/webhook/, src/server.ts | 2026-08-17 已 commit 於分支 `feat/D-011-grouping`（4 測試檔、24 AC 標記、無 any）。**靜態審查雙 PASS**（architect：service 分層/session 互斥 OK；design：文案中性 OK）。**待家中機器跑 lint/build/test（docker PG:5433）綠 → 標 DONE**。偏差 grouping-service.ts 審查 PASS。＋2026-08-17 errata：場地名天干→A-Z、`分組`/`下一輪` 改 host-only（排除 super-admin）、新增 `formatGroupNotHost` |
 
 ## M5 部署（Cloud Run + Neon PG）任務
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
