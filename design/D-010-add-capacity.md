@@ -1,6 +1,6 @@
 # D-010: 開團後加開名額（Add Capacity：`加開 N` 鎖內加開 + 立即遞補）
 
-- 狀態：IN_DISCUSSION（4 項待裁決已於 2026-08-17 回填；R2 → 待雙審 + 使用者最終 APPROVED 解鎖 T-019 實作）
+- 狀態：IN_DISCUSSION（4 項裁決回填；**R2 雙審 PASS**——architect 零 blocker、design 1 blocker「球聚→球敘」已修；待使用者最終 APPROVED 解鎖 T-019）
 - 撰寫者：backend-engineer
 - 風險等級：**R2（高）**——直接改 `events.capacity`，觸碰 `registration-service` 超賣防護（CLAUDE.md §4.5 預設高風險模組）；capacity 變更須於 `FOR UPDATE` 鎖內。依 §5：雙 reviewer（design + architect）+ e2e + Guardrails ≥3。
 - 關聯：Backlog H1（使用者 2026-08-05 裁決）／任務 T-019（實作，待 orchestrator 於 task-board 編號）／相依 **D-001**（events schema、狀態機、repo 原語）、**D-003**（FIFO 遞補、`promotionQuota` 語意、複用 T-015 鎖內重算路徑）、**D-004**（`canManageEvent`、event 狀態機）。
@@ -42,7 +42,7 @@
 6. 回 `{ kind:'ok', added:N, newCapacity, promoted, view }`。
 
 ### 3. 回覆文案（繁中；純文字 + mention 描述子）
-- 成功（**單一則**，裁決 #2，2026-08-17）：`「{地點}」球聚已加開 {N} 個名額（上限 {newCapacity}）。`＋更新後名單摘要 + 剩餘名額；`promoted.length>0` 時**同一則內**追加 `恭喜由候補遞補為正取：@…`（複用 D-003 §4 mention）。
+- 成功（**單一則**，裁決 #2，2026-08-17）：`「{地點}」球敘已加開 {N} 個名額（上限 {newCapacity}）。`＋更新後名單摘要 + 剩餘名額；`promoted.length>0` 時**同一則內**追加 `恭喜由候補遞補為正取：@…`（複用 D-003 §4 mention）。（用語「球敘」沿用既有 formatter，不用「球聚」——design-reviewer blocker，2026-08-17）
 - 拒絕：`not_authorized`→「只有開團的人（或系統管理員）可以加開名額。」；`no_open_event`→「目前沒有開放報名的活動」；`event_ended`→「活動已結束，無法加開名額」；`over_limit`→「加開後將超過人數上限（{MAX_CAPACITY}），無法加開」。
 
 ## 二、Guardrails（Must NOT，reviewer 可逐條客觀判定）
