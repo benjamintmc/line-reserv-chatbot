@@ -44,7 +44,7 @@
 | D-008 | 單場名額自動釋放（合併 event_datetime、closed/過期自動釋放、惰性 on-read 過期判定、過期顯示 done） | architect | **APPROVED（2026-08-02）** — R2 雙審通過（architect 零 blocker + design B1/B2 修訂後封閉）、使用者最終核可。三讀取點語意 + 索引拆兩半 + UTC+8；5 Guardrails / 13 AC |
 | D-011 | 分組（策略A 均分 3–4／策略B 多輪輪替 2v2＋單打、逐輪 `下一輪`、中性文案、conversation_states session） | backend-engineer | **APPROVED（2026-08-17）** — 使用者最終核可；4 項裁決 + 單打模式 + 逐輪揭示回填。6 Guardrails / 24 AC。解鎖 T-018 |
 | D-010 | 開團後加開名額（只加不減、鎖內改 capacity + 立即遞補候補、`加開 N`、單則公告+遞補通知） | backend-engineer | **IN_DISCUSSION（2026-08-17）** — R2；4 項裁決回填。**R2 雙審 PASS**（architect 零 blocker；design 1 blocker「球聚→球敘」已修）。nits 待 T-019：抽共享 authz helper、`promoteWithinLock` 共用。**待使用者最終 APPROVED** 解鎖 T-019 |
-| D-012 | 多行批次報名（一則多行、每行 `+N`/`-N` 逐行執行、`message.id#行號` 去重、單則合併回覆） | backend-engineer | **DRAFT（2026-08-17 起草中）** — 使用者新需求；範圍限 +N/-N。R1（去重鍵改複合、不動 registration-service 核心）。待 IN_DISCUSSION → reviewer → APPROVED |
+| D-012 | 多行批次報名（一則多行、每行 `+N`/`-N` 逐行執行、`message.id#行號` 去重、一次 reply≤5則合併回覆） | backend-engineer | **IN_DISCUSSION（2026-08-17）** — 範圍限 +N/-N；R1。3 決策回填（逐行摘要+末尾名單、上限20整則拒絕、忽略非+/-行）。6 Guardrails/9 AC。待單一 design-reviewer + 使用者 APPROVED 解鎖 T-020 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
