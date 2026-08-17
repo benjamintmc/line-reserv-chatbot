@@ -13,9 +13,7 @@
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
-| T-011 | 授權簡化實作（開團移除授權、關閉/取消改認 host_user_id∪super-admin、我的ID 接線、super-admin 空警告）+ D-004 授權 errata | D-006（APPROVED） | R2 | backend-engineer | DONE | src/domain/, src/webhook/, src/server.ts, src/index.ts, design/D-004 | 2026-07-31 完成：build 綠、**234 tests 全綠**、AC 114/114、lint 0。**R2 三關全通過**（architect+design 零 blocker、unit-tester 無 bug 補 canManageEvent false 分支+稽核欄）。D-004 errata 回寫+inline 指標。順帶修 vitest flake（fileParallelism:false）。e2e 待整合階段 |
-| T-010 | 逐步問答計費併為單題 awaiting_fee（真機跨試回饋；複用 validateFee、容忍空白） | D-005 §6.2 修訂 | R1 | backend-engineer | DONE | src/domain/create-flow.ts, event-formatter.ts, src/commands/validators.ts | 2026-07-31 完成：計費兩題併一題、validateFee 容忍空白、一行式零回歸。build 綠、214 tests、AC 99/99、lint 0 error。R1 兩關通過（unit-tester 無 bug 補 arity 守護、design-reviewer APPROVED）。採納 nit：提問換行分列 + 重問補「取消」 |
-| T-009 | 計費模式擴充實作（price_mode/venue_fee/settled_per_person + migration 0002、均攤估算/結算、主辦自動登記、文案中性化、開團計費語法） | D-005（APPROVED） | R2 | backend-engineer | DONE | src/db/, src/commands/, src/domain/, src/webhook/ | 2026-07-31 完成：build 綠、**211 tests 全綠**、AC 99/99、lint 0 error。**R2 三關全通過**（architect+design APPROVED 零 blocker、unit-tester 無 bug 補 3 測試）。文件校正：D-005 §5.1/D-004 AC-18 errata。e2e/真機跨試待整合階段 |
+| T-018 | 分組實作（策略A 均分／策略B 逐輪 `nextRound`＋單打 courtSize 參數化、`分組`/`下一輪` parser、handler + `conversation_states` session、中性組版） | D-011（APPROVED） | R1 | backend-engineer | CODE_DONE／待驗證 | src/domain/grouping*.ts, src/commands/, src/webhook/, src/server.ts | 2026-08-17 code complete（grouping.ts/-formatter/-service + parser/handler/server + 4 測試檔、24 AC 標記、無 any、未 commit）。**待驗證**：本輪環境無 node/npm/docker，須於有 toolchain 機器跑 lint/build/test（docker PG:5433）。偏差：新增 `grouping-service.ts`（薄 service，待 architect-reviewer 確認）；AC-7/8 固定 seed+2000 重啟。待 unit-tester + reviewer |
 
 ## M5 部署（Cloud Run + Neon PG）任務
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
@@ -44,6 +42,8 @@
 | D-006 | 授權簡化（開團全開 + 關閉/取消限建立者 host_user_id 或 super-admin；作廢管理人認領方案） | backend-engineer | **APPROVED（2026-07-31）** — R2 雙審通過（architect 零 blocker + design 3 blocker 已修）、OP 採建議、使用者核可 |
 | D-007 | PG 移植 + serverless 部署（repository 換 PG、FOR UPDATE、pooler、先處理再回200、migration PG 方言、Dockerfile） | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可 |
 | D-008 | 單場名額自動釋放（合併 event_datetime、closed/過期自動釋放、惰性 on-read 過期判定、過期顯示 done） | architect | **APPROVED（2026-08-02）** — R2 雙審通過（architect 零 blocker + design B1/B2 修訂後封閉）、使用者最終核可。三讀取點語意 + 索引拆兩半 + UTC+8；5 Guardrails / 13 AC |
+| D-011 | 分組（策略A 均分 3–4／策略B 多輪輪替 2v2＋單打、逐輪 `下一輪`、中性文案、conversation_states session） | backend-engineer | **APPROVED（2026-08-17）** — 使用者最終核可；4 項裁決 + 單打模式 + 逐輪揭示回填。6 Guardrails / 24 AC。解鎖 T-018 |
+| D-010 | 開團後加開名額（只加不減、鎖內改 capacity + 立即遞補候補、`加開 N`、單則公告+遞補通知） | backend-engineer | **IN_DISCUSSION（2026-08-17）** — R2；4 項裁決回填（N=新增量、單則、上限1000、僅open）。5 Guardrails/8 AC。待雙審（design+architect）+ 使用者 APPROVED 解鎖 T-019 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
@@ -61,9 +61,7 @@
 - **（H1，使用者提出 2026-08-05）開團後加開名額**：開團者對已開放報名的活動**只加開、不縮減**（裁決：本項不含縮減與改時間/地點）。**風險 R2**——直接改 `events.capacity` 即觸碰超賣防護；須於 `FOR UPDATE` 鎖內改值。**動工前需 D-010**。要點：①加開後**必須立刻遞補候補者**，可直接複用 T-015 的 `promotionQuota = fresh.capacity − countConfirmed()` 鎖內重算路徑（額度上界為容量 ⇒ 不超賣）②授權沿用 `canManageEvent`（host_user_id ∪ super-admin，同 `關閉報名`）③需新指令與 D-002 dispatch 增列，並定義加開後的公告文案與遞補通知的關係（同一則或兩則）④**動機**：現況無任何編輯指令，唯一 workaround 是 `取消活動` 再 `開團`——那會產生全新一場、報名全數歸零、候補 FIFO 順序全毀。
 - **（H2，使用者提出 2026-08-05）關閉報名時 @ 正取者**：`關閉報名` 的回覆**在同一則訊息內** mention 所有正取者（裁決：單則，不拆多則）。代報名列**只 tag 報名者本人（代報者）**，被代報的人頭無 userId、不 tag。**風險 R1**（無 schema 變更；mention 機制已於候補遞補通知驗證）。要點：①同一人有多列（本人＋代報）時只 tag 一次，避免重複 @ ②需確認 mention 數量上限與單則訊息長度上限，**若正取人數超過上限需先裁決降級行為**（截斷並附「等 N 人」或改列名不 mention）③沿用 `textV2` + `substitution`（`{mN}` placeholder）④文案需與既有 `formatClosed` 整合，勿新增第二種「已截止」措辭（LESSONS ×2 詞彙一致性）。
 - **（後續優化，使用者裁決 2026-08-02／T-015 衍生）整批原子遞補**：`pickWaitlistForPromotion` 以**列**為單位 `LIMIT`，當剩餘名額 < 候補隊首批次人數時會**拆散整批**（剩 1 位、隊首 `+2 陳先生` → 1 列轉正取、1 列留候補），與 G1 進場「整批不部分接受」的原子性不對稱。使用者已裁決**本次先允許拆批**。實作需求：`registrations` 新增 `batch_id` 欄位（同批共用；`0001_init.sql` 現無此欄，`seq` 無法可靠推斷批次）→ 屬 **migration ⇒ R2**（需 D-003 或新設計文件 + 雙 reviewer）。另需決策：額度塞不下隊首批次時採「跳過該批、遞補得下的後批」（不留空位但可能插隊）或「整批卡住等待」（嚴格 FIFO 但留空位）。回歸測試已釘住現行拆批行為：`[D-003 AC-21]` 第 2 案。
-- ~~M1 起導入 better-sqlite3~~ **已過時（2026-08-05 清理）**：T-012 PG-only 移植後該依賴已完全移除，ADR-003 僅存歷史意義。
 - 代報名（`+1 名字`）與候補遞補的 e2e 案例補入 e2e-tester 清單。
-- ~~`npm install` 回報 10 項 audit 漏洞~~ **已解決（2026-07-23）**：升 fastify ^4→^5、vitest ^2→^4，`npm audit` 0 vulnerabilities；build/40 tests/echo server 全綠。副帶修正：tsconfig 排除測試檔（dist 不再含 .test.js）、新增 vitest.config.ts 明確只掃 src。
 - ~~**（M5 部署前必處理，architect-reviewer T-004 審查點 10）** `build: tsc` 不複製 `src/db/migrations/*.sql` 到 `dist/`~~ **已解決（T-012）**：採「build 後加 copy script」，見 `scripts/copy-migrations.mjs` + package.json `postbuild`。已隨 2026-08-02 上線驗證。
 - ~~補 ADR-003 記錄 better-sqlite3 版本 pin~~ **已完成（2026-07-23）**：`docs/adr/ADR-003-better-sqlite3-version-pin.md`。附帶待辦：architect 建議 CLAUDE.md §4「最新穩定版」加註「DB 驅動版本以 ADR-003 為準」——**需使用者同意才改 CLAUDE.md**（見決策待辦）。
 - ~~**（D-003 落實）** 報名/取消/遞補交易一律經 `runImmediate` 封裝；`DATABASE_PATH` vs `DATABASE_URL` 併容~~ **已完成（T-012）**：`runImmediate` 於 PG 改為 `SELECT … FOR UPDATE`（`src/db/tx.ts`）；`DATABASE_PATH` 已隨 SQLite 一併移除，config 只剩 `databaseUrl`。
