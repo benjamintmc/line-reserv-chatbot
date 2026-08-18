@@ -40,7 +40,15 @@ export function buildHandler(): WebhookHandler {
   const processed = new ProcessedEventRepository(pool);
   const runImmediate = createImmediateRunner(pool);
   const runInTransaction = createTransactionRunner(pool);
-  const service = new RegistrationService({ events, users, registrations, processed, runImmediate });
+  // D-010：`加開 N` 授權 = canManageEvent（host ∪ super-admin），故 RegistrationService 亦注入 super-admin 集合。
+  const service = new RegistrationService({
+    events,
+    users,
+    registrations,
+    processed,
+    runImmediate,
+    superAdminUserIds: config.adminUserIds,
+  });
   // 開團 domain（D-006）：開團全開；close/cancel 授權 = canManageEvent（host_user_id ∪ super-admin）。
   // super-admin 集合以 config.adminUserIds（env ADMIN_USER_IDS）注入（跨群安全網、domain 不讀 env，G3）。
   const eventService = new EventService({

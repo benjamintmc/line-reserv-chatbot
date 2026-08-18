@@ -150,4 +150,18 @@ export class EventRepository implements EventReader {
     );
     return res.rowCount ?? 0;
   }
+
+  /**
+   * D-010 §一.4：加開名額原子寫入原語（只加不減語意由 domain 保證，本層僅寫入）。
+   * 與 updateStatus 分離（capacity 與狀態轉移為兩種關注點）。回傳受影響列數。
+   * 屬 client-bound `TxRepos.events` 寫方法；必於 `runImmediate`（FOR UPDATE）交易內呼叫（G2）。
+   */
+  async updateCapacity(id: number, capacity: number): Promise<number> {
+    const now = nowIso();
+    const res = await this.q.query(
+      'UPDATE events SET capacity = $1, updated_at = $2 WHERE id = $3',
+      [capacity, now, id],
+    );
+    return res.rowCount ?? 0;
+  }
 }

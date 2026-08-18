@@ -91,6 +91,11 @@ export function parseCommand(text: string): ParsedCommand {
     return parseGroupRounds(tokens.slice(1), text);
   }
 
+  // D-010：加開名額（`加開 N`）。head==='加開'。
+  if (head === '加開') {
+    return parseAddCapacity(tokens.slice(1), text);
+  }
+
   // 9. `+` 開頭 → 報名；10. `-` 開頭 → 取消（§3.1）。
   if (s.startsWith('+')) {
     return parseCountCommand('signup', s, text);
@@ -182,6 +187,34 @@ function parseGroupRounds(args: string[], raw: string): ParsedCommand {
   if (courts !== undefined) return { type: 'group', strategy: 'rounds', mode, courts };
   if (rounds !== undefined) return { type: 'group', strategy: 'rounds', mode, rounds };
   return { type: 'group', strategy: 'rounds', mode };
+}
+
+/**
+ * D-010 §一.1 加開名額：`加開 N`（N=新增量）。`args` 為丟棄首 token（加開）後的剩餘 token。
+ * 恰需一個純數字參數；1..MAX_COUNT → add_capacity{count}；`加開 0`/負/非數/無參 → unknown（靜默、防洗版）；
+ * 位數過長或 >MAX_COUNT → invalid(count_out_of_range)（政策同 signup：上層靜默）。
+ */
+function parseAddCapacity(args: string[], raw: string): ParsedCommand {
+  // 恰一個純數字 token；其餘（無參數/多參數/含非數字/負號）一律 unknown。
+  if (args.length !== 1) {
+    return UNKNOWN;
+  }
+  const tok = args[0] ?? '';
+  const m = /^(\d+)$/.exec(tok);
+  if (m === null) {
+    return UNKNOWN;
+  }
+  const digits = m[1] ?? '';
+  const count = Number(digits);
+  // count<1（加開 0）→ unknown（靜默）。
+  if (count < 1) {
+    return UNKNOWN;
+  }
+  // 位數過長或超單次上限 → invalid(count_out_of_range)（domain 另以 MAX_CAPACITY 檢新總量 over_limit）。
+  if (digits.length > 3 || count > MAX_COUNT) {
+    return { type: 'invalid', command: 'add_capacity', reason: 'count_out_of_range', raw };
+  }
+  return { type: 'add_capacity', count };
 }
 
 /**

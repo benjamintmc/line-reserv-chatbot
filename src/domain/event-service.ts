@@ -32,6 +32,7 @@ import type { TransactionRunner } from '../db/tx';
 import { nowIso, taipeiToUtcIso } from '../db/time';
 import { isExpired } from './event-status';
 import { perPersonAmount } from './billing';
+import { canManageEvent as canManageEventAuthz } from './authz';
 import {
   applyAnswer,
   FIRST_STATE,
@@ -197,9 +198,8 @@ export class EventService {
    * **唯讀不 upsert**：對非授權者不寫任何 users 列 → 滿足「非授權者無 DB 變更」（G2）。
    */
   private async canManageEvent(event: EventRow, executorLineUserId: string): Promise<boolean> {
-    if (this.superAdmins.has(executorLineUserId)) return true;
-    const executor = await this.users.getByLineUserId(executorLineUserId);
-    return executor !== undefined && executor.id === event.host_user_id;
+    // D-010 nit N1：委派共享謂詞（src/domain/authz.ts），與 registration-service 的 addCapacity 共用。
+    return canManageEventAuthz(this.users, this.superAdmins, event, executorLineUserId);
   }
 
   // ── `開團`（逐步問答入口，§3；D-006 §1.1 開團全開） ──────────────────

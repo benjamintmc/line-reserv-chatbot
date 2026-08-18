@@ -30,6 +30,7 @@ import type {
   SignupResult,
   CancelResult,
   ListResult,
+  AddCapacityResult,
 } from '../domain/registration-service';
 import type {
   EventService,
@@ -55,6 +56,10 @@ import {
   formatEventEnded,
   formatNothingToCancel,
   formatPromotionNotice,
+  formatAddCapacity,
+  formatAddCapacityNotAuthorized,
+  formatAddCapacityEnded,
+  formatAddCapacityOverLimit,
   type MessageDescriptor,
   type PromotionNotice,
 } from '../domain/list-formatter';
@@ -227,6 +232,30 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return [];
       case 'ok':
         return [toLineMessage(formatList(result.view, result.phase))]; // D-008 §8(3)：phase 化
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  // ── D-010 render（加開名額；單一則：公告 + 名單 + 同則遞補 @，需 await 解析 owner） ──
+  async function renderAddCapacity(result: AddCapacityResult): Promise<messagingApi.Message[]> {
+    switch (result.kind) {
+      case 'no_open_event':
+        return [toLineMessage(formatNoOpenEvent())];
+      case 'event_ended':
+        return [toLineMessage(formatAddCapacityEnded())];
+      case 'not_authorized':
+        return [toLineMessage(formatAddCapacityNotAuthorized())];
+      case 'over_limit':
+        return [toLineMessage(formatAddCapacityOverLimit())];
+      case 'duplicate':
+        return [];
+      case 'ok': {
+        const notices = await Promise.all(result.promoted.map((row) => buildPromotionNotice(row)));
+        return [toLineMessage(formatAddCapacity(result, notices))];
+      }
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -469,6 +498,16 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         const result = await deps.service.getListView({ groupId, messageId });
         return renderList(result);
       }
+      // D-010：加開名額（`加開 N`）——service 內 canManageEvent 授權 + 鎖內加開遞補。
+      case 'add_capacity': {
+        const result = await deps.service.addCapacity({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+          count: cmd.count,
+        });
+        return renderAddCapacity(result);
+      }
       // D-011：分組（`分組` 均分 / `分組 {M}場…` 多輪）與 `下一輪` ─────────
       case 'group': {
         if (cmd.strategy === 'balanced') {
@@ -554,7 +593,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         // D-006 §3：接線回 (MyID)——傳訊人自身 userId（群回、唯讀、不 mark）。
         return [toLineMessage(formatMyId(userId))];
       case 'invalid': {
-        // create_event 類 → 格式提示 (K′)；group 類 → 分組格式提示；signup/cancel 類 → 靜默。
+        // create_event 類 → 格式提示 (K′)；group 類 → 分組格式提示；signup/cancel/add_capacity 類 → 靜默（D-010 §一.1）。
         if (cmd.command === 'create_event') {
           const result = deps.eventService.handleInvalidOneline();
           return renderInvalidOneline(result);

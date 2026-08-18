@@ -18,7 +18,7 @@ export const MAX_CAPACITY = 1000;
 export const MAX_GROUP_PARAM = 20;
 
 /** 畸形但可辨識為某指令嘗試時，標記是哪個指令家族。 */
-export type InvalidCommandKind = 'signup' | 'cancel' | 'create_event' | 'group';
+export type InvalidCommandKind = 'signup' | 'cancel' | 'create_event' | 'group' | 'add_capacity';
 
 /**
  * 畸形原因（供 D-003/webhook 決定是否回提示；D-002 不決定要不要回覆）。
@@ -77,6 +77,8 @@ export type ParsedCommand =
     }
   // 分組：`下一輪`（讀進行中 grouping session 產下一輪）
   | { type: 'group_next' }
+  // 加開名額（D-010）：`加開 N` 對 open 活動加開 N 個名額（新增量；1..MAX_COUNT）
+  | { type: 'add_capacity'; count: number }
   // 可辨識為某指令嘗試，但參數畸形；帶原因供上層決定是否回提示
   | { type: 'invalid'; command: InvalidCommandKind; reason: InvalidReason; raw: string }
   // 完全無法辨識（群組閒聊、+0/-0、sign 後非數字等）→ webhook 一律不回覆（FR-5）
