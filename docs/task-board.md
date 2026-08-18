@@ -14,6 +14,8 @@
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
 | T-018 | 分組實作（策略A 均分／策略B 逐輪 `nextRound`＋單打、`分組`/`下一輪` parser、handler + `conversation_states` session、中性組版） | D-011（APPROVED） | R1 | backend-engineer | CODE_DONE／待機器驗證 | src/domain/grouping*.ts, src/commands/, src/webhook/, src/server.ts | 2026-08-17 已 commit 於分支 `feat/D-011-grouping`（4 測試檔、24 AC 標記、無 any）。**靜態審查雙 PASS**（architect：service 分層/session 互斥 OK；design：文案中性 OK）。**待家中機器跑 lint/build/test（docker PG:5433）綠 → 標 DONE**。偏差 grouping-service.ts 審查 PASS。＋2026-08-17 errata：場地名天干→A-Z、`分組`/`下一輪` 改 host-only（排除 super-admin）、新增 `formatGroupNotHost` |
+| T-019 | 加開名額實作（`加開 N` 新增量、鎖內改 capacity + 立即遞補、host∪super-admin 授權、單則公告+遞補、新原語 `updateCapacity`） | D-010（APPROVED） | R2 | backend-engineer | IN_PROGRESS | src/domain/registration-service.ts, src/commands/, src/webhook/, src/db/ | 2026-08-17 派工。複用 T-015 promotionQuota 鎖內重算；實作後待家測 + R2 雙審 |
+| T-020 | 多行批次報名實作（handler 拆行、逐行 +N/-N、複合去重鍵 `message.id#行號`、一次 reply≤5則合併、上限20整則拒絕） | D-012（APPROVED） | R1 | backend-engineer | IN_PROGRESS | src/webhook/handler.ts, src/domain/ | 2026-08-17 派工。不動 registration-service 核心；實作後待家測 + design-reviewer |
 
 ## M5 部署（Cloud Run + Neon PG）任務
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
@@ -43,8 +45,8 @@
 | D-007 | PG 移植 + serverless 部署（repository 換 PG、FOR UPDATE、pooler、先處理再回200、migration PG 方言、Dockerfile） | architect | **APPROVED（2026-08-01）** — R2 雙審通過（design + architect 零 blocker）、B1 路線 A / B2 int4 IDENTITY 兩 blocker 封閉、OP-1~7 定案、使用者最終核可 |
 | D-008 | 單場名額自動釋放（合併 event_datetime、closed/過期自動釋放、惰性 on-read 過期判定、過期顯示 done） | architect | **APPROVED（2026-08-02）** — R2 雙審通過（architect 零 blocker + design B1/B2 修訂後封閉）、使用者最終核可。三讀取點語意 + 索引拆兩半 + UTC+8；5 Guardrails / 13 AC |
 | D-011 | 分組（策略A 均分 3–4／策略B 多輪輪替 2v2＋單打、逐輪 `下一輪`、中性文案、conversation_states session） | backend-engineer | **APPROVED（2026-08-17）** — 使用者最終核可；4 項裁決 + 單打模式 + 逐輪揭示回填。6 Guardrails / 24 AC。解鎖 T-018 |
-| D-010 | 開團後加開名額（只加不減、鎖內改 capacity + 立即遞補候補、`加開 N`、單則公告+遞補通知） | backend-engineer | **IN_DISCUSSION（2026-08-17）** — R2；4 項裁決回填。**R2 雙審 PASS**（architect 零 blocker；design 1 blocker「球聚→球敘」已修）。nits 待 T-019：抽共享 authz helper、`promoteWithinLock` 共用。**待使用者最終 APPROVED** 解鎖 T-019 |
-| D-012 | 多行批次報名（一則多行、每行 `+N`/`-N` 逐行執行、`message.id#行號` 去重、一次 reply≤5則合併回覆） | backend-engineer | **IN_DISCUSSION（2026-08-17）** — 範圍限 +N/-N；R1。3 決策回填（逐行摘要+末尾名單、上限20整則拒絕、忽略非+/-行）。6 Guardrails/9 AC。待單一 design-reviewer + 使用者 APPROVED 解鎖 T-020 |
+| D-010 | 開團後加開名額（只加不減、鎖內改 capacity + 立即遞補候補、`加開 N`、單則公告+遞補通知） | backend-engineer | **APPROVED（2026-08-17）** — R2 雙審 PASS + 使用者核可。nits 待 T-019：抽共享 authz helper、`promoteWithinLock` 共用。解鎖 T-019 |
+| D-012 | 多行批次報名（一則多行、每行 `+N`/`-N` 逐行執行、`message.id#行號` 去重、一次 reply≤5則合併回覆） | backend-engineer | **APPROVED（2026-08-17）** — R1；design-reviewer PASS + 使用者核可。3 決策回填、字串釘死。解鎖 T-020 |
 
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |

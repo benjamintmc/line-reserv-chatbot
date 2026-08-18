@@ -1,6 +1,6 @@
 # D-012: 多行批次報名（Multiline Signup：一則多行訊息逐行執行 +N/-N）
 
-- 狀態：IN_DISCUSSION（design-reviewer PASS，無 blocker；nit 已收斂：摘要/拒絕字串釘死、全 duplicate 不回覆。待使用者最終 APPROVED 解鎖 T-020）
+- 狀態：APPROVED（2026-08-17，使用者最終核可；design-reviewer PASS、nit 收斂）——解鎖 T-020 實作
 - 撰寫者：backend-engineer
 - 關聯：使用者新需求（一則含多行訊息＝逐行報名/取消）／任務 T-020（實作，待編號）
 - 相依：

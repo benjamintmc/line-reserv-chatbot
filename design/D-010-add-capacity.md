@@ -1,6 +1,6 @@
 # D-010: 開團後加開名額（Add Capacity：`加開 N` 鎖內加開 + 立即遞補）
 
-- 狀態：IN_DISCUSSION（4 項裁決回填；**R2 雙審 PASS**——architect 零 blocker、design 1 blocker「球聚→球敘」已修；待使用者最終 APPROVED 解鎖 T-019）
+- 狀態：APPROVED（2026-08-17，使用者最終核可；R2 雙審 PASS、design blocker「球聚→球敘」已修）——解鎖 T-019 實作
 - 撰寫者：backend-engineer
 - 風險等級：**R2（高）**——直接改 `events.capacity`，觸碰 `registration-service` 超賣防護（CLAUDE.md §4.5 預設高風險模組）；capacity 變更須於 `FOR UPDATE` 鎖內。依 §5：雙 reviewer（design + architect）+ e2e + Guardrails ≥3。
 - 關聯：Backlog H1（使用者 2026-08-05 裁決）／任務 T-019（實作，待 orchestrator 於 task-board 編號）／相依 **D-001**（events schema、狀態機、repo 原語）、**D-003**（FIFO 遞補、`promotionQuota` 語意、複用 T-015 鎖內重算路徑）、**D-004**（`canManageEvent`、event 狀態機）。
