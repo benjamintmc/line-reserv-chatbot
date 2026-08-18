@@ -95,7 +95,7 @@ describe('webhook handler 授權簡化（D-006）', () => {
     const handler = makeHandler(t, profileReturning('主辦人'), []);
     const X = 'U-plain'; // 一般成員（非 super-admin）
     const summary = await handler.handleEvent(
-      groupTextEvent('開團 2026/08/15 07:30 東方球場 16人 2200元', { userId: X, messageId: 'o1' }),
+      groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { userId: X, messageId: 'o1' }),
     );
     expect(textOf(summary)).toContain('請確認開團資訊');
     const announce = await handler.handleEvent(groupTextEvent('確認', { userId: X, messageId: 'o2' }));
