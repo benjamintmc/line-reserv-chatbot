@@ -299,3 +299,34 @@ export function formatAddCapacity(
   const mentionees = sub.mentionees.map((m) => ({ ...m, index: m.index + offset }));
   return { text, mentionees };
 }
+
+// ── D-012 多行批次報名組版 ────────────────────────────────────────────────
+//
+// 逐行摘要（釘死字串；用語沿用既有「正取/候補」，不新增第二種措辭）：
+//   報名行 →「已報名：{名字}」，落候補者於名字後標「（候補）」；取消行 →「已取消：{名字}」。
+// 批次末尾另附一次更新後名單（handler 複用 formatList(view)）與遞補 @（formatPromotionNotice）。
+
+/** 批次單行摘要項（handler 於逐行執行後彙整，交 formatBatchSummary 組版）。 */
+export type BatchSummaryItem =
+  | { kind: 'signup'; subjectDisplayName: string; waitlisted: boolean }
+  | { kind: 'cancel'; subjectDisplayName: string };
+
+/**
+ * D-012 §3：批次逐行摘要（**同一則訊息內多文字行**，非多則）。
+ * 報名落候補 → 名字後標「（候補）」；取消 →「已取消：{名字}」。無 mention。
+ */
+export function formatBatchSummary(items: readonly BatchSummaryItem[]): MessageDescriptor {
+  const lines = items.map((it) =>
+    it.kind === 'signup'
+      ? it.waitlisted
+        ? `已報名：${it.subjectDisplayName}（候補）`
+        : `已報名：${it.subjectDisplayName}`
+      : `已取消：${it.subjectDisplayName}`,
+  );
+  return { text: lines.join('\n'), mentionees: [] };
+}
+
+/** D-012 §3：可執行行數超過上限的整則拒絕（釘死字串；不執行任何行）。 */
+export function formatBatchOverLimit(max: number): MessageDescriptor {
+  return { text: `一次最多報名 ${max} 筆，請分次輸入。`, mentionees: [] };
+}

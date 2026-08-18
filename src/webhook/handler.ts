@@ -17,6 +17,11 @@
 // D-011 T-018：新增 `分組`/`下一輪` 接線 → GroupingService。conversation_states 同一列也被開團問答用，
 // 故頂層攔截只攔非 'grouping' 狀態（開團 awaiting_*），grouping session 交由 parseCommand→`下一輪` 讀取。
 //
+// D-012 T-020：多行批次報名。conversation 攔截優先不變；否則以 /\r?\n/ 拆行——
+// 行數 ≤1 走現行單指令路徑（零回歸，G5）；行數 ≥2 走批次路徑（handleBatch）：逐行 parseCommand、
+// **僅** signup/cancel 可執行（G1）、依序 await、messageId 傳複合鍵 `${messageId}#${lineIndex}`（G2/G3），
+// 合併為**一次 reply（≤5 則）**（G4）；可執行行數 > MAX_BATCH_LINES → 整則拒絕不部分執行（G6）。
+//
 // **LINE SDK 型別只在此層出現**（domain/formatter 對 LINE 零耦合）。嚴禁 any。
 // unknown / 無流程 confirm·abort / 未攔截雜訊一律不回覆、不 markProcessed（G9）。
 
@@ -31,6 +36,7 @@ import type {
   CancelResult,
   ListResult,
   AddCapacityResult,
+  RegistrationView,
 } from '../domain/registration-service';
 import type {
   EventService,
@@ -60,8 +66,11 @@ import {
   formatAddCapacityNotAuthorized,
   formatAddCapacityEnded,
   formatAddCapacityOverLimit,
+  formatBatchSummary,
+  formatBatchOverLimit,
   type MessageDescriptor,
   type PromotionNotice,
+  type BatchSummaryItem,
 } from '../domain/list-formatter';
 import {
   formatFlowPrompt,
@@ -89,6 +98,12 @@ import {
   formatGroupNotHost,
   formatGroupFormatHelp,
 } from '../domain/grouping-formatter';
+
+/**
+ * D-012 §2.4：多行批次一次可執行的 +/-（signup/cancel）行數上限。
+ * **只計可執行行**（空行/被忽略行不計）；超過 → 整則拒絕、不部分執行（G6）。
+ */
+const MAX_BATCH_LINES = 20;
 
 /**
  * 取群組成員顯示名的最小介面（結構相容 `messagingApi.MessagingApiClient.getGroupMemberProfile`）。
@@ -441,33 +456,16 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  async function handleEvent(event: WebhookEvent): Promise<messagingApi.Message[]> {
-    // 僅處理群組來源的文字訊息事件；其餘一律忽略（不回覆、不 mark；沿用骨架）。
-    if (event.type !== 'message' || event.message.type !== 'text') return [];
-    if (event.source.type !== 'group') return [];
-    const groupId = event.source.groupId;
-    const userId = event.source.userId;
-    if (userId === undefined) return [];
-    const messageId = event.message.id;
-    const text = event.message.text;
-
-    // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
-    // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。
-    // D-011：grouping session（state='grouping'）**不**在此攔截——它不吞任意訊息，
-    // 交由 parseCommand 讓 `下一輪`（及其他指令）正常分派（AC-24 已知取捨：開團與分組 session 互斥）。
-    const conv = await deps.conversations.get(userId);
-    if (conv !== undefined && conv.state !== 'grouping') {
-      const hostDisplayName = await resolveDisplayName(groupId, userId);
-      const result = await deps.eventService.continueFlow({
-        groupId,
-        executorLineUserId: userId,
-        messageId,
-        text,
-        hostDisplayName,
-      });
-      return renderContinue(result);
-    }
-
+  /**
+   * 單指令分派（D-003~D-011 既有路徑）。多行批次以外一律走此（單行、或批次以外的分派）。
+   * G5：`lines.length <= 1` 時必須走與此完全相同的路徑，行為不得改變。
+   */
+  async function dispatchSingle(
+    groupId: string,
+    userId: string,
+    messageId: string,
+    text: string,
+  ): Promise<messagingApi.Message[]> {
     const cmd = parseCommand(text);
     switch (cmd.type) {
       case 'signup': {
@@ -610,6 +608,168 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return _exhaustive;
       }
     }
+  }
+
+  /**
+   * D-012 多行批次分派（`lines.length >= 2`）。逐行 trim；空行忽略但保留 lineIndex（split 陣列索引）；
+   * 每非空行 parseCommand，**僅** signup/cancel 可執行（G1），其餘型別忽略；**依序 await**、
+   * messageId 傳複合鍵 `${messageId}#${lineIndex}`（G2/G3，後行看得到前行效果）；合併為一次 reply（≤5 則，G4）。
+   * 可執行 +/- 行數 > MAX_BATCH_LINES → 整則拒絕、不執行任何行、不 markProcessed（G6）。
+   */
+  async function handleBatch(
+    groupId: string,
+    userId: string,
+    messageId: string,
+    lines: string[],
+  ): Promise<messagingApi.Message[]> {
+    // 逐行 trim 取可執行行（保留原 split 索引 i 作複合去重鍵）。空行/非 signup·cancel 一律忽略（G1）。
+    type Executable = { index: number; cmd: Extract<ReturnType<typeof parseCommand>, { type: 'signup' | 'cancel' }> };
+    const executables: Executable[] = [];
+    lines.forEach((raw, i) => {
+      const line = raw.trim();
+      if (line === '') return; // 空行忽略，但 lineIndex（i）已保留供去重鍵穩定
+      const cmd = parseCommand(line);
+      if (cmd.type === 'signup' || cmd.type === 'cancel') {
+        executables.push({ index: i, cmd });
+      }
+      // 其餘型別（list/create_*/confirm/abort/group*/my_id/invalid/unknown）忽略（G1）。
+    });
+
+    // G6：可執行行數超過上限 → 整則拒絕，不執行任何行、不 markProcessed。
+    if (executables.length > MAX_BATCH_LINES) {
+      return [toLineMessage(formatBatchOverLimit(MAX_BATCH_LINES))];
+    }
+    // 無任何可執行行 → 回空（沿用「只回應可識別指令」，避免洗版）。
+    if (executables.length === 0) return [];
+
+    // 同一 executor：顯示名快照取一次即可（signup/cancel 皆用）。
+    const displayName = await resolveDisplayName(groupId, userId);
+
+    const summary: BatchSummaryItem[] = [];
+    const promotedRows: RegistrationRow[] = [];
+    let lastView: RegistrationView | undefined;
+    // 無成功行時的 fallback 原因（依序 await，取最後一筆非 duplicate 的原因呈現一次）。
+    let fallback: MessageDescriptor | undefined;
+
+    for (const { index, cmd } of executables) {
+      const compositeId = `${messageId}#${index}`; // G2：複合去重鍵，重送整則時每行命中各自鍵
+      if (cmd.type === 'signup') {
+        const result = await deps.service.signup({
+          groupId,
+          executorLineUserId: userId,
+          executorDisplayName: displayName,
+          messageId: compositeId,
+          count: cmd.count,
+          proxyName: cmd.proxyName,
+        });
+        switch (result.kind) {
+          case 'ok':
+            summary.push({
+              kind: 'signup',
+              subjectDisplayName: result.subjectDisplayName,
+              waitlisted: result.outcome === 'waitlisted',
+            });
+            lastView = result.view;
+            break;
+          case 'duplicate':
+            break; // 逐行 duplicate 不產摘要行（G9）
+          case 'no_open_event':
+            fallback = formatNoOpenEvent();
+            break;
+          case 'event_ended':
+            fallback = formatEventEnded();
+            break;
+          default: {
+            const _exhaustive: never = result;
+            return _exhaustive;
+          }
+        }
+      } else {
+        const result = await deps.service.cancel({
+          groupId,
+          executorLineUserId: userId,
+          executorDisplayName: displayName,
+          messageId: compositeId,
+          count: cmd.count,
+          proxyName: cmd.proxyName,
+        });
+        switch (result.kind) {
+          case 'ok':
+            summary.push({ kind: 'cancel', subjectDisplayName: result.subjectDisplayName });
+            lastView = result.view;
+            if (result.promoted.length > 0) promotedRows.push(...result.promoted);
+            break;
+          case 'duplicate':
+            break;
+          case 'no_open_event':
+            fallback = formatNoOpenEvent();
+            break;
+          case 'event_ended':
+            fallback = formatEventEnded();
+            break;
+          case 'nothing_to_cancel':
+            fallback = formatNothingToCancel(cmd.proxyName);
+            break;
+          default: {
+            const _exhaustive: never = result;
+            return _exhaustive;
+          }
+        }
+      }
+    }
+
+    // 有成功行 → 一次 reply（G4）：摘要（同一則多文字行）+ 一次更新後名單 +（有遞補則）@ 通知。
+    if (summary.length > 0 && lastView !== undefined) {
+      const messages: messagingApi.Message[] = [
+        toLineMessage(formatBatchSummary(summary)),
+        toLineMessage(formatList(lastView)), // 批次僅對 open 生效 → phase 恆 live（預設）
+      ];
+      if (promotedRows.length > 0) {
+        const notices = await Promise.all(promotedRows.map((row) => buildPromotionNotice(row)));
+        messages.push(toLineMessage(formatPromotionNotice(notices)));
+      }
+      return messages;
+    }
+
+    // 無成功行：全 duplicate → 回空、不 reply（G9/AC-2）；否則呈現最後一筆原因一次。
+    if (fallback !== undefined) return [toLineMessage(fallback)];
+    return [];
+  }
+
+  async function handleEvent(event: WebhookEvent): Promise<messagingApi.Message[]> {
+    // 僅處理群組來源的文字訊息事件；其餘一律忽略（不回覆、不 mark；沿用骨架）。
+    if (event.type !== 'message' || event.message.type !== 'text') return [];
+    if (event.source.type !== 'group') return [];
+    const groupId = event.source.groupId;
+    const userId = event.source.userId;
+    if (userId === undefined) return [];
+    const messageId = event.message.id;
+    const text = event.message.text;
+
+    // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
+    // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。
+    // D-011：grouping session（state='grouping'）**不**在此攔截——它不吞任意訊息，
+    // 交由 parseCommand 讓 `下一輪`（及其他指令）正常分派（AC-24 已知取捨：開團與分組 session 互斥）。
+    // D-012：conversation 攔截優先於拆行——進行中開團流程仍以整段 text 走 continueFlow（批次不介入流程答案）。
+    const conv = await deps.conversations.get(userId);
+    if (conv !== undefined && conv.state !== 'grouping') {
+      const hostDisplayName = await resolveDisplayName(groupId, userId);
+      const result = await deps.eventService.continueFlow({
+        groupId,
+        executorLineUserId: userId,
+        messageId,
+        text,
+        hostDisplayName,
+      });
+      return renderContinue(result);
+    }
+
+    // D-012：以 /\r?\n/ 拆行。行數 ≤1 → 現行單指令路徑（零回歸，G5）；行數 ≥2 → 批次路徑。
+    const lines = text.split(/\r?\n/);
+    if (lines.length >= 2) {
+      return handleBatch(groupId, userId, messageId, lines);
+    }
+    return dispatchSingle(groupId, userId, messageId, text);
   }
 
   return { handleEvent };
