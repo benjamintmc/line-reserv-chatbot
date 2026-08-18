@@ -263,6 +263,27 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect((await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'r3' })).kind).toBe('flow_started');
   });
 
+  // D-004 errata (N2)：新流程覆寫前一段未完成流程時回報 abandoned 種類，供 handler 附告知句。
+  it('[D-004 errata N2] startCreation 覆寫別群開團流程 → abandoned=create；覆寫分組 session → abandoned=grouping', async () => {
+    const svc = makeSvc(t);
+
+    // (a) 別群的未完成開團流程被覆寫 → 'create'。
+    await t.conversations.upsert({ lineUserId: HOST, groupId: 'G-other', state: 'awaiting_time', payload: JSON.stringify({ date: '2999-08-15' }) });
+    const a = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'n1' });
+    expect(a.kind).toBe('flow_started');
+    expect(a.kind === 'flow_started' ? a.abandoned : undefined).toBe('create');
+
+    // (b) 分組 session 被覆寫 → 'grouping'（同群亦適用：grouping 不被 handler 攔截）。
+    await t.conversations.upsert({ lineUserId: HOST, groupId: G, state: 'grouping', payload: JSON.stringify({ mode: 'doubles' }) });
+    const b = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'n2' });
+    expect(b.kind === 'flow_started' ? b.abandoned : undefined).toBe('grouping');
+
+    // (c) 無前一段流程 → 不回報（不擾民）。
+    await t.conversations.delete(HOST);
+    const c = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'n3' });
+    expect(c.kind === 'flow_started' ? c.abandoned : undefined).toBeUndefined();
+  });
+
   it('[D-004 AC-12] confirm 撞 ux_events_active_group（UNIQUE）→ 窄捕捉 already_active + 清 conversation', async () => {
     const svc = makeSvc(t);
     // 直接布置 awaiting_confirm 流程（避免 startCreation 觸 findActiveByGroup）。
@@ -336,7 +357,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
   it('[D-004 AC-16] 無流程時 confirm/abort → noop、不 mark、不改狀態', async () => {
     const svc = makeSvc(t);
     const c = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'n1', hostDisplayName: '主辦人' });
-    const a = await svc.abort({ executorLineUserId: HOST, messageId: 'n2' });
+    const a = await svc.abort({ groupId: G, executorLineUserId: HOST, messageId: 'n2' });
     expect(c.kind).toBe('noop');
     expect(a.kind).toBe('noop');
     expect(await t.processed.has('n1')).toBe(false);

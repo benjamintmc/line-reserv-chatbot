@@ -24,6 +24,7 @@ function makeService(t: TestDb): GroupingService {
     users: t.users,
     registrations: t.registrations,
     conversations: t.conversations,
+    processed: t.processed,
     runInTransaction: t.runInTransaction,
     rng: mulberry32(123),
   });
@@ -152,7 +153,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     expect(state.labels).toHaveLength(8);
 
     // 下一輪：讀 session → 第 2 輪 → 寫回。
-    const r2 = await svc.nextRound({ executorLineUserId: HOST, messageId: 'g2' });
+    const r2 = await svc.nextRound({ groupId: G, executorLineUserId: HOST, messageId: 'g2' });
     if (r2.kind !== 'round') throw new Error('expected round');
     expect(r2.round.round).toBe(2);
   });
@@ -170,7 +171,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     expect(balanced.kind).toBe('balanced');
     expect(await t.conversations.get(HOST)).toBeUndefined(); // 策略A 不寫 session
 
-    const next = await svc.nextRound({ executorLineUserId: HOST, messageId: 'g2' });
+    const next = await svc.nextRound({ groupId: G, executorLineUserId: HOST, messageId: 'g2' });
     expect(next.kind).toBe('no_session');
   });
 
@@ -179,7 +180,51 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     await seedConfirmed(t, event.id, host.id, ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
     const svc = makeService(t);
     await svc.startRounds({ groupId: G, executorLineUserId: HOST, messageId: 'dup', courts: 2, mode: 'doubles' });
-    const again = await svc.nextRound({ executorLineUserId: HOST, messageId: 'dup' });
+    const again = await svc.nextRound({ groupId: G, executorLineUserId: HOST, messageId: 'dup' });
     expect(again.kind).toBe('duplicate');
+  });
+  // ── errata 2026-08-18（T-018 review B1）：`下一輪` 跨群 ──────────────────
+  it('[D-011 AC-23 errata 跨群] A 群開分組 session，同一主辦在 B 群「下一輪」→ no_session、不外洩 A 群名單、A 群 session 不被推進', async () => {
+    const { host, event } = await seedEvent(t, { capacity: 8, groupId: G, hostLineId: HOST });
+    await seedConfirmed(t, event.id, host.id, ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛']);
+    const svc = makeService(t);
+
+    const r1 = await svc.startRounds({
+      groupId: G,
+      executorLineUserId: HOST,
+      messageId: 'g1',
+      courts: 2,
+      mode: 'doubles',
+    });
+    if (r1.kind !== 'round') throw new Error('expected round');
+
+    // B 群（無 active event、非該場）同一主辦輸入 `下一輪` → no_session（不得讀到 A 群凍結名單）。
+    const cross = await svc.nextRound({ groupId: 'G-B', executorLineUserId: HOST, messageId: 'g2' });
+    expect(cross.kind).toBe('no_session');
+    expect(await t.processed.has('g2')).toBe(false); // 不 mark、無副作用
+
+    // A 群 session 未被推進（仍停在第 1 輪）。
+    const state = JSON.parse((await t.conversations.get(HOST))!.payload!) as GroupingState;
+    expect(state.round).toBe(1);
+
+    // 回 A 群 `下一輪` → 正常第 2 輪。
+    const r2 = await svc.nextRound({ groupId: G, executorLineUserId: HOST, messageId: 'g3' });
+    if (r2.kind !== 'round') throw new Error('expected round');
+    expect(r2.round.round).toBe(2);
+  });
+
+  // ── errata 2026-08-18（T-018 review B2）：策略A 去重 ────────────────────
+  it('[D-011 AC-24 errata 去重] 策略A 同一 messageId 重送 → duplicate（不重算、不二次回覆），且仍不寫 session', async () => {
+    const { host, event } = await seedEvent(t, { capacity: 8, groupId: G, hostLineId: HOST });
+    await seedConfirmed(t, event.id, host.id, ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+    const svc = makeService(t);
+
+    const first = await svc.groupBalanced({ groupId: G, executorLineUserId: HOST, messageId: 'm1' });
+    expect(first.kind).toBe('balanced');
+    expect(await t.processed.has('m1')).toBe(true);
+
+    const resend = await svc.groupBalanced({ groupId: G, executorLineUserId: HOST, messageId: 'm1' });
+    expect(resend.kind).toBe('duplicate'); // 重送不重骰、不回覆
+    expect(await t.conversations.get(HOST)).toBeUndefined(); // 策略A 仍不寫 session
   });
 });

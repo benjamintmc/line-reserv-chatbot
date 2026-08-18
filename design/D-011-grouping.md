@@ -1,6 +1,6 @@
 # D-011: 分組（即時計算，中性策略，逐輪揭示）
 
-狀態：APPROVED（含 2026-08-17 errata；場地名 A-Z、`分組`/`下一輪` host-only 排除 super-admin）
+狀態：APPROVED（含 2026-08-17 errata：場地名 A-Z、`分組`/`下一輪` host-only 排除 super-admin；含 2026-08-18 errata：`下一輪` 跨群比對、策略A 唯讀去重）
 
 - 撰寫者：backend-engineer
 - 風險等級：R1（中）——唯讀名單 + 逐輪 session 暫存（既有 `conversation_states`）、零 migration、無金流/授權升級/刪除。走標準流程（unit-tester + 一位 reviewer），Guardrails ≥ 3。
@@ -98,8 +98,8 @@
 - [ ] **[D-011 AC-20]（單打組版格式）**：單打每輪 `第 r 輪` 下各場 `A場：A vs B`（無「、」隊友），有輪空者列 `輪空：…`。
 - [ ] **[D-011 AC-21]（下一輪: 全歷史不重複）**：連續 `下一輪` → 每新輪隊友/對手皆與**先前所有輪**不重複（可行時零重複）、sit-out 累計延續、只回該輪。
 - [ ] **[D-011 AC-22]（輪數上限）**：未帶 `{R}輪` → 開放式，可連續 `下一輪` 超過任何固定數（如 >5 次仍產）；帶 `{R}輪` → 到第 R 輪後 `下一輪` 回「已達輪數上限」中文提示。
-- [ ] **[D-011 AC-23]（下一輪無 session）**：無進行中分組時 `下一輪` → 中文提示「目前沒有進行中的分組…」、不產任何輪。
-- [ ] **[D-011 AC-24]（session 存 conversation_states；A 無下一輪）**：策略B session 存於 `conversation_states`（主辦 `line_user_id` 為鍵、payload JSON），**非新表**；策略A 一次分完、`下一輪` 對其無效。
+- [ ] **[D-011 AC-23]（下一輪無 session）**：無進行中分組時 `下一輪` → 中文提示「目前沒有進行中的分組…」、不產任何輪。**errata 2026-08-18（B1 跨群）**：主辦在 A 群啟動 session 後於 **B 群**輸入 `下一輪` → 同樣回 `no_session`（回覆**不得**含 A 群凍結名單任一人名）、A 群 session 不被推進、不 mark。
+- [ ] **[D-011 AC-24]（session 存 conversation_states；A 無下一輪）**：策略B session 存於 `conversation_states`（主辦 `line_user_id` 為鍵、payload JSON），**非新表**；策略A 一次分完、`下一輪` 對其無效。**errata 2026-08-18（B2 去重）**：策略A 重送同一 `message.id` → `duplicate`（不重骰出第二份分組、handler 回 `[]`），去重政策沿用唯讀指令 `名單`（`getListView` 交易外 `markProcessed`），不新增第四種變體。
 
 ---
 
@@ -113,3 +113,4 @@
 | #3 | 是否於回覆末尾附每人出賽/休息統計 | **裁決：不附**（維持精簡、避免洗版）。 |
 | #4 | `分組` 觸發權限是否放寬給所有人 | **裁決：不放寬**，沿用 `canManageEvent`（同關閉報名）。 |
 | 2026-08-17 errata | 場名 A-Z；`分組`/`下一輪` host-only | 場名 甲乙→A、B、C…Z（≥26 用「第 M 場」）；授權由 canManageEvent 改 **host_user_id only、排除 super-admin**（取代裁決 #4）。 |
+| 2026-08-18 errata | T-018 review B1/B2 | **B1**：§一.1「host-only 天然成立」只保證同一人、**不保證同一群**（session PK 為 `line_user_id`，跨群唯一）→ `NextRoundInput` 增 `groupId`，`conv.group_id !== groupId` → `no_session`（否則主辦在別群 `下一輪` 會外洩他群凍結名單人名）。**B2**：策略A 吃 rng 且未去重，webhook 重送會重算出不同分組並二次回覆 → 於 `groupBalanced` 首步交易外 `markProcessed`，重送回 `duplicate`。皆零 migration。 |

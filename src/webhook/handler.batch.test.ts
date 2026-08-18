@@ -44,6 +44,7 @@ function makeHandler(
       users: t.users,
       registrations: t.registrations,
       conversations: t.conversations,
+      processed: t.processed,
       runInTransaction: t.runInTransaction,
     }),
     service,
@@ -108,9 +109,9 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     expect(confirmed.every((r) => r.kind === 'proxy')).toBe(true);
     expect(confirmed.map((r) => r.display_name).sort()).toEqual(['張先生', '陳小姐']);
 
-    // 一次 reply：摘要（同一則多文字行）+ 名單，共 2 則。
+    // 一次 reply：摘要（D-012 §一.3 聚合為一行）+ 名單，共 2 則。
     expect(out).toHaveLength(2);
-    expect(textOf(out[0]!)).toBe('已報名：陳小姐\n已報名：張先生');
+    expect(textOf(out[0]!)).toBe('已報名：陳小姐、張先生');
     expect(textOf(out[1]!)).toContain('報名名單（2/16）：');
   });
 
@@ -175,8 +176,8 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
 
     expect(await t.registrations.listConfirmed(event.id)).toHaveLength(1); // 無超賣
     expect(await t.registrations.listWaitlist(event.id)).toHaveLength(1);
-    // 摘要：第1行正取、第2行落候補標「（候補）」。
-    expect(textOf(out[0]!)).toBe('已報名：阿明\n已報名：阿明（候補）');
+    // 摘要：聚合一行，第2位落候補者自己標「（候補）」。
+    expect(textOf(out[0]!)).toBe('已報名：阿明、阿明（候補）');
   });
 
   it('[D-012 AC-6] -1 A\\n-1 B 兩行 cancel 皆執行（各以複合鍵去重）', async () => {

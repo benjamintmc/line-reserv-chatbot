@@ -75,6 +75,7 @@ import {
 import {
   formatFlowPrompt,
   formatConfirmSummary,
+  withAbandonedNotice,
   formatFieldError,
   formatOpenAnnouncement,
   formatClosed,
@@ -285,6 +286,8 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return [toLineMessage(formatNoOpenEvent())];
       case 'not_authorized':
         return [textMessage(formatGroupNotHost())]; // errata：分組 host-only（非主辦含 super-admin 皆拒）
+      case 'duplicate':
+        return []; // B2：策略A 唯讀去重（重送不重算、不二次回覆）
       case 'balanced':
         return [textMessage(formatPartition(result.result))];
       default: {
@@ -338,10 +341,24 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return [toLineMessage(formatAlreadyActiveEntry(result.event))]; // (I)
       case 'duplicate':
         return [];
-      case 'flow_started':
-        return [toLineMessage(formatFlowPrompt(result.state))]; // (A)
-      case 'awaiting_confirm':
-        return [toLineMessage(formatConfirmSummary(result.draft))]; // (B)
+      case 'flow_started': {
+        // (A) ＋ (N2)：若本次開新流程覆寫掉前一段未完成流程，附一句告知（D-004 errata 跨群）。
+        const base = formatFlowPrompt(result.state);
+        return [
+          toLineMessage(
+            result.abandoned !== undefined ? withAbandonedNotice(result.abandoned, base) : base,
+          ),
+        ];
+      }
+      case 'awaiting_confirm': {
+        // (B) ＋ (N2)：同上（一行式路徑）。
+        const base = formatConfirmSummary(result.draft);
+        return [
+          toLineMessage(
+            result.abandoned !== undefined ? withAbandonedNotice(result.abandoned, base) : base,
+          ),
+        ];
+      }
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -527,7 +544,12 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return renderStartRounds(result);
       }
       case 'group_next': {
-        const result = await deps.grouping.nextRound({ executorLineUserId: userId, messageId });
+        // B1：傳來源 groupId，service 比對 session 的 group_id（跨群 → no_session，不外洩他群名單）。
+        const result = await deps.grouping.nextRound({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+        });
         return renderNextRound(result);
       }
       // D-004 M3 開團流程（D-006：開團全開，無授權前置） ────────────────
@@ -565,8 +587,13 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return renderConfirm(result);
       }
       case 'abort': {
-        // 同上：無流程 → 靜默 no-op（G9）。
-        const result = await deps.eventService.abort({ executorLineUserId: userId, messageId });
+        // 同上：無流程 → 靜默 no-op（G9）。D-004 errata（跨群）：傳 groupId，
+        // 別群的 `取消` 不得放棄本人在他群的進行中流程（service 內比對 conv.group_id）。
+        const result = await deps.eventService.abort({
+          groupId,
+          executorLineUserId: userId,
+          messageId,
+        });
         return renderAbort(result);
       }
       case 'close_event': {
@@ -748,11 +775,15 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
 
     // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
     // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。
+    // **D-004 errata（跨群語意，2026-08-18）**：conversation_states 以 line_user_id 為 PK（跨群唯一），
+    // 故攔截**必須**再比對來源群：`conv.group_id === groupId` 才視為流程答案；
+    // 同一人在**別群**的發言不攔截，照走一般 dispatch（`+1`/`名單`/雜訊靜默各自正常），
+    // 且原群那段流程原封保留（不前進、不放棄）。domain 層另有同義防線（continueFlow/confirm/abort）。
     // D-011：grouping session（state='grouping'）**不**在此攔截——它不吞任意訊息，
     // 交由 parseCommand 讓 `下一輪`（及其他指令）正常分派（AC-24 已知取捨：開團與分組 session 互斥）。
     // D-012：conversation 攔截優先於拆行——進行中開團流程仍以整段 text 走 continueFlow（批次不介入流程答案）。
     const conv = await deps.conversations.get(userId);
-    if (conv !== undefined && conv.state !== 'grouping') {
+    if (conv !== undefined && conv.state !== 'grouping' && conv.group_id === groupId) {
       const hostDisplayName = await resolveDisplayName(groupId, userId);
       const result = await deps.eventService.continueFlow({
         groupId,

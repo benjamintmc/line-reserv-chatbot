@@ -20,6 +20,7 @@ function makeGroupingSvc(t: TestDb): GroupingService {
     users: t.users,
     registrations: t.registrations,
     conversations: t.conversations,
+    processed: t.processed,
     runInTransaction: t.runInTransaction,
   });
 }

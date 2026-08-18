@@ -302,8 +302,9 @@ export function formatAddCapacity(
 
 // ── D-012 多行批次報名組版 ────────────────────────────────────────────────
 //
-// 逐行摘要（釘死字串；用語沿用既有「正取/候補」，不新增第二種措辭）：
-//   報名行 →「已報名：{名字}」，落候補者於名字後標「（候補）」；取消行 →「已取消：{名字}」。
+// 聚合摘要（釘死字串，D-012 §一.3 / 裁決 #1；用語沿用既有「正取/候補」，不新增第二種措辭）：
+//   報名 →「已報名：{名字、名字…}」一行（例「已報名：陳小姐、張先生」），落候補者**各自**於名字後標「（候補）」；
+//   取消 →「已取消：{名字、名字…}」一行。兩類皆有時：報名行在前、取消行在後。
 // 批次末尾另附一次更新後名單（handler 複用 formatList(view)）與遞補 @（formatPromotionNotice）。
 
 /** 批次單行摘要項（handler 於逐行執行後彙整，交 formatBatchSummary 組版）。 */
@@ -312,17 +313,24 @@ export type BatchSummaryItem =
   | { kind: 'cancel'; subjectDisplayName: string };
 
 /**
- * D-012 §3：批次逐行摘要（**同一則訊息內多文字行**，非多則）。
- * 報名落候補 → 名字後標「（候補）」；取消 →「已取消：{名字}」。無 mention。
+ * D-012 §3 / §一.3：批次摘要（**同一則訊息內至多兩文字行**，非逐項一行）。
+ * 依 §一.3 釘死格式**依類別聚合**：報名 →「已報名：{名字、名字…}」、取消 →「已取消：{名字、名字…}」，
+ * 名字以「、」相連、順序沿用執行順序；落候補者**各自**於名字後標「（候補）」
+ * （例「已報名：陳小姐、張先生（候補）」）。無 mention。
  */
 export function formatBatchSummary(items: readonly BatchSummaryItem[]): MessageDescriptor {
-  const lines = items.map((it) =>
-    it.kind === 'signup'
-      ? it.waitlisted
-        ? `已報名：${it.subjectDisplayName}（候補）`
-        : `已報名：${it.subjectDisplayName}`
-      : `已取消：${it.subjectDisplayName}`,
-  );
+  const signups: string[] = [];
+  const cancels: string[] = [];
+  for (const it of items) {
+    if (it.kind === 'signup') {
+      signups.push(it.waitlisted ? `${it.subjectDisplayName}（候補）` : it.subjectDisplayName);
+    } else {
+      cancels.push(it.subjectDisplayName);
+    }
+  }
+  const lines: string[] = [];
+  if (signups.length > 0) lines.push(`已報名：${signups.join('、')}`);
+  if (cancels.length > 0) lines.push(`已取消：${cancels.join('、')}`);
   return { text: lines.join('\n'), mentionees: [] };
 }
 

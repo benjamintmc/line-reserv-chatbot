@@ -191,7 +191,7 @@ describe('EventService 授權簡化（D-006）', () => {
   it('[D-006 AC-10] confirm/abort 不受授權影響：無流程 → noop、不 mark', async () => {
     const svc = makeSvc(t, []);
     const c = await svc.confirm({ groupId: G, executorLineUserId: 'U-any', messageId: 'n1', hostDisplayName: '' });
-    const a = await svc.abort({ executorLineUserId: 'U-any', messageId: 'n2' });
+    const a = await svc.abort({ groupId: G, executorLineUserId: 'U-any', messageId: 'n2' });
     expect(c.kind).toBe('noop');
     expect(a.kind).toBe('noop');
     expect(await t.processed.has('n1')).toBe(false);

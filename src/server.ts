@@ -65,6 +65,7 @@ export function buildHandler(): WebhookHandler {
     users,
     registrations,
     conversations,
+    processed,
     runInTransaction,
   });
   return createWebhookHandler({

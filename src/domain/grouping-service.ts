@@ -7,11 +7,18 @@
 // 授權（errata 2026-08-17，取代裁決 #4 canManageEvent）：**僅該 event 的 host_user_id**、排除 super-admin。
 //
 // 嚴禁 any。rng 可注入（預設 Math.random），供測試以固定 seed 重現。
+//
+// errata 2026-08-18（T-018 review B1/B2）：
+//   B1 `下一輪` 跨群——session PK 為 line_user_id（跨群唯一），必須比對 `conv.group_id` 才回該輪，
+//      否則主辦在別群輸入 `下一輪` 會外洩他群凍結名單的人名。
+//   B2 策略A 未去重——`partitionBalanced` 吃 rng，webhook 重送會重算出不同分組並二次回覆；
+//      改沿用唯讀指令 `名單` 的去重政策（交易外 markProcessed → `duplicate`）。
 
 import type { EventReader } from '../db/repositories/event-repository';
 import type { RegistrationReader } from '../db/repositories/registration-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
+import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
 import type { TransactionRunner } from '../db/tx';
 import type { EventRow } from '../db/schema';
 import { buildRoster } from './roster';
@@ -26,13 +33,20 @@ import {
   type Round,
 } from './grouping';
 
-const GROUPING_STATE = 'grouping';
+/**
+ * 分組 session 的 conversation_states.state 標記（與開團問答共用同一列，互斥）。
+ * **單一來源**：event-service 需辨識「被覆寫的前一段流程是分組」時亦 import 此常數，
+ * 勿在其他檔案重寫字面值（design-reviewer nit，2026-08-18）。
+ */
+export const GROUPING_STATE = 'grouping';
 
 export interface GroupingServiceDeps {
   events: EventReader;
   users: UserRepository;
   registrations: RegistrationReader;
   conversations: ConversationReader;
+  /** 唯讀去重（策略A）：沿用 D-003 §5「名單」政策，交易外 markProcessed（無資料副作用）。 */
+  processed: ProcessedEventRepository;
   runInTransaction: TransactionRunner;
   rng?: RandomFn;
 }
@@ -48,6 +62,8 @@ export interface StartRoundsInput extends BalancedInput {
   mode: GroupMode;
 }
 export interface NextRoundInput {
+  /** 來源群（B1 修正）：session 以 line_user_id 為 PK（跨群唯一），必須比對 `conv.group_id`。 */
+  groupId: string;
   executorLineUserId: string;
   messageId: string;
 }
@@ -55,6 +71,7 @@ export interface NextRoundInput {
 export type BalancedResult =
   | { kind: 'no_open_event' }
   | { kind: 'not_authorized' }
+  | { kind: 'duplicate' }
   | { kind: 'balanced'; result: PartitionResult };
 
 export type StartRoundsResult =
@@ -75,6 +92,7 @@ export class GroupingService {
   private readonly users: UserRepository;
   private readonly registrations: RegistrationReader;
   private readonly conversations: ConversationReader;
+  private readonly processed: ProcessedEventRepository;
   private readonly tx: TransactionRunner;
   private readonly rng: RandomFn;
 
@@ -83,6 +101,7 @@ export class GroupingService {
     this.users = deps.users;
     this.registrations = deps.registrations;
     this.conversations = deps.conversations;
+    this.processed = deps.processed;
     this.tx = deps.runInTransaction;
     this.rng = deps.rng ?? Math.random;
   }
@@ -102,8 +121,15 @@ export class GroupingService {
     return buildRoster(rows).map((e) => e.label);
   }
 
-  /** 策略A（均分）：唯讀、一次分完、不寫 session。 */
+  /**
+   * 策略A（均分）：唯讀、一次分完、不寫 session。
+   *
+   * B2 修正（去重）：`partitionBalanced` 吃 rng，重送同一 webhook 會重算出**不同分組**並二次回覆。
+   * 沿用唯讀指令 `名單` 的既有去重政策（D-003 §5 / `getListView`）：**交易外** markProcessed 作首步，
+   * 重送 → `duplicate`（handler 回 `[]`，不回覆）。不新增第四種去重變體。
+   */
   async groupBalanced(input: BalancedInput): Promise<BalancedResult> {
+    if (!(await this.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
     const active = await this.events.findActiveByGroup(input.groupId);
     if (active === undefined) return { kind: 'no_open_event' };
     if (!(await this.isHost(active, input.executorLineUserId))) {
@@ -142,14 +168,19 @@ export class GroupingService {
 
   /**
    * `下一輪`：讀 grouping session → 產下一輪 → 寫回；無 session/達上限有對應結果。
-   * **host-only 天然成立**：session 以主辦 line_user_id 為主鍵，只有啟動分組的主辦人自己的
-   * 訊息能讀到其 `grouping` session（非主辦——含 super-admin——查無 session → no_session）。
+   *
+   * **host-only 只保證「同一人」，不保證「同一群」**（B1 修正，2026-08-18）：session 以
+   * line_user_id 為主鍵（跨群唯一），只有啟動分組的主辦人自己的訊息能讀到其 `grouping` session
+   * （非主辦——含 super-admin——查無 session → no_session）；但同一主辦在**別群**輸入 `下一輪`
+   * 會讀到他群的凍結名單並外洩人名，故此處**必須**再比對 `conv.group_id === input.groupId`，
+   * 不同群一律 `no_session`（不推進輪次、不寫回、不 mark）。
    */
   async nextRound(input: NextRoundInput): Promise<NextRoundResult> {
     const conv = await this.conversations.get(input.executorLineUserId);
     if (conv === undefined || conv.state !== GROUPING_STATE || conv.payload === null) {
       return { kind: 'no_session' };
     }
+    if (conv.group_id !== input.groupId) return { kind: 'no_session' }; // B1：跨群不得讀他群 session
     const state = JSON.parse(conv.payload) as GroupingState;
     const advanced = nextRoundPure(state, this.rng);
     if (advanced.kind === 'exhausted') return { kind: 'exhausted' };

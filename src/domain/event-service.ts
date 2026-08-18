@@ -19,12 +19,17 @@
 //   - `確認` 建立前以 taipeiToUtcIso 合併 draft.date/time → event_datetime（UTC，§3）。
 //   - close/cancel 遇過期 open → no_active（不 flip，OP-7/G5）；closed 已釋放 → 不再由 findActiveByGroup 返回。
 //
+// D-004 errata（跨群語意，2026-08-18）：`conversation_states` PK 為 line_user_id（跨群唯一），故
+// continueFlow/confirm/abort 皆先比對 `conv.group_id === input.groupId`，不同群一律 noop
+// （別群訊息不被當流程答案、不建立活動、不放棄流程）。handler 亦於攔截處同步比對。
+//
 // 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測。
 // 嚴禁 any（D-006 G4）；不得出現 SQL 字串或直接存取 db（D-006 G4）——一律經 repository / tx runner。
 // super-admin 集合只認注入的 superAdminUserIds、不讀環境變數（由 server.ts 注入，D-006 G3）。
 
 import { parseCommand } from '../commands';
-import type { EventRow, PriceMode } from '../db/schema';
+import type { ConversationStateRow, EventRow, PriceMode } from '../db/schema';
+import { GROUPING_STATE } from './grouping-service';
 import type { EventReader } from '../db/repositories/event-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
@@ -45,12 +50,19 @@ import {
 
 // ── 結果物件型別（D-004 §7.1 / D-006 §2；嚴禁 any） ─────────────────────
 
+/**
+ * 被新流程覆寫掉的「前一段未完成流程」種類（D-004 errata 跨群，2026-08-18）。
+ * `conversation_states` PK 為 line_user_id ⇒ 一人同時只有一段流程；開新流程必然覆寫舊列。
+ * **刻意不帶來源群資訊**：回覆若能讓讀者判斷前一段流程在哪一群，等同洩漏他群活動的存在。
+ */
+export type AbandonedKind = 'create' | 'grouping';
+
 /** `開團`（一行式 / 逐步）入口結果。D-006：開團全開，移除 not_authorized。 */
 export type CreateEntryResult =
   | { kind: 'already_active'; event: EventRow }
   | { kind: 'duplicate' }
-  | { kind: 'flow_started'; state: CreateState }
-  | { kind: 'awaiting_confirm'; draft: CreateEventDraft };
+  | { kind: 'flow_started'; state: CreateState; abandoned?: AbandonedKind }
+  | { kind: 'awaiting_confirm'; draft: CreateEventDraft; abandoned?: AbandonedKind };
 
 /** 一行式格式畸形（invalid create_event）結果。D-006：開團全開，收斂為單一 format_help。 */
 export type InvalidOnelineResult = { kind: 'format_help' };
@@ -138,6 +150,8 @@ export interface ConfirmInput {
 }
 
 export interface AbortInput {
+  /** D-004 errata（跨群語意）：只放棄**同一來源群**的進行中流程；別群的 `取消` 一律 noop。 */
+  groupId: string;
   executorLineUserId: string;
   messageId: string;
 }
@@ -202,6 +216,27 @@ export class EventService {
     return canManageEventAuthz(this.users, this.superAdmins, event, executorLineUserId);
   }
 
+  /**
+   * 判定「即將被新流程覆寫的前一段流程」種類（D-004 errata 跨群，2026-08-18）。
+   *
+   * 背景：跨群守衛使一條原本不可達的路徑變成可達——修正前，在別群輸入 `開團` 會被 handler
+   * 攔截成原群當前欄位的答案（格式錯→重問），draft 不會被覆寫；修正後不再攔截，`startCreation`
+   * 無條件 upsert（PK=line_user_id）會**靜默**吃掉舊列，使用者回原群作答則因 `unknown` 而無回覆
+   * （＝D-004 §3.3 刻意消除過的靜默死角）。故此處偵測並由 handler 附一句告知，消除「靜默」。
+   *
+   * **必於交易內以 client-bound repos 讀取**（與隨後的 upsert 同連線，避免 TOCTOU）。
+   * 同群 create 流程回 undefined：該情形 handler 已攔截為流程答案，走不到這裡。
+   */
+  private detectAbandoned(
+    prev: ConversationStateRow | undefined,
+    groupId: string,
+  ): AbandonedKind | undefined {
+    if (prev === undefined) return undefined;
+    if (prev.state === GROUPING_STATE) return 'grouping'; // 分組 session 被覆寫（同群/別群皆可達）
+    if (prev.group_id !== groupId) return 'create'; // 別群未完成的開團流程被覆寫
+    return undefined;
+  }
+
   // ── `開團`（逐步問答入口，§3；D-006 §1.1 開團全開） ──────────────────
   async startCreation(input: StartCreationInput): Promise<CreateEntryResult> {
     // 入口先查（§6 fail fast）：已有**未過期** active（open）→ 拒絕、不寫 conversation。
@@ -213,13 +248,22 @@ export class EventService {
 
     return this.tx<CreateEntryResult>(async (repos) => {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
+      // errata（跨群）：upsert 前先看有無將被覆寫的舊流程，供 handler 附告知句（消除靜默死角）。
+      const abandoned = this.detectAbandoned(
+        await repos.conversations.get(input.executorLineUserId),
+        input.groupId,
+      );
       await repos.conversations.upsert({
         lineUserId: input.executorLineUserId,
         groupId: input.groupId,
         state: FIRST_STATE,
         payload: serializeDraft({}),
       });
-      return { kind: 'flow_started', state: FIRST_STATE };
+      return {
+        kind: 'flow_started',
+        state: FIRST_STATE,
+        ...(abandoned !== undefined ? { abandoned } : {}),
+      };
     });
   }
 
@@ -242,13 +286,22 @@ export class EventService {
 
     return this.tx<CreateEntryResult>(async (repos) => {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
+      // errata（跨群）：同 startCreation——一行式亦會覆寫舊列，須告知。
+      const abandoned = this.detectAbandoned(
+        await repos.conversations.get(input.executorLineUserId),
+        input.groupId,
+      );
       await repos.conversations.upsert({
         lineUserId: input.executorLineUserId,
         groupId: input.groupId,
         state: 'awaiting_confirm',
         payload: serializeDraft(draft),
       });
-      return { kind: 'awaiting_confirm', draft };
+      return {
+        kind: 'awaiting_confirm',
+        draft,
+        ...(abandoned !== undefined ? { abandoned } : {}),
+      };
     });
   }
 
@@ -262,12 +315,16 @@ export class EventService {
   async continueFlow(input: ContinueFlowInput): Promise<ContinueFlowResult> {
     const conv = await this.conversations.get(input.executorLineUserId);
     if (conv === undefined) return { kind: 'noop' }; // 安全網（handler 已先攔截存在者）
+    // D-004 errata（跨群語意，2026-08-18）：conversation_states 以 line_user_id 為 PK（跨群唯一），
+    // 只有**流程發生的那個群**的訊息才是流程答案；別群訊息 → noop（不前進、不寫、不 mark）。
+    if (conv.group_id !== input.groupId) return { kind: 'noop' };
 
     const cmd = parseCommand(input.text);
 
     // `取消`（abort）：任一 state 皆放棄流程（§3.4）。
     if (cmd.type === 'abort') {
       const r = await this.abort({
+        groupId: input.groupId,
         executorLineUserId: input.executorLineUserId,
         messageId: input.messageId,
       });
@@ -323,6 +380,8 @@ export class EventService {
   async confirm(input: ConfirmInput): Promise<ConfirmResult> {
     const conv = await this.conversations.get(input.executorLineUserId);
     if (conv === undefined || conv.state !== 'awaiting_confirm') return { kind: 'noop' };
+    // D-004 errata（跨群語意）：draft 屬於 conv.group_id 那一群，**不得**因別群的 `確認` 而在別群建立活動。
+    if (conv.group_id !== input.groupId) return { kind: 'noop' };
     const draft = parseDraft(conv.payload);
     if (!isComplete(draft)) return { kind: 'noop' }; // 欄位不齊不建立（AC-20）
 
@@ -393,6 +452,8 @@ export class EventService {
   async abort(input: AbortInput): Promise<AbortResult> {
     const conv = await this.conversations.get(input.executorLineUserId);
     if (conv === undefined) return { kind: 'noop' }; // 無流程 → 靜默 no-op（G9）
+    // D-004 errata（跨群語意）：別群的 `取消` 不得放棄本人在他群的流程 → 靜默 noop。
+    if (conv.group_id !== input.groupId) return { kind: 'noop' };
 
     return this.tx<AbortResult>(async (repos) => {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };

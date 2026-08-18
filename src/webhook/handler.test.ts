@@ -13,6 +13,7 @@ function makeGroupingSvc(t: TestDb): GroupingService {
     users: t.users,
     registrations: t.registrations,
     conversations: t.conversations,
+    processed: t.processed,
     runInTransaction: t.runInTransaction,
   });
 }
@@ -195,5 +196,62 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const second = await handler.handleEvent(groupTextEvent('名單', { messageId: 'ml' }));
     expect(first).toHaveLength(1);
     expect(second).toEqual([]);
+  });
+  // ── D-011 errata 2026-08-18（T-018 review B1/B2）：分組接線 ────────────────
+  it('[D-011 AC-24 errata 去重] 分組（策略A）重送相同 message_id → 第二次回空（不重算、不二次回覆）', async () => {
+    const { event, host } = await seedEvent(t, { capacity: 8, groupId: 'G', hostLineId: 'U-host' });
+    for (const name of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+      await t.registrations.insertSlot({
+        eventId: event.id,
+        ownerUserId: host.id,
+        displayName: name,
+        kind: 'proxy',
+        status: 'confirmed',
+      });
+    }
+    const handler = makeHandler(t, { profile: profileReturning('主辦人') });
+    const first = await handler.handleEvent(
+      groupTextEvent('分組', { userId: 'U-host', messageId: 'gp' }),
+    );
+    expect(first).toHaveLength(1);
+    expect((first[0] as messagingApi.TextMessage).text).toContain('第 1 組：');
+
+    const second = await handler.handleEvent(
+      groupTextEvent('分組', { userId: 'U-host', messageId: 'gp' }),
+    );
+    expect(second).toEqual([]); // 重送不再回覆（避免第二份不同分組）
+  });
+
+  it('[D-011 AC-23 errata 跨群] A 群開分組後於 B 群「下一輪」→ 回「沒有進行中的分組」、不外洩 A 群名單', async () => {
+    const { event, host } = await seedEvent(t, { capacity: 8, groupId: 'G', hostLineId: 'U-host' });
+    for (const name of ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛']) {
+      await t.registrations.insertSlot({
+        eventId: event.id,
+        ownerUserId: host.id,
+        displayName: name,
+        kind: 'proxy',
+        status: 'confirmed',
+      });
+    }
+    const handler = makeHandler(t, { profile: profileReturning('主辦人') });
+    const started = await handler.handleEvent(
+      groupTextEvent('分組 2場', { userId: 'U-host', messageId: 'gr1' }),
+    );
+    expect((started[0] as messagingApi.TextMessage).text).toContain('第 1 輪');
+
+    const crossOut = await handler.handleEvent(
+      groupTextEvent('下一輪', { userId: 'U-host', messageId: 'gr2', groupId: 'G-B' }),
+    );
+    const crossText = (crossOut[0] as messagingApi.TextMessage).text;
+    expect(crossText).toContain('目前沒有進行中的分組');
+    for (const name of ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛']) {
+      expect(crossText).not.toContain(name); // A 群凍結名單零外洩
+    }
+
+    // 回 A 群 `下一輪` → 正常第 2 輪。
+    const aOut = await handler.handleEvent(
+      groupTextEvent('下一輪', { userId: 'U-host', messageId: 'gr3' }),
+    );
+    expect((aOut[0] as messagingApi.TextMessage).text).toContain('第 2 輪');
   });
 });
