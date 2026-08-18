@@ -74,7 +74,7 @@ async function seedConfirmable(t: TestDb, userId: string): Promise<void> {
     groupId: G,
     state: 'awaiting_confirm',
     payload: JSON.stringify({
-      date: '2026-08-15',
+      date: '2999-08-15',
       time: '07:30',
       location: '東方球場',
       capacity: 16,
@@ -266,21 +266,21 @@ describe('D-008 單場名額自動釋放', () => {
   });
 
   it('[D-008 AC-7] event_datetime 存 UTC + 過期判定跨午夜邊界（純轉換）', () => {
-    // 台灣 2026-08-15 07:30 → UTC 2026-08-14T23:30:00Z（跨 UTC 日界）。
-    expect(taipeiToUtcIso('2026-08-15', '07:30')).toBe('2026-08-14T23:30:00Z');
-    // 跨台灣午夜：2026-08-15 00:30 → 2026-08-14T16:30:00Z。
-    expect(taipeiToUtcIso('2026-08-15', '00:30')).toBe('2026-08-14T16:30:00Z');
+    // 台灣 2999-08-15 07:30 → UTC 2999-08-14T23:30:00Z（跨 UTC 日界）。
+    expect(taipeiToUtcIso('2999-08-15', '07:30')).toBe('2999-08-14T23:30:00Z');
+    // 跨台灣午夜：2999-08-15 00:30 → 2999-08-14T16:30:00Z。
+    expect(taipeiToUtcIso('2999-08-15', '00:30')).toBe('2999-08-14T16:30:00Z');
     // 過期判定：字串比較（now > event_datetime）。
-    const store = '2026-08-14T23:30:00Z';
-    expect('2026-08-14T23:29:00Z' > store).toBe(false); // 未過期
-    expect('2026-08-14T23:31:00Z' > store).toBe(true); // 過期
+    const store = '2999-08-14T23:30:00Z';
+    expect('2999-08-14T23:29:00Z' > store).toBe(false); // 未過期
+    expect('2999-08-14T23:31:00Z' > store).toBe(true); // 過期
   });
 
   it('[D-008 AC-10] 顯示時區還原一致（UTC → 台灣本地 = 輸入字面）', async () => {
-    expect(utcIsoToTaipei('2026-08-14T23:30:00Z')).toEqual({ date: '2026-08-15', time: '07:30' });
+    expect(utcIsoToTaipei('2999-08-14T23:30:00Z')).toEqual({ date: '2999-08-15', time: '07:30' });
     // 開團公告以 event_datetime 還原顯示。
-    const ev = await createEvent(t, { eventDatetime: '2026-08-14T23:30:00Z', status: 'open' });
-    expect(formatOpenAnnouncement(ev).text).toContain('日期：2026-08-15 07:30');
+    const ev = await createEvent(t, { eventDatetime: '2999-08-14T23:30:00Z', status: 'open' });
+    expect(formatOpenAnnouncement(ev).text).toContain('日期：2999-08-15 07:30');
   });
 
   it('[D-008 AC-11] closed 名單顯示報名已截止（closed；字串 pin，最終結算列、無剩餘名額）', async () => {

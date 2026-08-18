@@ -31,7 +31,7 @@ async function seedAwaitingConfirm(t: TestDb): Promise<void> {
     groupId: G,
     state: 'awaiting_confirm',
     payload: JSON.stringify({
-      date: '2026-08-15',
+      date: '2999-08-15',
       time: '07:30',
       location: '東方球場',
       capacity: 16,
@@ -92,7 +92,7 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     const created = await t.events.create({
       groupId: G,
       hostUserId: host.id,
-      eventDatetime: '2026-08-14T23:30:00Z',
+      eventDatetime: '2999-08-14T23:30:00Z',
       location: '東方球場',
       capacity: 16,
       status: 'open',

@@ -5,7 +5,7 @@ import { EventRepository } from '../db/repositories/event-repository';
 
 const HOST = 'U-host';
 const G = 'G-1';
-// D-008：一行式 2026-08-15 07:30（台灣本地）→ UTC 2026-08-14T23:30:00Z（跨日界，AC-7）。
+// D-008：一行式 2999-08-15 07:30（台灣本地）→ UTC 2999-08-14T23:30:00Z（跨日界，AC-7）。
 const FUTURE_DATETIME = '2999-01-01T00:00:00Z'; // 直接 create 用（未過期）
 
 function makeSvc(t: TestDb, hostIds: string[] = [HOST]): EventService {
@@ -32,7 +32,7 @@ function nextMid(): string {
  */
 async function walkToConfirm(svc: EventService, userId = HOST): Promise<void> {
   await svc.startCreation({ groupId: G, executorLineUserId: userId, messageId: nextMid() });
-  for (const text of ['2026/08/15', '07:30', '東方球場', '16', '2200']) {
+  for (const text of ['2999/08/15', '07:30', '東方球場', '16', '2200']) {
     await svc.continueFlow({
       groupId: G,
       executorLineUserId: userId,
@@ -58,7 +58,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
       groupId: G,
       executorLineUserId: HOST,
       messageId: 'm1',
-      date: '2026-08-15',
+      date: '2999-08-15',
       time: '07:30',
       location: '東方球場',
       capacity: 16,
@@ -73,8 +73,8 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(r2.kind).toBe('created');
     if (r2.kind !== 'created') return;
     expect(r2.event.status).toBe('open');
-    // D-008 §3：台灣本地 2026-08-15 07:30 → UTC 2026-08-14T23:30:00Z（跨日界）。
-    expect(r2.event.event_datetime).toBe('2026-08-14T23:30:00Z');
+    // D-008 §3：台灣本地 2999-08-15 07:30 → UTC 2999-08-14T23:30:00Z（跨日界）。
+    expect(r2.event.event_datetime).toBe('2999-08-14T23:30:00Z');
     expect(r2.event.location).toBe('東方球場');
     expect(r2.event.capacity).toBe(16);
     expect(r2.event.price_per_person).toBe(2200);
@@ -89,7 +89,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     if (start.kind === 'flow_started') expect(start.state).toBe('awaiting_date');
 
     const seq: Array<[string, string, string]> = [
-      ['2026/08/15', 's1', 'awaiting_time'],
+      ['2999/08/15', 's1', 'awaiting_time'],
       ['07:30', 's2', 'awaiting_location'],
       ['東方球場', 's3', 'awaiting_capacity'],
       ['16', 's4', 'awaiting_fee'],
@@ -105,7 +105,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const done = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's7', text: '確認', hostDisplayName: '主辦人' });
     expect(done.kind).toBe('created');
     if (done.kind !== 'created') return;
-    expect(done.event.event_datetime).toBe('2026-08-14T23:30:00Z');
+    expect(done.event.event_datetime).toBe('2999-08-14T23:30:00Z');
     expect(done.event.location).toBe('東方球場');
     expect(done.event.capacity).toBe(16);
     expect(done.event.price_per_person).toBe(2200);
@@ -121,14 +121,14 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect((await t.conversations.get(HOST))?.state).toBe('awaiting_date');
     expect(JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}').date).toBeUndefined();
 
-    const good = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '2026/08/15', hostDisplayName: '主辦人' });
+    const good = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '2999/08/15', hostDisplayName: '主辦人' });
     expect(good.kind).toBe('advanced');
   });
 
   it('[D-004 AC-5] location 含空白經逐步問答保留', async () => {
     const svc = makeSvc(t);
     await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 's0' });
-    await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's1', text: '2026/08/15', hostDisplayName: '主辦人' });
+    await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's1', text: '2999/08/15', hostDisplayName: '主辦人' });
     await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '07:30', hostDisplayName: '主辦人' });
     const r = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's3', text: '東方 高爾夫球場', hostDisplayName: '主辦人' });
     expect(r.kind).toBe('advanced');
@@ -160,7 +160,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
   it('[D-004 AC-7] abort 任一 state 放棄流程；其後 confirm 無流程 → noop', async () => {
     const svc = makeSvc(t);
     await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 's0' });
-    await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's1', text: '2026/08/15', hostDisplayName: '主辦人' });
+    await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's1', text: '2999/08/15', hostDisplayName: '主辦人' });
     const ab = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '取消', hostDisplayName: '主辦人' });
     expect(ab.kind).toBe('aborted');
     expect(await t.conversations.get(HOST)).toBeUndefined();
@@ -270,7 +270,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
       lineUserId: HOST,
       groupId: G,
       state: 'awaiting_confirm',
-      payload: JSON.stringify({ date: '2026-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person' }),
+      payload: JSON.stringify({ date: '2999-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person' }),
     });
     // 先有一場未過期 open（佔用 ux_events_active_group）。
     const other = await t.users.upsert('U-other', '別人');
@@ -294,7 +294,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
       lineUserId: HOST,
       groupId: G,
       state: 'awaiting_confirm',
-      payload: JSON.stringify({ date: '2026-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person' }),
+      payload: JSON.stringify({ date: '2999-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person' }),
     });
     // 非 23505 的 DB 錯誤（模擬 I/O 例外）；路線 A 下 create 走 client-bound repos → spy prototype。
     const boom = Object.assign(new Error('disk I/O error'), { code: '58030' });
@@ -322,7 +322,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
   it('[D-004 AC-14] 去重：逐步答案相同 message_id 重送 → 不重複推進（不套到下一問）', async () => {
     const svc = makeSvc(t);
     await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 's0' });
-    await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'd', text: '2026/08/15', hostDisplayName: '主辦人' });
+    await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'd', text: '2999/08/15', hostDisplayName: '主辦人' });
     const first = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'tm', text: '07:30', hostDisplayName: '主辦人' });
     expect(first.kind).toBe('advanced'); // → awaiting_location
     expect((await t.conversations.get(HOST))?.state).toBe('awaiting_location');
