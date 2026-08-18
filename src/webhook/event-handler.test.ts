@@ -95,7 +95,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}').date).toBeUndefined();
 
     // host 下一則才是 date 答案 → 前進（D-005 中性化：提問為「請輸入時間」）。
-    const dateOut = await handler.handleEvent(groupTextEvent('2026/08/15', { userId: HOST, messageId: 'h1' }));
+    const dateOut = await handler.handleEvent(groupTextEvent('2999/08/15', { userId: HOST, messageId: 'h1' }));
     expect(textOf(dateOut)).toContain('請輸入時間');
     expect((await t.conversations.get(HOST))?.state).toBe('awaiting_time');
   });
@@ -104,7 +104,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     const handler = makeHandler(t);
     // 一行式 → 確認摘要 (B)。
     const summary = await handler.handleEvent(
-      groupTextEvent('開團 2026/08/15 07:30 東方球場 16人 2200元', { userId: HOST, messageId: 'o1' }),
+      groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { userId: HOST, messageId: 'o1' }),
     );
     expect(textOf(summary)).toContain('請確認開團資訊');
     // 確認 → 開團公告 (D)（走 conversation 攔截 → continueFlow confirm）。
@@ -129,7 +129,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
 
   it('[D-004 AC-8] 關閉報名經 handler → (E) 回覆', async () => {
     const handler = makeHandler(t);
-    await handler.handleEvent(groupTextEvent('開團 2026/08/15 07:30 東方球場 16人 2200元', { messageId: 'o1' }));
+    await handler.handleEvent(groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { messageId: 'o1' }));
     await handler.handleEvent(groupTextEvent('確認', { messageId: 'o2' }));
     const out = await handler.handleEvent(groupTextEvent('關閉報名', { messageId: 'o3' }));
     expect(textOf(out)).toContain('報名已截止');

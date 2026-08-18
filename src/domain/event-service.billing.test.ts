@@ -44,7 +44,7 @@ async function openEvent(
     groupId: G,
     executorLineUserId: HOST,
     messageId: nextMid(),
-    date: '2026-08-15',
+    date: '2999-08-15',
     time: '07:30',
     location: '東方球場',
     capacity: opts.capacity ?? 16,
