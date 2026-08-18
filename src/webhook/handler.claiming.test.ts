@@ -24,7 +24,7 @@ function makeGroupingSvc(t: TestDb): GroupingService {
   });
 }
 
-"function "groupTextEvent(
+function groupTextEvent(
   text: string,
   opts: { userId?: string; messageId?: string; groupId?: string } = {},
 ): WebhookEvent {
