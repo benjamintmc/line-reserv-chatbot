@@ -14,8 +14,8 @@
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
 | T-018 | 分組實作（策略A 均分／策略B 逐輪 `nextRound`＋單打、`分組`/`下一輪` parser、handler + `conversation_states` session、中性組版） | D-011（APPROVED） | R1 | backend-engineer | CODE_DONE／待機器驗證 | src/domain/grouping*.ts, src/commands/, src/webhook/, src/server.ts | 2026-08-17 已 commit 於分支 `feat/D-011-grouping`（4 測試檔、24 AC 標記、無 any）。**靜態審查雙 PASS**（architect：service 分層/session 互斥 OK；design：文案中性 OK）。**待家中機器跑 lint/build/test（docker PG:5433）綠 → 標 DONE**。偏差 grouping-service.ts 審查 PASS。＋2026-08-17 errata：場地名天干→A-Z、`分組`/`下一輪` 改 host-only（排除 super-admin）、新增 `formatGroupNotHost` |
-| T-019 | 加開名額實作（`加開 N` 新增量、鎖內改 capacity + 立即遞補、host∪super-admin 授權、單則公告+遞補、新原語 `updateCapacity`） | D-010（APPROVED） | R2 | backend-engineer | IN_PROGRESS | src/domain/registration-service.ts, src/commands/, src/webhook/, src/db/ | 2026-08-17 派工。複用 T-015 promotionQuota 鎖內重算；實作後待家測 + R2 雙審 |
-| T-020 | 多行批次報名實作（handler 拆行、逐行 +N/-N、複合去重鍵 `message.id#行號`、一次 reply≤5則合併、上限20整則拒絕） | D-012（APPROVED） | R1 | backend-engineer | IN_PROGRESS | src/webhook/handler.ts, src/domain/ | 2026-08-17 派工。不動 registration-service 核心；實作後待家測 + design-reviewer |
+| T-019 | 加開名額實作（`加開 N`、鎖內改 capacity + 立即遞補、authz 抽取、`updateCapacity`） | D-010（APPROVED） | R2 | backend-engineer | CODE_DONE／待家測 | src/domain/{registration-service,authz,event-service,list-formatter}.ts, src/commands/, src/webhook/, src/db/, src/server.ts | 2026-08-17 committed（分支）。抽 `authz.ts`＋event-service 委派、`cancel()` 抽 `promoteWithinLock` 與加開共用（宣稱等價，凍結區 tx 未動）。**待家測全綠 + R2 雙審**（盯：既有 signup/cancel 零回歸）。AC-1..8 |
+| T-020 | 多行批次報名實作（handler 拆 dispatchSingle/handleBatch、複合去重鍵、合併回覆、上限整則拒絕） | D-012（APPROVED） | R1 | backend-engineer | CODE_DONE／待家測 | src/webhook/handler.ts, src/domain/list-formatter.ts | 2026-08-17 committed（分支）。不動 registration-service 核心（G3）。**待家測全綠 + design-reviewer**。AC-1..9。邊界：尾端換行單行走批次（待家測確認） |
 
 ## M5 部署（Cloud Run + Neon PG）任務
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
