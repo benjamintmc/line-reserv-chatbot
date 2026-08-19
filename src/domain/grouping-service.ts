@@ -9,8 +9,9 @@
 // 嚴禁 any。rng 可注入（預設 Math.random），供測試以固定 seed 重現。
 //
 // errata 2026-08-18（T-018 review B1/B2）：
-//   B1 `下一輪` 跨群——session PK 為 line_user_id（跨群唯一），必須比對 `conv.group_id` 才回該輪，
-//      否則主辦在別群輸入 `下一輪` 會外洩他群凍結名單的人名。
+//   B1 `下一輪` 跨群——必須比對 `conv.group_id` 才回該輪，否則主辦在別群輸入 `下一輪`
+//      會外洩他群凍結名單的人名。（D-013 T-022：session 鍵已改為 `(group_id, line_user_id)`，
+//      跨群不可讀由結構保證；該比對依 G3 保留為縱深防禦與回歸錨點。）
 //   B2 策略A 未去重——`partitionBalanced` 吃 rng，webhook 重送會重算出不同分組並二次回覆；
 //      改沿用唯讀指令 `名單` 的去重政策（交易外 markProcessed → `duplicate`）。
 
@@ -62,7 +63,7 @@ export interface StartRoundsInput extends BalancedInput {
   mode: GroupMode;
 }
 export interface NextRoundInput {
-  /** 來源群（B1 修正）：session 以 line_user_id 為 PK（跨群唯一），必須比對 `conv.group_id`。 */
+  /** 來源群。D-013：session 鍵為 `(group_id, line_user_id)`，本欄即**查詢鍵**（原僅供 B1 守衛比對）。 */
   groupId: string;
   executorLineUserId: string;
   messageId: string;
@@ -169,14 +170,16 @@ export class GroupingService {
   /**
    * `下一輪`：讀 grouping session → 產下一輪 → 寫回；無 session/達上限有對應結果。
    *
-   * **host-only 只保證「同一人」，不保證「同一群」**（B1 修正，2026-08-18）：session 以
-   * line_user_id 為主鍵（跨群唯一），只有啟動分組的主辦人自己的訊息能讀到其 `grouping` session
-   * （非主辦——含 super-admin——查無 session → no_session）；但同一主辦在**別群**輸入 `下一輪`
-   * 會讀到他群的凍結名單並外洩人名，故此處**必須**再比對 `conv.group_id === input.groupId`，
-   * 不同群一律 `no_session`（不推進輪次、不寫回、不 mark）。
+   * **host-only 只保證「同一人」，不保證「同一群」**（B1 修正，2026-08-18）：只有啟動分組的
+   * 主辦人自己的訊息能讀到其 `grouping` session（非主辦——含 super-admin——查無 session → no_session）；
+   * 同一主辦在**別群**輸入 `下一輪` 不得讀到他群的凍結名單，一律 `no_session`
+   * （不推進輪次、不寫回、不 mark）。
+   *
+   * **D-013**：session 鍵已含 group_id ⇒ 別群查詢**結構上**撈不到他群 session；
+   * 下方 `conv.group_id !== input.groupId` 因而恆為 false，仍依 G3 保留為縱深防禦與回歸錨點。
    */
   async nextRound(input: NextRoundInput): Promise<NextRoundResult> {
-    const conv = await this.conversations.get(input.executorLineUserId);
+    const conv = await this.conversations.get(input.groupId, input.executorLineUserId);
     if (conv === undefined || conv.state !== GROUPING_STATE || conv.payload === null) {
       return { kind: 'no_session' };
     }

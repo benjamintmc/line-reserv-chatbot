@@ -146,7 +146,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     if (r1.kind !== 'round') throw new Error('expected round');
     expect(r1.round.round).toBe(1);
 
-    const conv = await t.conversations.get(HOST);
+    const conv = await t.conversations.get(G, HOST);
     expect(conv?.state).toBe('grouping');
     const state = JSON.parse(conv!.payload!) as GroupingState;
     expect(state.round).toBe(1);
@@ -169,7 +169,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
       messageId: 'g1',
     });
     expect(balanced.kind).toBe('balanced');
-    expect(await t.conversations.get(HOST)).toBeUndefined(); // 策略A 不寫 session
+    expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 策略A 不寫 session
 
     const next = await svc.nextRound({ groupId: G, executorLineUserId: HOST, messageId: 'g2' });
     expect(next.kind).toBe('no_session');
@@ -204,7 +204,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     expect(await t.processed.has('g2')).toBe(false); // 不 mark、無副作用
 
     // A 群 session 未被推進（仍停在第 1 輪）。
-    const state = JSON.parse((await t.conversations.get(HOST))!.payload!) as GroupingState;
+    const state = JSON.parse((await t.conversations.get(G, HOST))!.payload!) as GroupingState;
     expect(state.round).toBe(1);
 
     // 回 A 群 `下一輪` → 正常第 2 輪。
@@ -225,6 +225,6 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
 
     const resend = await svc.groupBalanced({ groupId: G, executorLineUserId: HOST, messageId: 'm1' });
     expect(resend.kind).toBe('duplicate'); // 重送不重骰、不回覆
-    expect(await t.conversations.get(HOST)).toBeUndefined(); // 策略A 仍不寫 session
+    expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 策略A 仍不寫 session
   });
 });

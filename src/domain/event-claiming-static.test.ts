@@ -12,9 +12,16 @@ import { join } from 'node:path';
 const SRC = join(__dirname, '..');
 
 describe('D-006 靜態審查（G3 / G4 / G5）', () => {
-  it('[D-006 AC-13] 零 migration：migrations/ 僅 0001/0002，無新增', () => {
+  it('[D-006 AC-13] 零 migration：D-006 本身未新增 migration（清單僅隨他案增長）', () => {
+    // 本 AC 驗的是「D-006 沒有帶 migration」。清單隨後續已 APPROVED 的他案增長：
+    // 0003 = D-008 T-014、0004 = D-013 T-022（conversation 複合 PK）。
     const files = readdirSync(join(SRC, 'db', 'migrations')).filter((f) => f.endsWith('.sql')).sort();
-    expect(files).toEqual(['0001_init.sql', '0002_billing_modes.sql', '0003_merge_event_datetime.sql']);
+    expect(files).toEqual([
+      '0001_init.sql',
+      '0002_billing_modes.sql',
+      '0003_merge_event_datetime.sql',
+      '0004_conversation_scope_pk.sql',
+    ]);
   });
 
   it('[D-006 AC-13] 零新指令：ParsedCommand 無 group_admins/管理人 類新成員（my_id 沿用既有）', () => {

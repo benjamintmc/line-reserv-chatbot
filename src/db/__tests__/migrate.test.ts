@@ -35,11 +35,13 @@ describe('migrate runner + schema 約束（PG）', () => {
       expect(result.skipped).toContain('0002_billing_modes');
       // D-008：新增獨立 0003（合併 event_datetime + 重定義 ux_events_active_group）。
       expect(result.skipped).toContain('0003_merge_event_datetime');
+      // D-013 T-022：0004（conversation_states 改複合 PK）。
+      expect(result.skipped).toContain('0004_conversation_scope_pk');
     } finally {
       client.release();
     }
     const count = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM schema_migrations');
-    expect(Number(count.rows[0]!.n)).toBe(3);
+    expect(Number(count.rows[0]!.n)).toBe(4);
   });
 
   it('[D-007 AC-5] 建表等義：5 表 + schema_migrations 齊備、partial unique index 存在', async () => {

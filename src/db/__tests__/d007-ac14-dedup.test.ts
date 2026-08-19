@@ -31,11 +31,11 @@ describe('D-007 去重等義（PG）', () => {
     await evt.continueFlow({ groupId: G, executorLineUserId: H, messageId: 'd1', text: '2026/08/15', hostDisplayName: 'H' });
     const first = await evt.continueFlow({ groupId: G, executorLineUserId: H, messageId: 'tm', text: '07:30', hostDisplayName: 'H' });
     expect(first.kind).toBe('advanced');
-    const stateAfterFirst = (await t.conversations.get(H))?.state;
+    const stateAfterFirst = (await t.conversations.get(G, H))?.state;
 
     // 重送相同 message_id 'tm' → 去重（不把 '07:30' 誤當下一題答案）。
     const resend = await evt.continueFlow({ groupId: G, executorLineUserId: H, messageId: 'tm', text: '07:30', hostDisplayName: 'H' });
     expect(resend.kind).toBe('duplicate');
-    expect((await t.conversations.get(H))?.state).toBe(stateAfterFirst); // 未再前進
+    expect((await t.conversations.get(G, H))?.state).toBe(stateAfterFirst); // 未再前進
   });
 });

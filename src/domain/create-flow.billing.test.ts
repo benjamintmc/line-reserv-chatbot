@@ -49,7 +49,7 @@ describe('create-flow 單題計費（D-005 §6.2 修訂）', () => {
     await walkToFee(svc);
     const fee = await step(svc, '場地費3000');
     expect(fee.kind).toBe('awaiting_confirm');
-    const payload = JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}');
+    const payload = JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}');
     expect(payload.priceMode).toBe('split_venue');
     expect(payload.venueFee).toBe(3000);
     expect(payload.price).toBe(0);
@@ -66,7 +66,7 @@ describe('create-flow 單題計費（D-005 §6.2 修訂）', () => {
     await walkToFee(svc);
     const fee = await step(svc, '場地費 3000');
     expect(fee.kind).toBe('awaiting_confirm');
-    const payload = JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}');
+    const payload = JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}');
     expect(payload.priceMode).toBe('split_venue');
     expect(payload.venueFee).toBe(3000);
   });
@@ -88,7 +88,7 @@ describe('create-flow 單題計費（D-005 §6.2 修訂）', () => {
     const svc = makeSvc(t);
     await walkToFee(svc);
     expect((await step(svc, '每人2200')).kind).toBe('awaiting_confirm');
-    const payload = JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}');
+    const payload = JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}');
     expect(payload.priceMode).toBe('per_person');
     expect(payload.price).toBe(2200);
   });
@@ -99,11 +99,11 @@ describe('create-flow 單題計費（D-005 §6.2 修訂）', () => {
     const bad1 = await step(svc, 'abc');
     expect(bad1.kind).toBe('field_error');
     if (bad1.kind === 'field_error') expect(bad1.state).toBe('awaiting_fee');
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_fee');
-    expect(JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}').priceMode).toBeUndefined();
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_fee');
+    expect(JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}').priceMode).toBeUndefined();
     // 場地費 0 → 無效（>0）停留。
     expect((await step(svc, '場地費0')).kind).toBe('field_error');
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_fee');
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_fee');
     // 合法「場地費3000」→ 前進。
     const ok = await step(svc, '場地費3000');
     expect(ok.kind).toBe('awaiting_confirm');

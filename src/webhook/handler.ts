@@ -346,7 +346,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         const base = formatFlowPrompt(result.state);
         return [
           toLineMessage(
-            result.abandoned !== undefined ? withAbandonedNotice(result.abandoned, base) : base,
+            result.abandoned === 'grouping' ? withAbandonedNotice(base) : base,
           ),
         ];
       }
@@ -355,7 +355,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         const base = formatConfirmSummary(result.draft);
         return [
           toLineMessage(
-            result.abandoned !== undefined ? withAbandonedNotice(result.abandoned, base) : base,
+            result.abandoned === 'grouping' ? withAbandonedNotice(base) : base,
           ),
         ];
       }
@@ -775,14 +775,16 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
 
     // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
     // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。
-    // **D-004 errata（跨群語意，2026-08-18）**：conversation_states 以 line_user_id 為 PK（跨群唯一），
-    // 故攔截**必須**再比對來源群：`conv.group_id === groupId` 才視為流程答案；
-    // 同一人在**別群**的發言不攔截，照走一般 dispatch（`+1`/`名單`/雜訊靜默各自正常），
-    // 且原群那段流程原封保留（不前進、不放棄）。domain 層另有同義防線（continueFlow/confirm/abort）。
+    // **D-004 errata（跨群語意，2026-08-18）**：攔截**必須**比對來源群——同一人在**別群**的發言
+    // 不攔截，照走一般 dispatch（`+1`/`名單`/雜訊靜默各自正常），且原群那段流程原封保留
+    // （不前進、不放棄）。domain 層另有同義防線（continueFlow/confirm/abort）。
+    // **D-013 T-022**：conversation 以 `(group_id, line_user_id)` 為 PK，此處以 `(groupId, userId)`
+    // 為查詢鍵 ⇒ 只可能撈到本群那一列；`conv.group_id === groupId` 因而恆成立，依 G3 保留為
+    // 縱深防禦與回歸錨點。同一人在多群可各有一段流程，彼此並行不互相覆寫。
     // D-011：grouping session（state='grouping'）**不**在此攔截——它不吞任意訊息，
     // 交由 parseCommand 讓 `下一輪`（及其他指令）正常分派（AC-24 已知取捨：開團與分組 session 互斥）。
     // D-012：conversation 攔截優先於拆行——進行中開團流程仍以整段 text 走 continueFlow（批次不介入流程答案）。
-    const conv = await deps.conversations.get(userId);
+    const conv = await deps.conversations.get(groupId, userId);
     if (conv !== undefined && conv.state !== 'grouping' && conv.group_id === groupId) {
       const hostDisplayName = await resolveDisplayName(groupId, userId);
       const result = await deps.eventService.continueFlow({

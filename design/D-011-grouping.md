@@ -30,6 +30,10 @@
 - **`下一輪`**（新指令）→ 產生**下一輪**、避開**先前所有輪**的隊友/對手並延續輪空累計公平，只回該輪；無進行中 session → 中文提示「目前沒有進行中的分組，請先『分組 …』」；已達 `{R}輪` 上限 → 回「已達輪數上限」。授權 **host-only**（session 以主辦 `line_user_id` 為主鍵，非主辦含 super-admin 查無 session）。策略A 一次分完、**無 `下一輪`**。
 - **狀態暫存**：復用既有 `conversation_states`（主辦 `line_user_id` 為鍵）經 `conversation-repository`，`state` 標記 `grouping`（與開團問答互斥、不衝突）；`payload`(JSON) 存 mode／M／courtSize／**凍結名單 labels**／歷史（各輪配對＋各人 sit-out 累計）／目前輪序。`下一輪` 讀 payload→算→寫回；**不加欄位/表/migration**。已知取捨：主辦不能同時處於開團問答與分組 session；名單於分組當下凍結。
 
+> **errata（2026-08-19，來源 D-013 T-022；不改本文件 APPROVED 狀態）**：`conversation_states` 的鍵已由 `line_user_id` 改為 **`(group_id, line_user_id)`**（D-013 另案新增 migration 0004；上句「不加欄位/表/migration」僅描述 D-011 當時的交付）。故：
+> - session 以 **`(來源群, 主辦 line_user_id)`** 為鍵；`NextRoundInput.groupId` 由「守衛用」升級為**查詢鍵**，別群 `下一輪` 結構上撈不到他群 session（2026-08-18 errata 的 B1 比對依 D-013 G3 保留為縱深防禦）。
+> - 上句「已知取捨：主辦不能同時處於開團問答與分組 session」**範圍縮小為同群內**——同一主辦在不同群可各有一段流程並行。
+
 ### 2. 演算法A：均分 partition（純函式 `partitionBalanced(labels, rng)`）
 把 N 人拆成只有 3/4 的組、最大化 4 人組（組數最少）。以 `r = N % 4`：
 - `r=0` → 全 4；`r=3` → 一組 3 + 其餘 4；`r=2`（N≥6）→ 兩組 3 + 其餘 4；`r=1`（N≥9）→ 三組 3 + 其餘 4。

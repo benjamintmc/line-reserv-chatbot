@@ -44,6 +44,39 @@ npm run db:migrate
 
 ---
 
+## 2.1 升級 `0004_conversation_scope_pk`（D-013 / T-022）— **單階段，須照順序**
+
+`0004` 把 `conversation_states` 的 PK 由 `line_user_id` 改為 `(group_id, line_user_id)`（同一人在不同群的流程可並行）。**此 migration 非向後相容**：舊版程式的 `ON CONFLICT (line_user_id)` 在 PK 換掉後會找不到匹配的唯一約束而直接報錯。裁決採**單階段**（先 migrate、再部署）。
+
+1. **對直連（非 `-pooler`）字串執行**，然後**立即**部署新 revision（§3–§4）：
+   ```powershell
+   $env:DATABASE_URL = "postgres://user:pw@ep-xxx...neon.tech/dbname?sslmode=require"  # 直連
+   npm run db:migrate    # 預期：[migrate] 本次套用：0004_conversation_scope_pk
+   ```
+   兩步之間的窗口越短越好（min-instances=0、流量極低，實務上數分鐘可接受）。
+
+2. **窗口內會失效的指令**（皆走 conversation `upsert`；`get`／`delete` 不受影響，故 `名單`／`+N`／`-N`／`關閉報名`／`取消活動` 正常）：
+   - `開團`（逐步問答入口）
+   - **一行式**開團（`開團 <日期> <時間> <場地> <人數> <費用>`）
+   - 逐步問答的**每一步作答**（日期／時間／場地／人數／費用）
+   - `分組 {M}場 …`（啟動多輪 session）
+   - `下一輪`
+   使用者症狀為「沒有回覆」；**窗口結束後重打即可**，無資料損毀。
+
+3. **逾時處理**：檔首 `SET LOCAL lock_timeout = '3s'`。`ALTER TABLE` 需 ACCESS EXCLUSIVE 鎖，若被其他交易擋住會在 3 秒後失敗；runner 為單檔單交易 ⇒ **整檔 ROLLBACK、不留半套**，稍後（流量更低時）**重跑 `npm run db:migrate` 即可**。若反覆逾時，先確認無長交易佔用該表。
+
+4. **驗證**：
+   ```sql
+   SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+    WHERE conrelid = 'conversation_states'::regclass AND contype = 'p';
+   -- 預期：conversation_states_pkey | PRIMARY KEY (group_id, line_user_id)
+   SELECT count(*) FROM conversation_states WHERE group_id IS NULL;  -- 預期 0（0004 已清）
+   ```
+
+5. **⚠️ 退版警語**：新 revision 一旦運行，就可能產生「同一人多群各一列」的資料。反向 migration（改回單鍵 PK）**無法自動決定保留哪一列**，只能人工取捨 ⇒ **退版即有資料損失**（受影響者為進行中的開團問答／分組 session，重打指令即可恢復；不影響 `events`／`registrations`）。故退版前請確認該損失可接受。
+
+---
+
 ## 3. Build image 並推到 Artifact Registry
 
 ```bash

@@ -124,7 +124,7 @@ describe('D-008 單場名額自動釋放', () => {
     await seedConfirmable(t, 'U-other');
     const r = await evt.confirm({ groupId: G, executorLineUserId: 'U-other', messageId: nextMid(), hostDisplayName: '別人' });
     expect(r.kind).toBe('already_active');
-    expect(await t.conversations.get('U-other')).toBeUndefined(); // nit-1 清 conversation
+    expect(await t.conversations.get(G, 'U-other')).toBeUndefined(); // nit-1 清 conversation
     expect((await t.events.getById(active.id))?.status).toBe('open'); // 未 flip
     const cnt = await t.pool.query<{ n: string }>("SELECT COUNT(*) AS n FROM events WHERE group_id = $1", [G]);
     expect(Number(cnt.rows[0]!.n)).toBe(1); // 未建立第二場
@@ -196,8 +196,8 @@ describe('D-008 單場名額自動釋放', () => {
     );
     expect(Number(active.rows[0]!.n)).toBe(1);
     // nit-2：勝者於交易內、落敗者於 catch(23505) 分支之另一交易皆清 conversation → 不卡 awaiting_confirm。
-    expect(await t.conversations.get('U-1')).toBeUndefined();
-    expect(await t.conversations.get('U-2')).toBeUndefined();
+    expect(await t.conversations.get(G, 'U-1')).toBeUndefined();
+    expect(await t.conversations.get(G, 'U-2')).toBeUndefined();
   });
 
   it('[D-008 AC-9] signup 鎖內以 getById 重讀最新列 re-check（見 done → event_ended、不插槽、無超賣）', async () => {
