@@ -49,7 +49,7 @@
 | ID | 阻塞原因 | 等待對象 |
 |---|---|---|
 | （無）| T-022 已於 2026-08-19 解阻塞（D-013 APPROVED），移入看板 | – |
-| （無）| 五任務（T-018/019/020/021/022）皆 DONE，**PR #12 已於 2026-08-19 merge 進 main**（CI 綠）。**尚未部署**：0004 非向後相容，須依 runbook §2.1 先直連 migrate 再立即 deploy，待使用者授權 | 使用者（部署時機） |
+| （無）| 五任務（T-018/019/020/021/022）皆 DONE，PR #12 已 merge 進 main（CI 綠），**2026-08-19 已部署 PROD**（image `:v3`／revision `00003-7lc`；0004 已套用，PK 實測為 `(group_id, line_user_id)`、`group_id` NOT NULL；`/health` 200）。**待使用者真機冒煙** | 使用者（真機驗證） |
 
 ## Backlog（含暫緩的 TODO）
 - **（2026-08-19 本輪衍生，四項）** ①**`signup` 的 `available` 用交易外快照 `event.capacity`**（`registration-service.ts`）：今日安全僅因 D-010 G1 保證 capacity 單調不減（stale 偏小→保守落候補）；**若日後實作「縮減名額」，此行必須改為鎖內 `fresh.capacity`，否則靜默超賣**（architect nit，T-019）。②**測試檔不受 `tsc` 型別檢查**（`tsconfig` 排除 `*.test.ts`、eslint 未開 type-checked）⇒ 介面新增必填欄位時漏改測試呼叫端會以 `undefined` 靜默通過＝假綠；候選對策：獨立 tsconfig 跑 `tsc --noEmit` 涵蓋測試。**此為本專案第 3 次假綠類問題**，見 LESSONS 2026-08-19。③**conversation TTL（OP-6）**：複合 PK 後殘列上限由「人數」變為「人數×群數」，TTL 必要性略升；另流程綁群後，使用者離開原群／bot 被移出時該列再也無法用 `取消` 清掉，只能靠 `開團` 覆寫自癒。④**`event-formatter.ts` 開團首問範例日期為 `2026/08/15`**（已過期，user-facing 文案；與測試日期炸彈同族，PR #11 只修了測試）。

@@ -54,6 +54,8 @@ npm run db:migrate
    npm run db:migrate    # 預期：[migrate] 本次套用：0004_conversation_scope_pk
    ```
    兩步之間的窗口越短越好（min-instances=0、流量極低，實務上數分鐘可接受）。
+   **實務作法（2026-08-19 執行時採用）**：先做 §3 的 build/push（慢，數分鐘），再 migrate，最後 `gcloud run deploy`（快）
+   ⇒ 窗口只剩 deploy 本身。順序約束是「migrate 早於 deploy」，build/push 不動 DB 亦不換 revision，提前做不違反。
 
 2. **窗口內會失效的指令**（皆走 conversation `upsert`；`get`／`delete` 不受影響，故 `名單`／`+N`／`-N`／`關閉報名`／`取消活動` 正常）：
    - `開團`（逐步問答入口）
@@ -144,8 +146,8 @@ gcloud run deploy golf-reserv-chatbot \
 | **Cloud Run service** | `golf-reserv-chatbot`（`min-instances=0`、`concurrency=4`、`--allow-unauthenticated`） |
 | **Service URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app` |
 | **LINE Webhook URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app/webhook`（已 Verify + 真機冒煙通過） |
-| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag `:v1` |
-| **DB（Neon）** | host `ep-old-cherry-az822uzr`（Singapore）；app runtime 用 **pooled**（`-pooler`）、migrate 用直連；已套用 migration 0001/0002/0003 |
+| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag **`:v3`**（revision `golf-reserv-chatbot-00003-7lc`，2026-08-19 部署 T-018~T-022；`:v2`/`00002-dhd`、`:v1`/`00001-sr7` 可回滾，但**退回 v2 以前需同時處理 0004 退版**，見 §2.1 ⚠️） |
+| **DB（Neon）** | host `ep-old-cherry-az822uzr`（Singapore）；app runtime 用 **pooled**（`-pooler`）、migrate 用直連（同 host 去掉 `-pooler`）；已套用 migration 0001/0002/0003/**0004** |
 | **驗證** | `GET /health` → 200 `{"status":"ok"}`；4 個 env vars 已設（`DATABASE_URL`/`LINE_CHANNEL_SECRET`/`LINE_CHANNEL_ACCESS_TOKEN`/`ADMIN_USER_IDS`），`DEBUG_WEBHOOK` 未設（生產關閉） |
 
 > 待收斂（post-MVP）：secret 目前以 `--set-env-vars` 明文帶 → 可改 Secret Manager；`--min-instances=0` 冷啟遺失窗口 → 需消除可切 `--min-instances=1`（犧牲 $0）。
