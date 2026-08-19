@@ -35,6 +35,10 @@
 | 2026-08-18 | architect-reviewer(F1) | **測試檔不受型別檢查 → 介面變更漏改測試呼叫端會造成假綠**：`tsconfig.json` 排除 `**/*.test.ts`、eslint 用 `recommended`（非 `recommendedTypeChecked`、無 `parserOptions.project`）。故「build 綠」**證明不了**測試呼叫端都改對了；漏改的必填欄位會以 `undefined` 執行，可能讓守衛靜默 noop、把真斷言變成**假通過**。本次 `AbortInput.groupId`/`NextRoundInput.groupId` 新增必填欄位即屬此風險（實地 grep 核對後確認無漏）。 | 1 | 觀察中 | 候選：①harness 加 `tsc --noEmit` 涵蓋測試檔（獨立 tsconfig）②介面新增必填欄位時，DoD 要求 grep 全部呼叫點並附證據。**此為本專案第 3 次「假綠」類問題**（前兩次見 2026-08-05 兩則），優先度應高。 |
 | 2026-08-18 | design-reviewer(T-020) | **設計標「釘死」的字串與 formatter 實作不同步**：D-012 §一.3 釘死「已報名：{名字、名字…}」（聚合）但實作逐行一句；修正報名側後，取消側反向失配（實作聚合、設計仍為單數「已取消：{名字}」）。**危險在於下一位讀設計的 agent 會把它「修」回去**，形成無盡循環。 | **2（承 2026-07-31 D-005 formatter 簽名未涵蓋 AC 欄位）** | 觀察中→**達 2 次，提案回寫** | 建議 checklist：**凡設計標「釘死」的字串，實作或 errata 二選一必須逐字對齊**；review 時逐字比對而非語意比對。已於本輪對 D-012 補 errata 背書聚合（§一.3 + 討論紀錄 #4）。 |
 
+| 2026-08-19 | architect-reviewer(D-013) | **AC 寫成「用現有工具跑不出來」的形式**：D-013 AC-3 要求「對含 `group_id IS NULL` 殘列的 DB 執行 0004 並斷言」，但 `runMigrations` **無「套用至指定版本」能力**，且 0004 後該欄為 NOT NULL 無法再造 NULL 列 ⇒ 該 AC 無法以一般測試流程執行，只能特製 setup 或降級為人工檢查。與同日登記的「測試檔不受 `tsc` 檢查，須靠 grep 核對」同屬**驗收手段未落到可執行機制**。 | **2** | 觀察中→**達 2 次，提案回寫** | 建議 design review checklist 加一條：**每條 AC 須註明「用哪個既有指令／測試設施可執行」**；無法以 `npm test` 執行者必須當場註明替代驗證方式（特製 setup／人工檢查＋記錄落點），不得留給 tester 自行發現。 |
+
+| 2026-08-19 | architect-reviewer(T-019,T-022) | **orchestrator 產的審查包 diff 範圍不全，導致 reviewer 無法只讀審查包完成審查**：T-019 時把 `server.ts`/`parse.ts`/`handler.ts` 的 hunks 標「與他任務共用」而未附，reviewer 被迫展開原始檔；T-022 時 `git diff -- … src/webhook/handler.ts …` 誤寫成單檔（本意是 `src/webhook/`），**漏掉 `event-handler.test.ts`——AC-1/AC-2/AC-4 全在該檔**，只讀審查包的 reviewer 會直接漏驗三條 AC。違背 CLAUDE.md §9「reviewer 只讀審查包 + diff」的前提。 | **2** | 觀察中→**達 2 次，提案回寫** | 建議：①審查包產生後**自我核對**「AC 對照表點名的每個檔案是否都在 diff 裡」，不合則補；②R2 一律附**該任務全部受影響檔案**的 diff，不得以「與他任務共用」為由省略；③改用目錄層級路徑（`src/webhook/`）而非逐檔列舉，減少手誤。可落為 REVIEW-PACKET-TEMPLATE 的檢查項。 |
+
 ## 已回寫紀錄（harness 演進史）
 | 日期 | 回寫內容摘要 | 落點 | 版本 |
 |---|---|---|---|
