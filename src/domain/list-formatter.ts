@@ -20,7 +20,13 @@ import { utcIsoToTaipei } from '../db/time';
 import { buildRoster } from './roster';
 import { estimatedTotal, perPersonAmount } from './billing';
 import type { ListPhase } from './event-status';
-import type { RegistrationView, SignupResult, CancelResult } from './registration-service';
+import { MAX_CAPACITY } from '../commands';
+import type {
+  RegistrationView,
+  SignupResult,
+  CancelResult,
+  AddCapacityResult,
+} from './registration-service';
 
 /** LINE-agnostic mention 描述子（AC-14）：mention 顯示文字在 text 中的位置與被 @ 者 line_user_id。 */
 export interface MentionDescriptor {
@@ -246,4 +252,89 @@ export function formatPromotionNotice(notices: PromotionNotice[]): MessageDescri
     }
   }
   return { text, mentionees };
+}
+
+// ── D-010 加開名額組版 ────────────────────────────────────────────────
+
+type AddCapacityOk = Extract<AddCapacityResult, { kind: 'ok' }>;
+
+/** `加開 N` 拒絕：非授權（D-010 §3）。 */
+export function formatAddCapacityNotAuthorized(): MessageDescriptor {
+  return { text: '只有開團的人（或系統管理員）可以加開名額。', mentionees: [] };
+}
+
+/** `加開 N` 拒絕：活動已結束（D-010 §3）。 */
+export function formatAddCapacityEnded(): MessageDescriptor {
+  return { text: '活動已結束，無法加開名額', mentionees: [] };
+}
+
+/** `加開 N` 拒絕：加開後超過人數上限（D-010 §3）。 */
+export function formatAddCapacityOverLimit(): MessageDescriptor {
+  return { text: `加開後將超過人數上限（${MAX_CAPACITY}），無法加開`, mentionees: [] };
+}
+
+/**
+ * `加開 N` 成功（D-010 §3，**單一則**）：加開公告 + 更新後名單 + 剩餘名額；
+ * `notices` 非空時**同一則內**追加遞補 @ 通知（複用 §4 formatPromotionNotice，
+ * mention 位移平移對齊到合併文字，維持單一 mention source of truth）。
+ */
+export function formatAddCapacity(
+  result: AddCapacityOk,
+  notices: PromotionNotice[],
+): MessageDescriptor {
+  const { view } = result;
+  const parts: string[] = [
+    `「${view.event.location}」球敘已加開 ${result.added} 個名額（上限 ${result.newCapacity}）。`,
+    '',
+  ];
+  parts.push(...bodyRoster(view));
+  const base = parts.join('\n');
+  if (notices.length === 0) {
+    return { text: base, mentionees: [] };
+  }
+  const sub = formatPromotionNotice(notices);
+  const sep = '\n';
+  const offset = base.length + sep.length;
+  const text = base + sep + sub.text;
+  const mentionees = sub.mentionees.map((m) => ({ ...m, index: m.index + offset }));
+  return { text, mentionees };
+}
+
+// ── D-012 多行批次報名組版 ────────────────────────────────────────────────
+//
+// 聚合摘要（釘死字串，D-012 §一.3 / 裁決 #1；用語沿用既有「正取/候補」，不新增第二種措辭）：
+//   報名 →「已報名：{名字、名字…}」一行（例「已報名：陳小姐、張先生」），落候補者**各自**於名字後標「（候補）」；
+//   取消 →「已取消：{名字、名字…}」一行。兩類皆有時：報名行在前、取消行在後。
+// 批次末尾另附一次更新後名單（handler 複用 formatList(view)）與遞補 @（formatPromotionNotice）。
+
+/** 批次單行摘要項（handler 於逐行執行後彙整，交 formatBatchSummary 組版）。 */
+export type BatchSummaryItem =
+  | { kind: 'signup'; subjectDisplayName: string; waitlisted: boolean }
+  | { kind: 'cancel'; subjectDisplayName: string };
+
+/**
+ * D-012 §3 / §一.3：批次摘要（**同一則訊息內至多兩文字行**，非逐項一行）。
+ * 依 §一.3 釘死格式**依類別聚合**：報名 →「已報名：{名字、名字…}」、取消 →「已取消：{名字、名字…}」，
+ * 名字以「、」相連、順序沿用執行順序；落候補者**各自**於名字後標「（候補）」
+ * （例「已報名：陳小姐、張先生（候補）」）。無 mention。
+ */
+export function formatBatchSummary(items: readonly BatchSummaryItem[]): MessageDescriptor {
+  const signups: string[] = [];
+  const cancels: string[] = [];
+  for (const it of items) {
+    if (it.kind === 'signup') {
+      signups.push(it.waitlisted ? `${it.subjectDisplayName}（候補）` : it.subjectDisplayName);
+    } else {
+      cancels.push(it.subjectDisplayName);
+    }
+  }
+  const lines: string[] = [];
+  if (signups.length > 0) lines.push(`已報名：${signups.join('、')}`);
+  if (cancels.length > 0) lines.push(`已取消：${cancels.join('、')}`);
+  return { text: lines.join('\n'), mentionees: [] };
+}
+
+/** D-012 §3：可執行行數超過上限的整則拒絕（釘死字串；不執行任何行）。 */
+export function formatBatchOverLimit(max: number): MessageDescriptor {
+  return { text: `一次最多報名 ${max} 筆，請分次輸入。`, mentionees: [] };
 }

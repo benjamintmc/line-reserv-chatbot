@@ -90,7 +90,8 @@ export interface RegistrationRow {
 /** conversation_states 表列（逐步開團問答暫存）。 */
 export interface ConversationStateRow {
   line_user_id: string;
-  group_id: string | null;
+  /** D-013（migration 0004）：與 line_user_id 共同構成 PK，且已 SET NOT NULL ⇒ 不再可能為 null。 */
+  group_id: string;
   state: string;
   /** 已收集的部分 event 欄位（JSON 字串）。 */
   payload: string | null;

@@ -21,6 +21,28 @@ function text(s: string): MessageDescriptor {
   return { text: s, mentionees: [] };
 }
 
+/**
+ * (N2) D-004 errata（跨群，2026-08-18）→ D-013 §3 收斂：新流程覆寫掉前一段未完成流程時，
+ * 於既有回覆前附一句告知，消除「舊流程被靜默吃掉、使用者回頭作答卻無回覆」的死角。
+ *
+ * **D-013：唯一情境是「同群的分組 session 被 `開團` 覆寫」**（conversation 以
+ * `(group_id, line_user_id)` 為 PK 後，別群流程並行共存、不再被覆寫 ⇒ 原 `create` 告知句已不可達
+ * 而移除）。故本函式不再需要 kind 參數。
+ *
+ * **刻意不透露前一段流程的任何內容**（時間/場地/人數/費用/群組名皆不出現，G7）：措辭若讓讀者
+ * 能判斷來源群，等同把他群活動的存在洩漏給本群成員。
+ * 用語沿用既有「分組」，不新增第二種說法（球種中性，CLAUDE.md §0）。
+ */
+export function withAbandonedNotice(base: MessageDescriptor): MessageDescriptor {
+  const notice = '已結束你先前未完成的分組。';
+  const offset = notice.length + 1; // +1 為換行
+  return {
+    text: `${notice}\n${base.text}`,
+    // 現行 (A)/(B) 皆無 mention；仍位移以免日後 base 帶 mention 時 index 錯位。
+    mentionees: base.mentionees.map((m) => ({ ...m, index: m.index + offset })),
+  };
+}
+
 /** event.event_datetime（UTC）→ 台灣本地顯示字串 `YYYY-MM-DD HH:MM`（D-008 §3）。 */
 function eventDateTimeDisplay(event: EventRow): string {
   const { date, time } = utcIsoToTaipei(event.event_datetime);

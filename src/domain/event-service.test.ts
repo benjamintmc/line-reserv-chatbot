@@ -66,7 +66,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
       priceMode: 'per_person',
     });
     expect(r1.kind).toBe('awaiting_confirm');
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_confirm');
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
     expect(await t.events.findActiveByGroup(G)).toBeUndefined(); // 尚未 INSERT
 
     const r2 = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'm2', hostDisplayName: '主辦人' });
@@ -79,7 +79,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(r2.event.capacity).toBe(16);
     expect(r2.event.price_per_person).toBe(2200);
     expect(r2.event.price_mode).toBe('per_person');
-    expect(await t.conversations.get(HOST)).toBeUndefined(); // 流程清除
+    expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 流程清除
   });
 
   it('[D-004 AC-3 / D-005 AC-10] 逐步問答完整走完（單題計費）→ 確認 → open', async () => {
@@ -118,8 +118,8 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const bad = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's1', text: '2026/13/40', hostDisplayName: '主辦人' });
     expect(bad.kind).toBe('field_error');
     if (bad.kind === 'field_error') expect(bad.state).toBe('awaiting_date');
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_date');
-    expect(JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}').date).toBeUndefined();
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_date');
+    expect(JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}').date).toBeUndefined();
 
     const good = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '2999/08/15', hostDisplayName: '主辦人' });
     expect(good.kind).toBe('advanced');
@@ -132,7 +132,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '07:30', hostDisplayName: '主辦人' });
     const r = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's3', text: '東方 高爾夫球場', hostDisplayName: '主辦人' });
     expect(r.kind).toBe('advanced');
-    expect(JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}').location).toBe('東方 高爾夫球場');
+    expect(JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}').location).toBe('東方 高爾夫球場');
   });
 
   it('[D-004 AC-6] confirm 建立 host_user_id = 建立者的 user.id', async () => {
@@ -150,7 +150,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     for (const [text, mid] of [['OK', 'r1'], ['好', 'r2'], ['確定', 'r3']] as const) {
       const r = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: mid, text, hostDisplayName: '主辦人' });
       expect(r.kind).toBe('confirm_reprompt');
-      expect((await t.conversations.get(HOST))?.state).toBe('awaiting_confirm'); // 停留
+      expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm'); // 停留
       expect(await t.events.findActiveByGroup(G)).toBeUndefined(); // 不建立
     }
     const done = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'rc', text: '確認', hostDisplayName: '主辦人' });
@@ -163,7 +163,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's1', text: '2999/08/15', hostDisplayName: '主辦人' });
     const ab = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '取消', hostDisplayName: '主辦人' });
     expect(ab.kind).toBe('aborted');
-    expect(await t.conversations.get(HOST)).toBeUndefined();
+    expect(await t.conversations.get(G, HOST)).toBeUndefined();
     expect(await t.events.findActiveByGroup(G)).toBeUndefined();
     // 無流程 confirm → noop
     const c = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 's3', hostDisplayName: '主辦人' });
@@ -254,13 +254,38 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(start.kind).toBe('already_active');
     const oneline = await svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r2', date: '2026-09-01', time: '08:00', location: 'Y', capacity: 8, price: 0, priceMode: 'per_person' });
     expect(oneline.kind).toBe('already_active');
-    expect(await t.conversations.get(HOST)).toBeUndefined(); // 不寫 conversation
+    expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 不寫 conversation
     expect(await t.processed.has('r1')).toBe(false);
     expect(await t.processed.has('r2')).toBe(false);
 
     // D-008 AC-1：closed 已釋放擋團 → 可再開新團（flow_started，非 already_active）。
     await svc.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: 'cl' });
     expect((await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'r3' })).kind).toBe('flow_started');
+  });
+
+  // D-004 errata (N2) → **D-013 §3 收斂**：`abandoned: 'create'` 已移除（構造性不可達——查詢鍵
+  // 改為 (group_id, line_user_id) 後撈回的 prev 必然同群）；`'grouping'` 保留（仍可達，G4）。
+  it('[D-013 AC-7][D-004 errata N2] startCreation 不再把別群流程視為 abandoned（該列仍在）；覆寫同群分組 session → abandoned=grouping', async () => {
+    const svc = makeSvc(t);
+
+    // (a) 別群的未完成開團流程：**不再**被視為 abandoned（回 undefined），且該列於 DB 中仍在。
+    await t.conversations.upsert({ lineUserId: HOST, groupId: 'G-other', state: 'awaiting_time', payload: JSON.stringify({ date: '2999-08-15' }) });
+    const a = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'n1' });
+    expect(a.kind).toBe('flow_started');
+    expect(a.kind === 'flow_started' ? a.abandoned : undefined).toBeUndefined();
+    const other = await t.conversations.get('G-other', HOST);
+    expect(other?.state).toBe('awaiting_time'); // 別群流程原封保留（並行共存）
+    expect(JSON.parse(other!.payload ?? '{}').date).toBe('2999-08-15');
+
+    // (b) **同群**分組 session 被覆寫 → 'grouping'（AC-4 的最省事路徑：該群無 active 活動）。
+    await t.conversations.upsert({ lineUserId: HOST, groupId: G, state: 'grouping', payload: JSON.stringify({ mode: 'doubles' }) });
+    const b = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'n2' });
+    expect(b.kind === 'flow_started' ? b.abandoned : undefined).toBe('grouping');
+
+    // (c) 無前一段流程 → 不回報（不擾民）。
+    await t.conversations.delete(G, HOST);
+    const c = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'n3' });
+    expect(c.kind === 'flow_started' ? c.abandoned : undefined).toBeUndefined();
   });
 
   it('[D-004 AC-12] confirm 撞 ux_events_active_group（UNIQUE）→ 窄捕捉 already_active + 清 conversation', async () => {
@@ -282,7 +307,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'm', hostDisplayName: '主辦人' });
     expect(r.kind).toBe('already_active');
     spy.mockRestore();
-    expect(await t.conversations.get(HOST)).toBeUndefined(); // 清落敗者流程（nit-2）
+    expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 清落敗者流程（nit-2）
     // 仍只有 1 場 open（未建立第二場）。
     const openCount = await t.pool.query<{ n: string }>("SELECT COUNT(*) AS n FROM events WHERE group_id = $1 AND status = 'open'", [G]);
     expect(Number(openCount.rows[0]!.n)).toBe(1);
@@ -305,7 +330,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     spy.mockRestore();
     // 交易回滾：messageId 未 mark、conversation 未被刪。
     expect(await t.processed.has('m')).toBe(false);
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_confirm');
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
   });
 
   it('[D-004 AC-13] 去重：confirm 相同 message_id → 第二次 markProcessed=false → duplicate，只建立 1 場', async () => {
@@ -316,7 +341,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'dup', hostDisplayName: '主辦人' });
     expect(r.kind).toBe('duplicate');
     expect(await t.events.findActiveByGroup(G)).toBeUndefined(); // 未建立
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_confirm'); // 流程保留（可正常重放）
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm'); // 流程保留（可正常重放）
   });
 
   it('[D-004 AC-14] 去重：逐步答案相同 message_id 重送 → 不重複推進（不套到下一問）', async () => {
@@ -325,18 +350,18 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'd', text: '2999/08/15', hostDisplayName: '主辦人' });
     const first = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'tm', text: '07:30', hostDisplayName: '主辦人' });
     expect(first.kind).toBe('advanced'); // → awaiting_location
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_location');
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_location');
     // 重送相同 message_id 'tm'（此時 state 已是 awaiting_location）→ 去重、不把 '07:30' 當 location
     const resend = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'tm', text: '07:30', hostDisplayName: '主辦人' });
     expect(resend.kind).toBe('duplicate');
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_location'); // 未前進
-    expect(JSON.parse((await t.conversations.get(HOST))!.payload ?? '{}').location).toBeUndefined(); // 未誤填
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_location'); // 未前進
+    expect(JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}').location).toBeUndefined(); // 未誤填
   });
 
   it('[D-004 AC-16] 無流程時 confirm/abort → noop、不 mark、不改狀態', async () => {
     const svc = makeSvc(t);
     const c = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'n1', hostDisplayName: '主辦人' });
-    const a = await svc.abort({ executorLineUserId: HOST, messageId: 'n2' });
+    const a = await svc.abort({ groupId: G, executorLineUserId: HOST, messageId: 'n2' });
     expect(c.kind).toBe('noop');
     expect(a.kind).toBe('noop');
     expect(await t.processed.has('n1')).toBe(false);

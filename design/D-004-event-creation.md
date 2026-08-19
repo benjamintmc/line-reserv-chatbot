@@ -28,6 +28,36 @@
 
 ---
 
+## errata（2026-08-18，跨群語意；來源：使用者實測回報之 bug，修正見 T-018 修復批次；不改本文件 APPROVED 狀態）
+
+> **問題**：`conversation_states` 的 PK 是 `line_user_id`（**跨群唯一**，非 `(group_id, line_user_id)`）。§3.3 的攔截偽碼只寫「若 `conversationRepo.get(userId)` 存在 → `continueFlow`」，**未比對來源群**。實測後果：同一人在 A 群開團到一半，於 B 群的任何發言都被當成 A 群流程的答案（B 群的 `+1`/`名單` 失效、雜訊被吞、A 群 draft 被誤填）。
+>
+> **修正語意（權威）**：進行中流程**綁定它發生的那個群**。
+>
+> 1. **§3.3 攔截條件**：`conversationRepo.get(userId)` 存在 **且 `conv.group_id === 來源 groupId`** 才視為流程答案；否則**不攔截**，該訊息照走 step 2 正常分派（`+1`／`名單`／雜訊靜默各自正常），且原群流程**原封保留**（不前進、不放棄、不 mark）。
+> 2. **§3.4 控制指令同樣受群綁定**：別群的 `確認` **不得**用 A 群 draft 在 B 群建立活動（→ `noop`）；別群的 `取消` **不得**放棄 A 群流程（→ `noop`）。故 `AbortInput` 增 `groupId`，`continueFlow`/`confirm`/`abort` 皆於 domain 層先比對 `conv.group_id`（handler 攔截處 + domain 雙防線，domain 為權威）。
+> 3. **§3.3「per-user 隔離」措辭**：原文「只有正在開團的 host 自己的訊息被攔截」僅保證**同一人**，**不保證同一群**——應讀為「**同一人且同一群**」。
+> 4. **[D-004 AC-15] 語意擴充**：除既有「同群其他成員不受影響」外，新增「**同一人在別群的訊息亦不受影響**」——A 群 awaiting_* 時，該人在 B 群 `+1`/`名單`/雜訊/`確認`/`取消` 皆走一般 dispatch，A 群 conversation 的 `state`/`payload` 不變。（驗證：`src/webhook/event-handler.test.ts` 之 `[D-004 errata 跨群]` 三條整合測試）
+> 5. **不動 schema**：`conversation_states.group_id` 欄位**已存在**且 upsert 已寫入，本修正純為讀取端比對，**不新增 migration**、不改 PK。已知取捨（不變）：一人同時只能有一段進行中流程。
+> 6. **(N2) 本次修正「新暴露」的靜默死角，已於同輪一併處理（非既有行為）**：
+>    - **修正前該路徑不可達**——在 B 群輸入 `開團` 會被攔截成 A 群當前欄位的答案（`applyAnswer` 判格式錯 → 重問），A 群 draft **不會**被覆寫。
+>    - **修正後**不再攔截 → `startCreation`／`handleOneline` 無條件 upsert（PK=`line_user_id`）會**靜默**覆寫 A 群半成品 draft，使用者回 A 群作答時 `parseCommand` → `unknown` → **完全無回覆**，正是 §3.3／B2 當初刻意消除的靜默死角。
+>    - **處理**：兩個入口於**交易內**（與 upsert 同連線，避免 TOCTOU）先讀既有 conversation，回報 `abandoned: 'create' | 'grouping'`；handler 於既有 (A)/(B) 回覆前附 **(N2)** 告知句——`create` →「已放棄你先前未完成的開團。」、`grouping` →「已結束你先前未完成的分組。」。**刻意不透露前一段流程屬於哪一群、亦不透露其任何內容**（時間／場地／人數／費用／群組名皆不出現）：若讀者能據措辭判斷「那是別群的流程」，等同把他群活動的存在洩漏給本群成員（＝本輪所修的同一類洩漏）。兩句措辭對「同群分組」與「別群開團」皆成立，無法據此區分來源群。
+>    - `state='grouping'`（分組 session）被覆寫時**同群亦可達**（grouping 不被 §3.3 攔截），故一併納入。
+>    - 驗證：`src/webhook/event-handler.test.ts` `[D-004 errata N2]` 兩條（含「回覆不含 A 群 draft 任何欄位」的反向斷言）＋ `src/domain/event-service.test.ts` `[D-004 errata N2]` 一條（三種 abandoned 判定）。
+>    - **關聯 OP-6（conversation TTL）**：本項只消除「靜默」，未消除「一人一段流程」的根本限制。若日後要支援跨群並行流程，須改 PK 為 `(group_id, line_user_id)`（＝migration ⇒ R2），已登記 Backlog。
+
+## errata（2026-08-19，來源 D-013 T-022「conversation_states 改以 (group_id, line_user_id) 為 PK」；不改本文件 APPROVED 狀態）
+
+> D-013（APPROVED，R2）以 **migration 0004** 根治跨群問題：`conversation_states` 的 PK 由 `line_user_id` 改為 **`(group_id, line_user_id)`**。上方 2026-08-18 errata 的**第 5 條與第 6 條已被取代**：
+>
+> - **取代第 5 條**（「不動 schema、不改 PK；已知取捨：一人同時只能有一段進行中流程」）：schema **已變更**（0004）。同一人在**不同群**可各有一段進行中流程並**並行共存**；互斥範圍縮小為**同群內**（開團問答 ↔ 分組 session 仍共用該群那一列）。跨群不可讀由**結構**保證（查詢鍵含 `group_id`），第 1–4 條的讀取端比對**全部保留**為縱深防禦（D-013 G3）。
+> - **取代第 6 條**（(N2) 告知句）：`abandoned: 'create'`（「已放棄你先前未完成的開團。」）**已移除**——查詢鍵改為複合鍵後，撈回的 `prev` 由構造必然同群，該分支恆不可達（**理由是構造性，非「handler 已攔截」**；handler 攔截讀在交易外且 `server.ts` 以 `Promise.all` 並行，有 TOCTOU，不可倚賴）。`grouping` 告知句（「已結束你先前未完成的分組。」）**保留**且仍可達（同群分組 session 被 `開團` 覆寫）。
+> - 驗證改由 `[D-013 AC-1]`（`src/webhook/event-handler.test.ts`：兩列並存、無告知句）與 `[D-013 AC-7]`（`src/domain/event-service.test.ts`：別群列不再被視為 abandoned）承接；`[D-013 AC-4]` 覆蓋保留的 grouping 告知句。
+> - 權威來源：`design/D-013-conversation-scope-pk.md`。本文件其餘攔截語意與 (N2) 文案敘述仍有效。
+
+---
+
 ## 一、設計內容
 
 ### 0. 定位與前提

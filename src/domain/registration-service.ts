@@ -29,9 +29,11 @@ import type { EventReader } from '../db/repositories/event-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
 import type { RegistrationReader } from '../db/repositories/registration-repository';
-import type { ImmediateRunner } from '../db/tx';
+import type { ImmediateRunner, TxRepos } from '../db/tx';
 import { nowIso } from '../db/time';
 import { displayPhase, isExpired, isOpenForSignup, type ListPhase } from './event-status';
+import { canManageEvent } from './authz';
+import { MAX_CAPACITY } from '../commands';
 
 export type { ListPhase } from './event-status';
 
@@ -90,6 +92,24 @@ export type ListResult =
   | { kind: 'duplicate' }
   | { kind: 'ok'; view: RegistrationView; phase: ListPhase };
 
+/** `加開 N` 結果（D-010 §一）。 */
+export type AddCapacityResult =
+  | { kind: 'no_open_event' }
+  | { kind: 'event_ended' }
+  | { kind: 'not_authorized' }
+  | { kind: 'over_limit' }
+  | { kind: 'duplicate' }
+  | {
+      kind: 'ok';
+      /** 本次加開的名額數（=input.count）。 */
+      added: number;
+      /** 加開後的新容量（fresh.capacity + added）。 */
+      newCapacity: number;
+      /** 因加開而立即遞補的候補列（供同一則 @ 通知；空陣列＝未遞補）。 */
+      promoted: RegistrationRow[];
+      view: RegistrationView;
+    };
+
 export interface SignupInput {
   groupId: string;
   /** 傳訊人 LINE userId。 */
@@ -115,6 +135,14 @@ export interface ListInput {
   messageId: string;
 }
 
+export interface AddCapacityInput {
+  groupId: string;
+  executorLineUserId: string;
+  messageId: string;
+  /** 加開名額數（新增量；parser 已保證 1..MAX_COUNT）。 */
+  count: number;
+}
+
 export interface RegistrationServiceDeps {
   events: EventReader;
   users: UserRepository;
@@ -122,6 +150,11 @@ export interface RegistrationServiceDeps {
   processed: ProcessedEventRepository;
   /** 防超賣交易 runner（路線 A）：BEGIN → SELECT event FOR UPDATE → work(repos) → COMMIT（D-007 §3）。 */
   runImmediate: ImmediateRunner;
+  /**
+   * super-admin 集合（來源 env ADMIN_USER_IDS，由 server.ts 注入；D-006 G3）。
+   * 僅供 `加開 N` 授權（canManageEvent = host ∪ super-admin，D-010 §一.2）；未注入視為空集。
+   */
+  superAdminUserIds?: ReadonlyArray<string>;
   /** 不預期發生的異常記錄（如遞補守恆斷言失敗）；預設 console.error。 */
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
@@ -144,12 +177,20 @@ type TxCancel =
   | { kind: 'event_ended' }
   | { kind: 'ok'; cancelled: number; promoted: RegistrationRow[] };
 
+/** 交易內回傳型別（addCapacity；D-010 §一.3 鎖內 re-check + over_limit）。 */
+type TxAddCapacity =
+  | { kind: 'duplicate' }
+  | { kind: 'event_ended' }
+  | { kind: 'over_limit' }
+  | { kind: 'ok'; newCapacity: number; promoted: RegistrationRow[] };
+
 export class RegistrationService {
   private readonly events: EventReader;
   private readonly users: UserRepository;
   private readonly registrations: RegistrationReader;
   private readonly processed: ProcessedEventRepository;
   private readonly runImmediate: ImmediateRunner;
+  private readonly superAdmins: ReadonlySet<string>;
   private readonly logError: (msg: string, meta?: Record<string, unknown>) => void;
 
   constructor(deps: RegistrationServiceDeps) {
@@ -158,6 +199,7 @@ export class RegistrationService {
     this.registrations = deps.registrations;
     this.processed = deps.processed;
     this.runImmediate = deps.runImmediate;
+    this.superAdmins = new Set(deps.superAdminUserIds ?? []);
     this.logError =
       deps.logError ??
       ((msg, meta): void => {
@@ -311,27 +353,8 @@ export class RegistrationService {
       // 鎖定時第二者實取 0、正取數未變 → quota=0 不多遞補 → 有效正取數永不超過 capacity（G8）。
       const confirmedAfter = await repos.registrations.countConfirmed(event.id);
       const promotionQuota = fresh.capacity - confirmedAfter;
-      let promoted: RegistrationRow[] = [];
-      if (promotionQuota > 0) {
-        // G8：FIFO 遞補，數量 ≤ 剩餘名額（上界為容量 → 不超賣）。
-        // 已知限制（Backlog）：以列為單位 LIMIT，quota < 候補隊首批次人數時會拆批。
-        const picks = await repos.registrations.pickWaitlistForPromotion(event.id, promotionQuota);
-        const promotedN = await repos.registrations.promoteByIds(picks.map((r) => r.id));
-        if (promotedN !== picks.length) {
-          // nit-5 防禦性斷言：交易內恆相等；不等記異常並以回讀為準。
-          this.logError('遞補列數與選取數不一致（不預期）', {
-            eventId: event.id,
-            promotedN,
-            picked: picks.length,
-          });
-          const rechecked = await Promise.all(picks.map((r) => repos.registrations.getById(r.id)));
-          promoted = rechecked.filter(
-            (r): r is RegistrationRow => r !== undefined && r.status === 'confirmed',
-          );
-        } else {
-          promoted = picks;
-        }
-      }
+      // nit N2：鎖內 FIFO 遞補抽為 promoteWithinLock（與 addCapacity 共用；零行為變更）。
+      const promoted = await this.promoteWithinLock(repos, event.id, promotionQuota);
       return { kind: 'ok', cancelled, promoted };
     });
 
@@ -344,6 +367,89 @@ export class RegistrationService {
       subjectDisplayName: input.proxyName ?? executor.display_name,
       promoted: tx.promoted,
       view: await this.buildView(event),
+    };
+  }
+
+  /**
+   * 鎖內 FIFO 遞補（T-015 / D-010 nit N2；供 cancel 與 addCapacity 共用，零行為變更）。
+   * `quota` ≤ 0 → 不遞補、回 []；否則 `pickWaitlistForPromotion`（最小 seq）→ `promoteByIds`，
+   * 遞補數 ≤ quota（上界為容量 → 有效正取數 ≤ 容量，不超賣，G5/G8）。
+   * nit-5 防禦性斷言：交易內選取數應等於遞補數；不等記異常並以回讀 confirmed 為準。
+   * **必於 `runImmediate`（FOR UPDATE）交易內、以 client-bound `repos` 呼叫**（同連線鎖生效，G2）。
+   * 已知限制（Backlog）：以列為單位 LIMIT，quota < 候補隊首批次人數時會拆批。
+   */
+  private async promoteWithinLock(
+    repos: TxRepos,
+    eventId: number,
+    quota: number,
+  ): Promise<RegistrationRow[]> {
+    if (quota <= 0) return [];
+    const picks = await repos.registrations.pickWaitlistForPromotion(eventId, quota);
+    const promotedN = await repos.registrations.promoteByIds(picks.map((r) => r.id));
+    if (promotedN !== picks.length) {
+      // nit-5 防禦性斷言：交易內恆相等；不等記異常並以回讀為準。
+      this.logError('遞補列數與選取數不一致（不預期）', {
+        eventId,
+        promotedN,
+        picked: picks.length,
+      });
+      const rechecked = await Promise.all(picks.map((r) => repos.registrations.getById(r.id)));
+      return rechecked.filter(
+        (r): r is RegistrationRow => r !== undefined && r.status === 'confirmed',
+      );
+    }
+    return picks;
+  }
+
+  // ── 加開名額（`加開 N`；D-010 §一.2/§一.3） ─────────────────────────────
+  async addCapacity(input: AddCapacityInput): Promise<AddCapacityResult> {
+    // 交易外前置（early-return，不 mark、無 DB 變更，仿 close/cancel；G4 非授權零副作用）。
+    // 1. active 且為 open（draft/closed 非 open 或不在 active 集）→ no_open_event。
+    const event = await this.events.findActiveByGroup(input.groupId);
+    if (event === undefined || event.status !== 'open') return { kind: 'no_open_event' };
+    // 2. 過期 open → event_ended（活動已結束）。
+    if (isExpired(event, nowIso())) return { kind: 'event_ended' };
+    // 3. 授權：host ∪ super-admin（共享謂詞，唯讀不 upsert；G4）。
+    if (!(await canManageEvent(this.users, this.superAdmins, event, input.executorLineUserId))) {
+      return { kind: 'not_authorized' };
+    }
+
+    const tx = await this.runImmediate<TxAddCapacity>(event.id, async (repos) => {
+      // G7：去重為交易第一步，重送即中止（原子回滾；AC-8）。
+      if (!(await repos.processed.markProcessed(input.messageId))) {
+        return { kind: 'duplicate' };
+      }
+      // G3：鎖內以 getById 權威重讀（非 stale）；非 open / 過期（含被並行 flip）→ event_ended，
+      // 不改 capacity、不遞補。
+      const fresh = await repos.events.getById(event.id);
+      if (fresh === undefined || !isOpenForSignup(fresh, nowIso())) {
+        return { kind: 'event_ended' };
+      }
+      // G1：只加不減（N≥1 由 parser 保證）。newCapacity 超過總上限 → over_limit，不 UPDATE。
+      const newCapacity = fresh.capacity + input.count;
+      if (newCapacity > MAX_CAPACITY) {
+        return { kind: 'over_limit' };
+      }
+      // G2：capacity 於 FOR UPDATE 鎖內原子加開。
+      await repos.events.updateCapacity(event.id, newCapacity);
+      // G5：複用 T-015 鎖內遞補——quota = 新容量 − 鎖內有效正取數（上界為新容量 → 不超賣）。
+      const confirmedAfter = await repos.registrations.countConfirmed(event.id);
+      const promotionQuota = newCapacity - confirmedAfter;
+      const promoted = await this.promoteWithinLock(repos, event.id, promotionQuota);
+      return { kind: 'ok', newCapacity, promoted };
+    });
+
+    if (tx.kind === 'duplicate') return { kind: 'duplicate' };
+    if (tx.kind === 'event_ended') return { kind: 'event_ended' };
+    if (tx.kind === 'over_limit') return { kind: 'over_limit' };
+    // view 以最新 capacity 重建（buildView 依 event.capacity 算 available）；重讀確保剩餘名額正確。
+    const updated = (await this.events.getById(event.id)) ?? { ...event, capacity: tx.newCapacity };
+    return {
+      kind: 'ok',
+      added: input.count,
+      newCapacity: tx.newCapacity,
+      promoted: tx.promoted,
+      view: await this.buildView(updated),
     };
   }
 

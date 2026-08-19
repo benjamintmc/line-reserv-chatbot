@@ -10,6 +10,7 @@ import { ConversationRepository } from './db/repositories/conversation-repositor
 import { ProcessedEventRepository } from './db/repositories/processed-event-repository';
 import { RegistrationService } from './domain/registration-service';
 import { EventService } from './domain/event-service';
+import { GroupingService } from './domain/grouping-service';
 import { createWebhookHandler, type WebhookHandler } from './webhook/handler';
 import { lineClient } from './line/client';
 
@@ -39,7 +40,15 @@ export function buildHandler(): WebhookHandler {
   const processed = new ProcessedEventRepository(pool);
   const runImmediate = createImmediateRunner(pool);
   const runInTransaction = createTransactionRunner(pool);
-  const service = new RegistrationService({ events, users, registrations, processed, runImmediate });
+  // D-010：`加開 N` 授權 = canManageEvent（host ∪ super-admin），故 RegistrationService 亦注入 super-admin 集合。
+  const service = new RegistrationService({
+    events,
+    users,
+    registrations,
+    processed,
+    runImmediate,
+    superAdminUserIds: config.adminUserIds,
+  });
   // 開團 domain（D-006）：開團全開；close/cancel 授權 = canManageEvent（host_user_id ∪ super-admin）。
   // super-admin 集合以 config.adminUserIds（env ADMIN_USER_IDS）注入（跨群安全網、domain 不讀 env，G3）。
   const eventService = new EventService({
@@ -49,9 +58,20 @@ export function buildHandler(): WebhookHandler {
     runInTransaction,
     superAdminUserIds: config.adminUserIds,
   });
+  // D-011：分組 domain（唯讀名單 + 純函式分組；策略B session 僅暫存 conversation_states）。
+  // 授權沿用 canManageEvent（裁決 #4 不放寬）；rng 預設 Math.random（prod 隨機、可重跑重骰）。
+  const grouping = new GroupingService({
+    events,
+    users,
+    registrations,
+    conversations,
+    processed,
+    runInTransaction,
+  });
   return createWebhookHandler({
     service,
     eventService,
+    grouping,
     users,
     conversations,
     profile: lineClient,

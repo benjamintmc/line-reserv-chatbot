@@ -68,7 +68,7 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
 
     // 交易回滾：未 mark、conversation 未被清（不得走 already_active 的清除路徑）。
     expect(await t.processed.has('m')).toBe(false);
-    expect((await t.conversations.get(HOST))?.state).toBe('awaiting_confirm');
+    expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
   });
 
   it('[D-004 AC-12] confirm 撞 ux_events_active_group（23505 + constraint）→ 仍窄捕捉為 already_active', async () => {
@@ -83,7 +83,7 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'm', hostDisplayName: '主辦人' });
     expect(r.kind).toBe('already_active');
     spy.mockRestore();
-    expect(await t.conversations.get(HOST)).toBeUndefined(); // 清落敗者流程
+    expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 清落敗者流程
   });
 
   it('[D-004 AC-9] cancel_event 後 soft-delete 列的稽核欄（cancelled_at / cancelled_by_user_id）完整保留，有效列仍有效', async () => {
