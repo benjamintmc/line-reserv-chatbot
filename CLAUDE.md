@@ -57,6 +57,8 @@
 - 命名：檔名 kebab-case、型別/介面 PascalCase、函式/變數 camelCase；資料表與欄位 snake_case（見 `docs/00-project-brief.md` 資料模型）。
 - 錯誤處理：後端統一錯誤格式 `{ code, message, details }`；對使用者的 LINE 回覆一律繁體中文，且只回應可識別指令（其餘群組訊息忽略，避免洗版）。
 - 併發與冪等：報名寫入須用 DB transaction / row lock 防超賣；以 LINE webhook `message.id` 去重（`processed_events`）。
+  - **決策輸入必須鎖內取得**：任何「讀 → 決策 → 寫」流程，決策所依據的值（capacity、已用名額、可釋出數…）一律於鎖內重讀，**不得沿用交易外快照**——「寫在鎖內」不等於安全。
+  - **去重政策（拒絕回覆一律消費）**：凡本次會送出回覆的訊息（**含純拒絕文案**），一律消費其 `message.id`，重送即不再回覆。唯一例外是「本來就不回覆」的路徑（`unknown`／未攔截雜訊），不得消費。新增指令分支時，`markProcessed` 須置於所有拒絕 early-return **之前**。
 - 秘密管理：`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`、`DATABASE_URL`、`ADMIN_USER_IDS` 一律走環境變數，`.env` 不進版控。
 - Commit 訊息：可追溯格式 `type(D-xxx/T-xxx): 描述`，例 `feat(D-003/T-014): 新增報名追加邏輯`；
   維運型允許 `chore:/docs:/ci:`。檢查：`harness/checks/check_commit_trace.sh`
@@ -98,11 +100,9 @@
 
 每個任務由 Orchestrator 標記風險等級，寫入任務單與 task-board：
 
-- **R0（低）**：文案、樣式微調、註解——**設計用 stub 寫在任務單內（3–5 行 + 1 條 Guardrail + 1 條 AC）、不建 D 檔**，
-  跳過 reviewer，unit-tester 抽驗即可。
+- **R0（低）**：文案、樣式微調、註解——**設計用 stub 寫在任務單內（3–5 行 + 1 條 Guardrail + 1 條 AC）、不建 D 檔**，跳過 reviewer，unit-tester 抽驗即可。
 - **R1（中，預設）**：一般功能——完整 D-xxx（設計內容 ≤ 40 行），單一 reviewer **只讀審查包 + diff**。
-- **R2（高）**：認證、權限、金流、資料 migration、刪除類操作——強制雙 reviewer
-  （design-reviewer + architect-reviewer）+ e2e 覆蓋，且設計文件的 Guardrails 至少 3 條。
+- **R2（高）**：認證、權限、金流、資料 migration、刪除類操作——強制雙 reviewer（design-reviewer + architect-reviewer）+ e2e 覆蓋，且設計文件的 Guardrails 至少 3 條。
 
 ## 6. 驗收與品質關卡
 

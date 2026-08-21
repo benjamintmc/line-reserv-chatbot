@@ -90,6 +90,7 @@ import {
   formatRaceLost,
   formatConfirmReprompt,
 } from '../domain/event-formatter';
+import { nowIso } from '../db/time';
 import {
   formatPartition,
   formatRound,
@@ -343,7 +344,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         return [];
       case 'flow_started': {
         // (A) ＋ (N2)：若本次開新流程覆寫掉前一段未完成流程，附一句告知（D-004 errata 跨群）。
-        const base = formatFlowPrompt(result.state);
+        const base = formatFlowPrompt(result.state, nowIso());
         return [
           toLineMessage(
             result.abandoned === 'grouping' ? withAbandonedNotice(base) : base,
@@ -372,9 +373,9 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'duplicate':
         return [];
       case 'field_error':
-        return [toLineMessage(formatFieldError(result.state))]; // (C)
+        return [toLineMessage(formatFieldError(result.state, nowIso()))]; // (C)
       case 'advanced':
-        return [toLineMessage(formatFlowPrompt(result.state))]; // (A)
+        return [toLineMessage(formatFlowPrompt(result.state, nowIso()))]; // (A)
       case 'awaiting_confirm':
         return [toLineMessage(formatConfirmSummary(result.draft))]; // (B)
       case 'confirm_reprompt':
@@ -465,7 +466,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     // D-006：開團全開 → InvalidOnelineResult 收斂為單一 format_help。
     switch (result.kind) {
       case 'format_help':
-        return [toLineMessage(formatOnelineFormatHelp())]; // (K′)
+        return [toLineMessage(formatOnelineFormatHelp(nowIso()))]; // (K′)
       default: {
         const _exhaustive: never = result.kind;
         return _exhaustive;

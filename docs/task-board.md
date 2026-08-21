@@ -8,16 +8,25 @@
 >
 > **2026-08-05 harness 1.4.0 升級完成（T-016）**：補齊三代框架缺件、回填 CLAUDE.md、
 > 反向文件化 01-architecture 與 02 指令契約（原為空白模板）、修好 3 個會產生錯誤訊號的 checks
-> 缺陷並加上 GitHub Actions。下一步建議：**T-017 LESSONS 回寫清償**（5 項已達門檻卻從未回寫）。
+> 缺陷並加上 GitHub Actions。
+>
+> **2026-08-22 T-017 LESSONS 回寫清償完成**：9 項達門檻教訓落到 6 個點（CLAUDE.md §4 兩條通則、
+> D-000 模板三處、兩份 reviewer 角色檔、審查包 §3.5、DoD 兩條），回寫機制首次成規模運轉。
+> 同日裁決：nit-6（過期死團）刪除不做；範例日期改動態產生（T-023 派工中）。
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
-| T-018 | 分組實作（策略A 均分／策略B 逐輪 `nextRound`＋單打、`分組`/`下一輪` parser、handler + `conversation_states` session、中性組版） | D-011（APPROVED） | R1 | backend-engineer | **DONE（2026-08-19）** | src/domain/grouping*.ts, src/commands/, src/webhook/, src/server.ts | **2026-08-19 家測全綠**（lint 0、build、**358 tests**、harness --strict、AC 184/184）。design 複審 **PASS**：B1 跨群外洩、B2 策略A 未去重 兩 blocker 皆封閉。分組測試連跑 3 次無 flaky（seed 42 確定性）。＋2026-08-17 errata（場名 A-Z、host-only）。審查包 `docs/reviews/RP-T-018.md`。**依使用者裁決與 T-022 一併 merge** |
-| T-019 | 加開名額實作（`加開 N`、鎖內改 capacity + 立即遞補、authz 抽取、`updateCapacity`） | D-010（APPROVED） | R2 | backend-engineer | **DONE（2026-08-19）** | src/domain/{registration-service,authz,event-service,list-formatter}.ts, src/commands/, src/webhook/, src/db/, src/server.ts | **2026-08-19 R2 雙審全 PASS 零 blocker**：architect 確認 `promoteWithinLock` 抽取逐行等價、凍結區 `tx.ts` 逐行未變、超賣不變式論證完整；design 文案 8 項逐字符（「球敘」未重演 blocker）。AC-1..8。審查包 `RP-T-019.md`。nit 已入 Backlog（signup 的 `available` 用交易外快照，僅因 G1 單調不減而安全）|
-| T-020 | 多行批次報名實作（handler 拆 dispatchSingle/handleBatch、複合去重鍵、合併回覆、上限整則拒絕） | D-012（APPROVED） | R1 | backend-engineer | **DONE（2026-08-19）** | src/webhook/handler.ts, src/domain/list-formatter.ts | **2026-08-19 PASS**。G1–G6 無違反。blocker B1（摘要未依釘死字串聚合）已修：報名/取消各聚合為「已報名：A、B」/「已取消：A、B」，落候補者各自標（候補）。取消側聚合經使用者裁決補 D-012 §一.3 errata 背書。AC-1..9。審查包 `RP-T-020.md` |
-| T-022 | **D-013 實作（根治跨群）**：migration 0004（`lock_timeout`＋清 NULL＋複合 PK）、repo 簽名改 `(groupId, lineUserId)`（約 50 處測試呼叫點）、移除 `abandoned:'create'` 死碼並保留 `'grouping'`、補 D-004／D-011 errata、runbook 0004 段落 | D-013（APPROVED） | R2 | backend-engineer | **DONE（2026-08-19）** | src/db/migrations/0004_*.sql, src/db/repositories/conversation-repository.ts, src/domain/, src/webhook/, docs/deployment-runbook.md | **R2 雙審全 PASS 零 blocker**（architect：migration 逐行對設計、G1–G8 全過、`schema.ts` row 型別收斂判定「優於替代方案」、AC-3b 隔離 schema 可靠；design：AC-9 兩份 errata 品質合格、AC-7 兩處改寫照設計、AC-4 走 handler 真實路徑）。**368 tests 全綠**、AC 193/193。已採納 6 條 nit（含 2 處測試假綠通道修補與 `abandoned === 'grouping'` 明確比對） |
-| T-021 | **bug 修復（使用者回報）**：`conversation_states` 跨群——A 群開團中於 B 群發言被誤判為流程答案 | D-004 errata 1–6 / D-011 errata | R2 | backend-engineer + orchestrator | **DONE（2026-08-19）** | src/webhook/handler.ts, src/domain/{event-service,grouping-service,event-formatter}.ts | 根因：PK 為 `line_user_id`（跨群唯一）、5 個讀取點皆未比對 `group_id`。三個出口：①開團問答跨群誤攔截 ②漏下去的 `確認` 把 A 群 draft 建成 **B 群**活動（更嚴重，實作者發現）③`下一輪` 外洩他群凍結名單。修法：5 讀取點全補守衛（守衛擺在 `JSON.parse` 前、回既有 `no_session` 以免用錯誤訊息反洩漏）。**architect 複審 PASS**（讀取點窮舉無遺漏、`group_id` NULL 為 fail-closed 且實務不可達、呼叫端無漏改）。**審查缺口已於 T-022 封閉**：(N2) 的 `create` 分支已隨 D-013 移除為死碼，殘留的 `grouping` 句經 T-022 design 複審逐條判定（G7 通過、AC-4 可達性實測） |
+| T-023 | **開團範例日期動態產生**（4 處寫死 `2026/08/15` 已過期 → 改「今日+7 天」，時鐘以參數注入保持純函式可測） | 任務單內 stub（R0，見下方「T-023 設計 stub」） | R0 | backend-engineer | **DONE（2026-08-22）** | src/domain/event-formatter.ts, src/webhook/handler.ts, src/domain/event-formatter.billing.test.ts | **四關全綠**（lint 0、build、**371 tests**（+3）、harness --strict）。AC-1 通過且超出要求：另測時區邊界（UTC 08-21T16:30Z＝台灣 08-22 仍得 2026/08/29）與「其餘文案一字不改」回歸鎖。Guardrail 無違反——`exampleDate(nowIso)` 由 handler 注入時鐘，formatter 內無 `new Date()`。R0 依 §5 跳過 reviewer。commit `84b0a13` |
+| T-018 / T-019 / T-020 / T-021 / T-022 | 分組／加開名額／多行批次報名／跨群根治（五筆） | D-010〜D-013 | R1–R2 | backend-engineer | **全數 DONE（2026-08-19）、PR #12 已 merge、PROD v3 已部署** | – | 明細已於 2026-08-22 移入 `docs/task-board-archive.md`（doc-budget ≤80 行）|
+
+### T-023 設計 stub（R0，依 CLAUDE.md §5「R0 不建 D 檔」）
+1. `event-formatter.ts` 目前 4 處把範例日期寫死為已過期的 `2026/08/15`，對新使用者是錯誤示範。
+2. 改為由呼叫端注入「今日」（台灣時區），範例日期取 **今日 +7 天**，格式沿用既有 `YYYY/MM/DD`。
+3. 為保持純函式（D-006 G4：formatter 對 LINE 零耦合、可純測），時鐘**以參數注入**，不得在 formatter 內呼叫 `new Date()`。
+4. 僅動範例字串，其餘文案一字不改；日期格式沿用既有 `utcIsoToTaipei` 的呈現慣例，不另創格式。
+- **Guardrail**：不得在 `event-formatter.ts` 內直接取系統時間（破壞純函式與可測性）。
+- **AC-1**：注入 `2026-08-22` 時，`formatFlowPrompt('awaiting_date')`、`formatFieldError('awaiting_date')` 與一行式格式提示皆顯示 `2026/08/29`；注入不同日期時範例隨之改變。（執行：`npm test`）
 
 ## M5 部署（Cloud Run + Neon PG）任務
 > 6 筆（ADR-004／D-007／T-012／D-008／T-014／T-015）全數結案、PROD 已上線，**2026-08-19 移入 `docs/task-board-archive.md`**。結論見開頭「目前階段」與 `docs/deployment-runbook.md`。
@@ -27,11 +36,12 @@
 | ID | 任務 | 設計 | 風險 | 角色 | 狀態 |
 |---|---|---|---|---|---|
 | T-016 | **harness 1.1.0 → 1.4.0 升級 + 文件斷層修補**（框架缺件、CLAUDE.md 回填、反向文件化 01/02、checks 跨平台修正 + CI） | – | R1 | orchestrator | **DONE（2026-08-05）**。五個階段全完成：①1.2/1.3/1.4 三代缺件補齊（TOKEN-BUDGET/OWNERSHIP/審查包/worklists/2 支 check）②CLAUDE.md 補 §4 指令表、§4.5 既有專案現況、§8/§9，並校正 fastify 4→5、移除已不存在的 better-sqlite3 ③01-architecture 與 02 指令契約由 codebase 反向產生（原為空白模板）④修 3 個 checks 缺陷（cp950 假紅、Windows 路徑 no-op 假綠、粗體 APPROVED 漏檢）+ `npm run harness:check` + GitHub Actions ⑤本次歸檔。**驗證**：lint 0、build 綠、274 tests 全綠零回歸、4 項反向測試確認新檢查真的會抓 |
-| T-017 | **LESSONS 回寫清償**：5 項達門檻項目轉為具體落點（CLAUDE.md 條文 / D-000 模板欄位 / reviewer checklist / 自動檢查），逐條交使用者核可後生效並補「已回寫紀錄」 | – | R1 | orchestrator | **BACKLOG**。門檻項目：①拒絕回覆去重政策不對稱（×3）②errata 治理成本（×3）③conversation state 三件套（×2）④鎖內決策輸入通則（×2）⑤user-facing 詞彙全域掃描（×2）。另 orchestrator `git add -A` 誤掃 agent WIP（×1）已直接落入 orchestrator 角色檔。**回寫機制自建立以來從未實際運轉過，「已回寫紀錄」表是空的** |
+| T-017 | **LESSONS 回寫清償**：達門檻項目轉為具體落點（CLAUDE.md 條文 / D-000 模板欄位 / reviewer checklist / 審查包自檢），逐條交使用者核可後生效並補「已回寫紀錄」 | – | R1 | orchestrator | **DONE（2026-08-22）**。**實為 9 項非 5 項**——原盤點為 2026-08-05 當時狀態，T-018~T-022 一輪又新增 4 項達門檻（狀態表 scope 比對 ×2、釘死字串失同步 ×2、AC 未落可執行機制 ×2、審查包 diff 範圍不全 ×2）。9 項全數清償，落 6 個點：`CLAUDE.md` §4（去重政策 + 鎖內決策輸入，**使用者核可動憲法**）、`design/D-000-TEMPLATE.md`（預列 errata 欄位 / conversation state 三件套表 / AC 須註明執行方式）、兩份 reviewer 角色檔固定檢查項、`REVIEW-PACKET-TEMPLATE` §3.5、`DEFINITION-OF-DONE` 通用段兩條。**本次純文件、零碼改動**；碼面收斂另立 Backlog 兩條（皆碰 R2 模組，不夾帶） |
 
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
 |---|---|---|---|
+| D-014 | DB 連線 TLS 驗證顯式化（移除不可達的 `rejectUnauthorized:false`、連線字串收斂為 `sslmode=verify-full`、升級金絲雀測試） | orchestrator | **DRAFT — 暫緩（2026-08-22 使用者裁決排入 Backlog）**。R1。4 Guardrails / 7 AC（含 2 條真機 AC）。設計已完備，恢復動工只差核可 → 解鎖 T-024 |
 | D-001 | 資料模型（per-slot、候補、代報名） | architect | APPROVED（2026-07-22，reviewer 通過 + errata + 使用者核可） |
 | D-002 | 指令解析 command parser（+N/-N/名單/開團；全形/上限/邊界） | backend-engineer | APPROVED（2026-07-23，reviewer 通過 + errata + 使用者核可） |
 | D-003 | 報名核心（額滿判斷/整批轉候補/FIFO 遞補/名單訊息組版/webhook 接線） | backend-engineer | **APPROVED（2026-07-31）** — architect-reviewer 通過 + nit-2/5 採納 + 使用者最終核可（OP-1~4 已裁決；風險 R1） |
@@ -48,33 +58,22 @@
 ## 阻塞清單
 | ID | 阻塞原因 | 等待對象 |
 |---|---|---|
-| （無）| T-022 已於 2026-08-19 解阻塞（D-013 APPROVED），移入看板 | – |
-| （無）| 五任務（T-018/019/020/021/022）皆 DONE，PR #12 已 merge 進 main（CI 綠），**2026-08-19 已部署 PROD**（image `:v3`／revision `00003-7lc`；0004 已套用，PK 實測為 `(group_id, line_user_id)`、`group_id` NOT NULL；`/health` 200）。**待使用者真機冒煙** | 使用者（真機驗證） |
+| （無，僅餘一項未驗）| 五任務（T-018~T-022）皆 DONE、PR #12 已 merge（CI 綠）、**2026-08-19 已部署 PROD**（image `:v3`／revision `00003-7lc`；0004 已套用，PK 實測 `(group_id, line_user_id)`、`group_id` NOT NULL；`/health` 200）。**2026-08-22 使用者回報：分組／多行報名／加開名額三項正向流程 PROD 實測通過。**　**唯一未驗：跨群修復（T-021/T-022）**——需兩個群才測得出來：A 群 `開團` 問答途中改到 B 群發言／打 `確認`，預期 B 群不攔截且**不得**把 A 群 draft 建成 B 群活動；另 `下一輪` 不得外洩他群名單。**不阻擋新工作**（PG 層 0004 已實測、368 tests 綠）| 使用者（有兩群時順手驗） |
 
 ## Backlog（含暫緩的 TODO）
+- **（資安盤點，2026-08-22，使用者裁決全數暫緩）** 明細見 **[`docs/security-review-2026-08-22.md`](security-review-2026-08-22.md)**（每項附落點 + 動工前必讀 + 建議順序）。摘要：**T-024／D-014（H1，DB TLS 顯式化，R1，設計已備妥待核可）**、M2 Secret Manager、M3 webhook 無限流、M4 `textV2` 的 `{}` 未跳脫（**＝T-006 nit-3 第二次提出**）、M5 log 寫入 PII、M6 開團鎖死無回收（R2）、M7 容器 root + 無 `.dockerignore`。**H1 初判「高」經實測降為「中（潛伏）」——PROD 目前其實有完整憑證驗證，真風險是 pg v9 升級時靜默失去驗證。** 另含 **L1–L5 低疑慮**（`我的ID` 全群可見／無資料保存期限與刪除路徑（**與既有 conversation TTL OP-6 同族，宜合併**）／CI 無 `npm audit`／特權操作無稽核軌跡／host 可代取消他人名額）——記錄備查，不建議單獨開任務。**共 12 條：H1、M2–M7、L1–L5（無 M1，編號習慣不一致非遺漏）。** 建議起手：M7（兩行）→ T-024。
+- **（工具面，2026-08-22）`eli5` skill 的評測工作區暫緩**：已建 `.claude/skills/eli5/SKILL.md`（中文化自 https://github.com/dreambigou/eli5 ，MIT），本次**刻意只做 skill 本體**。原 repo 另有 `evals.json` + `run-evals.py`（同一 prompt 跑 with-skill / baseline 兩次，再用 Claude 依 assertions 自動評分、印通過率），若日後要驗證這個 skill 真的有效再補。**與產品無關、不影響任何交付關卡**（不進 `npm run harness:check`）。
+- **（T-017 衍生，2026-08-22，兩條「規則已立、碼未收斂」）** T-017 只做規則回寫、刻意不夾帶碼改動，故留下兩筆待收斂：
+  ①**拒絕回覆去重政策的碼面收斂**：CLAUDE.md §4 已定通則「凡會送出回覆的訊息（含拒絕）一律消費 `message.id`」，但現行碼仍不對稱——`no_open_event` 等純拒絕分支在 `markProcessed` **之前** early-return（`registration-service.ts` signup/cancel），`getListView` 與分組策略A 則已先 mark。使用者可見症狀：LINE 重送時拒絕訊息會重覆出現。**碰 `registration-service.ts` / `event-service.ts` ⇒ R2**，需設計文件 + 雙審；動工時須窮舉所有 early-return 點。
+  ②**D-007 §3「cancel candidates 唯讀讀安全」需 errata**：`freedConfirmed` 是決策輸入而非單純讀，該段措辭與 CLAUDE.md §4 新增的「決策輸入必須鎖內取得」不一致（實作已於 T-012 B1 修正為鎖內 RETURNING，僅文件未同步）。**純文件 errata，R1**。
 - **（產品面，使用者提出 2026-08-19）`關閉報名` 是否為必要指令**：使用者傾向**移除**，改為「日期到了自動結算」。現行 `closeEvent` 綁三件事——①截止報名（連 `-N`/`加開` 一併擋，且**不可逆**，無 `closed → open` 指令）②`split_venue` 凍結 `settled_per_person` ③離開 active 集以釋放單一活動槽位。移除前須解掉：**(a)** 槽位釋放改由「過期」單獨承擔 ⇒ 同群要提前開下一場必須等活動時間過去（現行可用關閉繞過）；**(b)** 凍結時機移到過期當下，但 Cloud Run min-instances=0 **無排程器** ⇒ 只能沿用 D-008 惰性 on-read 寫入（首次讀取者觸發，需防並發重複寫）；**(c)** 好處是「關閉後沒人能退出／不可逆」兩個坑自然消失。**不影響現行使用，暫不動工**；動工需新設計文件（動 `events` 狀態機 ⇒ R2）。
-- **（2026-08-19 本輪衍生，四項）** ①**`signup` 的 `available` 用交易外快照 `event.capacity`**（`registration-service.ts`）：今日安全僅因 D-010 G1 保證 capacity 單調不減（stale 偏小→保守落候補）；**若日後實作「縮減名額」，此行必須改為鎖內 `fresh.capacity`，否則靜默超賣**（architect nit，T-019）。②**測試檔不受 `tsc` 型別檢查**（`tsconfig` 排除 `*.test.ts`、eslint 未開 type-checked）⇒ 介面新增必填欄位時漏改測試呼叫端會以 `undefined` 靜默通過＝假綠；候選對策：獨立 tsconfig 跑 `tsc --noEmit` 涵蓋測試。**此為本專案第 3 次假綠類問題**，見 LESSONS 2026-08-19。③**conversation TTL（OP-6）**：複合 PK 後殘列上限由「人數」變為「人數×群數」，TTL 必要性略升；另流程綁群後，使用者離開原群／bot 被移出時該列再也無法用 `取消` 清掉，只能靠 `開團` 覆寫自癒。④**`event-formatter.ts` 開團首問範例日期為 `2026/08/15`**（已過期，user-facing 文案；與測試日期炸彈同族，PR #11 只修了測試）。
+- **（2026-08-19 本輪衍生，四項）** ①**`signup` 的 `available` 用交易外快照 `event.capacity`**（`registration-service.ts`）：今日安全僅因 D-010 G1 保證 capacity 單調不減（stale 偏小→保守落候補）；**若日後實作「縮減名額」，此行必須改為鎖內 `fresh.capacity`，否則靜默超賣**（architect nit，T-019）。②**測試檔不受 `tsc` 型別檢查**（`tsconfig` 排除 `*.test.ts`、eslint 未開 type-checked）⇒ 介面新增必填欄位時漏改測試呼叫端會以 `undefined` 靜默通過＝假綠；候選對策：獨立 tsconfig 跑 `tsc --noEmit` 涵蓋測試。**此為本專案第 3 次假綠類問題**，見 LESSONS 2026-08-19。③**conversation TTL（OP-6）**：複合 PK 後殘列上限由「人數」變為「人數×群數」，TTL 必要性略升；另流程綁群後，使用者離開原群／bot 被移出時該列再也無法用 `取消` 清掉，只能靠 `開團` 覆寫自癒。~~④範例日期過期~~ **已轉 T-023 動工中（2026-08-22）**。
 - **（同群互斥，D-011 §1 / D-013 範圍外）** 同一群內「開團問答 ↔ 分組 session」仍共用 `conversation_states` 同一列（state 二選一）：該群有分組 session 時打 `開團` 會覆寫它（已附「已結束你先前未完成的分組。」告知）。若要並行需 PK 再加 state 維度或分表 ⇒ 另案。
-- **（新功能，使用者提出 2026-08-05）「我的球聚」個人待辦查詢**：使用者加官方帳號好友後，於**一對一聊天**輸入 `球聚`（裁決：**不在群組內生效**），回覆他**跨所有群組**、**已正取**且**尚未結束**的球聚清單。**功能意圖（使用者定調）：列出所有「已經確定的」球敘，讓他知道自己該去哪幾場即可**——候補不算確定，故不列出。**風險：R1**，但若需為 `registrations.owner_user_id` 建索引則升 **R2**（migration，CLAUDE.md §4.5）。**動工前必須先有 D-009 設計文件**（規格已定，可直接派 architect）。已盤點的實作前提：
-  - **① 兩個必改的既有守門**：`handler.ts:342` 把所有非群組訊息直接丟棄（1:1 訊息目前**完全不會被解析**）；`:341` 只收 `message` 型別，`follow`（加好友）未接線——若要在加好友當下主動推說明訊息需一併處理。
-  - **② 需要本專案第一條跨群組讀取路徑**：現行 `registration-repository` 全部以 `eventId` 為界、`event-repository` 以 `groupId` 為界，無任何以人為軸的查詢。新增 `registrations JOIN events WHERE owner_user_id=? AND cancelled_at IS NULL AND status='confirmed'`（候補不列出），reviewer 須逐條確認**使用者只看得到自己的列**。**刻意取捨（符合功能意圖）**：只候補、無正取的活動不出現在清單中——查候補狀態請於該群組用 `名單`。過期語意**必須沿用 D-008 惰性 on-read 判定**，否則會列出 status 仍為 open 的殭屍球聚；「尚未完成」建議為 `event_datetime > now() AND status ∈ {open, closed}`（closed＝已截止但活動未到，仍應顯示）。
-  - **③【已裁決 2026-08-05】不顯示群組名**：使用者裁定清單只需時間、場地等活動本身資訊，毋須辨識來自哪個群組。⇒ 不呼叫 `getGroupSummary`、**不需為此開 migration**，`events` 現有欄位已足夠，本項維持 R1。（`group_id` 仍作為查詢與去重的內部鍵，只是不出現在回覆中。）
-  - **④【已裁決 2026-08-05】代報名一併呈現，逐列條列**。每列格式：`YYYY-MM-DD HH:MM {{場地}} {{代報名|自己}} {{人數}}人`——以（活動 × `kind`）分組、同組合併計數；日期分隔符**對齊既有 formatter 的 `-`**（`event-formatter.ts:24`／`utcIsoToTaipei`），不另創格式。查詢條件為 `owner_user_id`（代報者即 owner，取消責任在他身上）。
-
+- **（新功能，下一個可動工項）「我的球聚」個人待辦查詢**：規格與四項實作前提**已於 2026-08-22 移入 `docs/00-project-brief.md` FR-7**（需求屬 brief，不該長期寄居 board）。五項決策 2026-08-05 全數裁決完畢，**動工只差 D-009 設計文件，可直接派 architect**。風險 R1（若需為 `registrations.owner_user_id` 建索引則升 R2）。
 - **（P1 前期研究，2026-08-05 完成）開球前提醒的 push 費用**：**結論——技術上可行、免費層夠用，但有兩個前提未定**。①`replyMessage` 不計費（本專案至今零訊息成本之因）；`push`/`multicast` 計費且**按收訊人數計，推播到群組＝按群組總人數計**。②台灣輕用量方案 200 則/月且**不可加購**、超出直接 API 錯誤＋訊息不送出。③試算：推播給正取者本人 12 則/場 ⇒ 免費層約 **16 場/月**；推播到群組（30 人）30 則/場且吵到沒報名者 ⇒ 應走個別 multicast。④**待實測**：個別推播是否要求對方已加好友（決定能否覆蓋全部報名者）。完整計費規則與方案表見 `docs/01-architecture.md`「訊息費用結構」。**尚未決定是否實作**；若要做，另需排程器（Cloud Run min-instances=0 無排程能力）與一條非 LINE 驗簽的 cron 入口 ⇒ 建議開 ADR 而非當普通 feature。
 - **（H2，使用者提出 2026-08-05）關閉報名時 @ 正取者**：`關閉報名` 的回覆**在同一則訊息內** mention 所有正取者（裁決：單則，不拆多則）。代報名列**只 tag 報名者本人（代報者）**，被代報的人頭無 userId、不 tag。**風險 R1**（無 schema 變更；mention 機制已於候補遞補通知驗證）。要點：①同一人有多列（本人＋代報）時只 tag 一次，避免重複 @ ②需確認 mention 數量上限與單則訊息長度上限，**若正取人數超過上限需先裁決降級行為**（截斷並附「等 N 人」或改列名不 mention）③沿用 `textV2` + `substitution`（`{mN}` placeholder）④文案需與既有 `formatClosed` 整合，勿新增第二種「已截止」措辭（LESSONS ×2 詞彙一致性）。
 - **（後續優化，使用者裁決 2026-08-02／T-015 衍生）整批原子遞補**：`pickWaitlistForPromotion` 以**列**為單位 `LIMIT`，當剩餘名額 < 候補隊首批次人數時會**拆散整批**（剩 1 位、隊首 `+2 陳先生` → 1 列轉正取、1 列留候補），與 G1 進場「整批不部分接受」的原子性不對稱。使用者已裁決**本次先允許拆批**。實作需求：`registrations` 新增 `batch_id` 欄位（同批共用；`0001_init.sql` 現無此欄，`seq` 無法可靠推斷批次）→ 屬 **migration ⇒ R2**（需 D-003 或新設計文件 + 雙 reviewer）。另需決策：額度塞不下隊首批次時採「跳過該批、遞補得下的後批」（不留空位但可能插隊）或「整批卡住等待」（嚴格 FIFO 但留空位）。回歸測試已釘住現行拆批行為：`[D-003 AC-21]` 第 2 案。
-- 代報名（`+1 名字`）與候補遞補的 e2e 案例補入 e2e-tester 清單。
-- ~~**（M5 部署前必處理，architect-reviewer T-004 審查點 10）** `build: tsc` 不複製 `src/db/migrations/*.sql` 到 `dist/`~~ **已解決（T-012）**：採「build 後加 copy script」，見 `scripts/copy-migrations.mjs` + package.json `postbuild`。已隨 2026-08-02 上線驗證。
-- ~~補 ADR-003 記錄 better-sqlite3 版本 pin~~ **已完成（2026-07-23）**：`docs/adr/ADR-003-better-sqlite3-version-pin.md`。附帶待辦：architect 建議 CLAUDE.md §4「最新穩定版」加註「DB 驅動版本以 ADR-003 為準」——**需使用者同意才改 CLAUDE.md**（見決策待辦）。
-- ~~**（D-003 落實）** 報名/取消/遞補交易一律經 `runImmediate` 封裝；`DATABASE_PATH` vs `DATABASE_URL` 併容~~ **已完成（T-012）**：`runImmediate` 於 PG 改為 `SELECT … FOR UPDATE`（`src/db/tx.ts`）；`DATABASE_PATH` 已隨 SQLite 一併移除，config 只剩 `databaseUrl`。
-- ~~**（文件小修，architect-reviewer D-002 nit-4）** D-001 §9 command parser 誤歸 `src/domain/`~~ **已修正（2026-07-31，architect 回寫 D-001 時一併處理，指向 `src/commands/`）**。同批補入 D-001 §2/§4/§7「draft 不物化」澄清註記（D-004 OP-5 + architect-reviewer 裁定 3）。
-- ~~**（webhook 接線，M2/T-006）** `src/webhook/handler.ts` 仍是 M0 echo，需換 `parseCommand` + exhaustive switch、轉 async + DI~~ **已完成（T-006）**：handler 現為完整 dispatch，`createWebhookHandler` 注入 repositories/services/lineClient。
-- **（e2e，T-006 整合）** architect-reviewer nit-1：D-003 雖標 R1，因含授權（主辦 override）+ 刪除類（soft-delete），e2e 至少需涵蓋 AC-17（主辦跨 owner 代取消觸發 FIFO 遞補）此關鍵流程。**T-006 已 DONE，此為整合階段（M3+ 或發布前）e2e-tester 待辦，未阻擋 T-006。**
-- ~~**（測試環境 flake）** `npm test` 冷跑偶發整批 FAIL（better-sqlite3 在 vitest 平行 worker 冷載入）~~ **已解決（2026-07-31，T-011）**：`vitest.config.ts` 設 `fileParallelism: false`（測試量小約 2s，序執行穩定、避免 CI 假紅）。
-- **（T-014 reviewer nit，非阻擋）** ~~①不可達的防禦死碼（`formatAlreadyClosed`、`cancelEvent` 的 `status!=='closed'`、`closeEvent already_closed`）應加註或收斂用詞~~ **已完成（T-014 當時即採「加註保留」）**：三處皆已標「D-008 不可達，保留供防禦」，見 `event-formatter.ts:197`、`event-service.ts:83/421/460`。②nit-6：`確認` 未驗 `event_datetime > NOW()`，主辦可建「即刻過期死團」——**仍未解**。看似小修，但新增拒絕分支需同時交付文案 + 無效答案重問範本 + AC（＝LESSONS ×2 的「conversation state 三件套」），**建議排在 T-017 立起該 checklist 之後**，避免再犯同型漏。
-- ~~**（部署，M5）** MVP 走 Fly.io+SQLite，未來真免費走 Cloud Run+Neon(PG)，落實時開 ADR-004~~ **已完成（2026-08-02 上線）**：直接走 Cloud Run + Neon，ADR-004 已立、D-007/T-012 已交付。座標見 `docs/deployment-runbook.md`。（保留備查：**訊息量非瓶頸**——bot 只用 reply，不吃 LINE 200 則 push 額度。）
-- **（T-006 reviewer nit，備查非阻擋）** ~~①nit-2：`cancel` 的 `freedConfirmed` 取自交易外快照~~ **已解決（T-012 B1）**：改由 `cancelByIds` 的 RETURNING 於鎖內取真值——**此 nit 當年預言的「未來多實例/async」條件在 T-012 成真並確實造成超賣**，見 LESSONS 2026-08-01。②nit-3：`no_open_event` 時 list 有先 markProcessed、signup/cancel 未 mark，重送行為不對稱——**仍未解**，已升級為 T-017 的第①項（同型問題累計 3 次），現況記於 `docs/02-api-contract.md`。③nit-4：`toLineMessage` 的 `{mN}` placeholder 對 display_name 含字面 `{`/`}` 理論上可干擾 substitution，實務極少見，暫不處理。
+- **（e2e 待辦，整合階段或發布前）** ①代報名（`+1 名字`）與候補遞補案例補入 e2e-tester 清單；②architect-reviewer nit-1：D-003 雖標 R1，因含授權（主辦 override）+ 刪除類（soft-delete），e2e 至少需涵蓋 AC-17（主辦跨 owner 代取消觸發 FIFO 遞補）。未阻擋任何已完成任務。
 
 ## 決策待辦（需使用者裁決）
-- （無）「我的球聚」的五項決策已於 2026-08-05 全數裁決完畢（群組名、代報名、顯示格式、日期分隔符、候補、群組內是否生效），見 Backlog 該條——已具備開 D-009 設計文件的條件。
+- （無）「我的球聚」五項決策已於 2026-08-05 裁決完畢，規格見 `docs/00-project-brief.md` FR-7——已具備開 D-009 的條件。
