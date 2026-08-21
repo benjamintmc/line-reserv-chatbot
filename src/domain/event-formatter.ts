@@ -11,6 +11,10 @@
 // D-008 T-014（D-004/D-005 errata §五）：
 //   - (D) 開團公告 / (I) 重複活動摘要之日期改由 event.event_datetime（UTC）經 utcIsoToTaipei 還原台灣本地；
 //   - (E) formatClosed 即時回覆用詞由「已關閉報名」→「報名已截止」（與名單 closed 標籤收斂，B1）。
+//
+// T-023：開團流程文案的「範例日期」不再寫死（原 2026/08/15 已過期，等於對新使用者示範一個
+//   無效日期），改為「基準時刻（台灣時區）＋7 天」動態產生。時鐘由呼叫端以 nowIso（UTC ISO-8601）
+//   注入；本檔不得直接讀系統時鐘，以維持純函式與可測性（D-006 G4）。
 
 import type { EventRow } from '../db/schema';
 import { utcIsoToTaipei } from '../db/time';
@@ -49,12 +53,30 @@ function eventDateTimeDisplay(event: EventRow): string {
   return `${date} ${time}`;
 }
 
+/** 範例日期的前推天數（T-023）：示範一個尚未過期、且看得出是「近期活動」的日期。 */
+const EXAMPLE_DATE_OFFSET_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 文案用範例日期（T-023）：基準時刻（UTC ISO）＋7 天，換算台灣本地後輸出既有的 `YYYY/MM/DD` 格式。
+ * 時區換算沿用 `src/db/time.ts` 的 `utcIsoToTaipei`，不自行重寫時區邏輯。
+ * `new Date(ms)` 是「毫秒 → Date」的確定性轉換（非讀取系統時鐘），不違反本檔的純函式約束。
+ */
+function exampleDate(nowIso: string): string {
+  const ms = Date.parse(nowIso);
+  if (Number.isNaN(ms)) {
+    throw new Error(`exampleDate: 無法解析 ISO（nowIso=${nowIso}）`);
+  }
+  const shifted = new Date(ms + EXAMPLE_DATE_OFFSET_DAYS * DAY_MS).toISOString();
+  return utcIsoToTaipei(shifted).date.replace(/-/g, '/');
+}
+
 // (A) 逐步問答提問（依 state）。首問附「取消」逃生口提示（N1）。
-export function formatFlowPrompt(state: CreateState): MessageDescriptor {
+export function formatFlowPrompt(state: CreateState, nowIso: string): MessageDescriptor {
   switch (state) {
     case 'awaiting_date':
       return text(
-        '開始開團！請輸入活動日期（格式 YYYY/MM/DD，例：2026/08/15）\n' +
+        `開始開團！請輸入活動日期（格式 YYYY/MM/DD，例：${exampleDate(nowIso)}）\n` +
           '（過程中隨時輸入「取消」可放棄開團）',
       );
     case 'awaiting_time':
@@ -106,10 +128,10 @@ export function formatConfirmSummary(draft: CreateEventDraft): MessageDescriptor
 }
 
 // (C) 欄位格式錯誤（停留重問，依 state）。
-export function formatFieldError(state: CreateState): MessageDescriptor {
+export function formatFieldError(state: CreateState, nowIso: string): MessageDescriptor {
   switch (state) {
     case 'awaiting_date':
-      return text('日期格式不正確，請輸入 YYYY/MM/DD（例：2026/08/15）');
+      return text(`日期格式不正確，請輸入 YYYY/MM/DD（例：${exampleDate(nowIso)}）`);
     case 'awaiting_time':
       return text('時間格式不正確，請輸入 HH:MM（例：07:30）');
     case 'awaiting_location':
@@ -227,15 +249,16 @@ export function formatNoActiveEvent(): MessageDescriptor {
 }
 
 // (K′) 一行式欄位格式錯（格式提示；涵蓋兩種計費語法，D-005 §7 / AC-18）。
-export function formatOnelineFormatHelp(): MessageDescriptor {
+export function formatOnelineFormatHelp(nowIso: string): MessageDescriptor {
+  const d = exampleDate(nowIso);
   return text(
     [
       '格式：開團 <日期> <時間> <地點> <人數> <費用>',
       '費用兩種寫法：',
       '・每人固定：直接寫金額，例 2200元（或 每人2200元）',
       '・場地費均攤：場地費+總額，例 場地費3000元',
-      '範例：開團 2026/08/15 07:30 東方球場 16人 2200元',
-      '　　　開團 2026/08/15 07:30 東方球場 16人 場地費3000元',
+      `範例：開團 ${d} 07:30 東方球場 16人 2200元`,
+      `　　　開團 ${d} 07:30 東方球場 16人 場地費3000元`,
     ].join('\n'),
   );
 }
