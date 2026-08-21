@@ -11,6 +11,8 @@
 - [ ] Orchestrator 驗證後於 `docs/task-board.md` 裁定並登錄產出連結
 - [ ] `check_board_sync` 通過（無未裁定提議、無幽靈任務）
 - [ ] 沒有未登記的 TODO（暫緩項目已寫入 Backlog）
+- [ ] 設計若新增 conversation state：三件套齊備（初始提問／無效答案重問範本／對應 AC）
+- [ ] 審查包已通過 diff 範圍自檢（`harness/REVIEW-PACKET-TEMPLATE.md` §3.5）
 
 ## 架構文件（architect）
 - [ ] 含模組劃分、資料模型、技術選型理由、部署方式
