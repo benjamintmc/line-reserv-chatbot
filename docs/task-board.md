@@ -17,7 +17,7 @@
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
 |---|---|---|---|---|---|---|---|
-| T-023 | **開團範例日期動態產生**（4 處寫死 `2026/08/15` 已過期 → 改「今日+7 天」，時鐘以參數注入保持純函式可測） | 任務單內 stub（R0，見下方「T-023 設計 stub」） | R0 | backend-engineer | **派工中（2026-08-22）** | src/domain/event-formatter.ts | 落點：`formatFlowPrompt` awaiting_date（:57）、`formatFieldError` awaiting_date（:112）、一行式格式提示兩行（:237-238）。使用者裁決「動態產生」而非換遠期固定日——後者只是把炸彈往後推 |
+| T-023 | **開團範例日期動態產生**（4 處寫死 `2026/08/15` 已過期 → 改「今日+7 天」，時鐘以參數注入保持純函式可測） | 任務單內 stub（R0，見下方「T-023 設計 stub」） | R0 | backend-engineer | **DONE（2026-08-22）** | src/domain/event-formatter.ts, src/webhook/handler.ts, src/domain/event-formatter.billing.test.ts | **四關全綠**（lint 0、build、**371 tests**（+3）、harness --strict）。AC-1 通過且超出要求：另測時區邊界（UTC 08-21T16:30Z＝台灣 08-22 仍得 2026/08/29）與「其餘文案一字不改」回歸鎖。Guardrail 無違反——`exampleDate(nowIso)` 由 handler 注入時鐘，formatter 內無 `new Date()`。R0 依 §5 跳過 reviewer。commit `84b0a13` |
 | T-018 / T-019 / T-020 / T-021 / T-022 | 分組／加開名額／多行批次報名／跨群根治（五筆） | D-010〜D-013 | R1–R2 | backend-engineer | **全數 DONE（2026-08-19）、PR #12 已 merge、PROD v3 已部署** | – | 明細已於 2026-08-22 移入 `docs/task-board-archive.md`（doc-budget ≤80 行）|
 
 ### T-023 設計 stub（R0，依 CLAUDE.md §5「R0 不建 D 檔」）
