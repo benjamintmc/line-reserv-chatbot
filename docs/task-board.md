@@ -12,7 +12,8 @@
 >
 > **2026-08-22 T-017 LESSONS 回寫清償完成**：9 項達門檻教訓落到 6 個點（CLAUDE.md §4 兩條通則、
 > D-000 模板三處、兩份 reviewer 角色檔、審查包 §3.5、DoD 兩條），回寫機制首次成規模運轉。
-> 同日裁決：nit-6（過期死團）刪除不做；範例日期改動態產生（T-023 派工中）。
+> 同日裁決：nit-6（過期死團）刪除不做；範例日期改動態產生（T-023 DONE）。**PR #13 已 merge、main CI 綠**
+> ——併修掉一個自 2026-08-19 起無人察覺的 **CI 永久紅**（`check_commit_trace` 誤判 squash merge；見 LESSONS）。
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
@@ -67,7 +68,7 @@
   ①**拒絕回覆去重政策的碼面收斂**：CLAUDE.md §4 已定通則「凡會送出回覆的訊息（含拒絕）一律消費 `message.id`」，但現行碼仍不對稱——`no_open_event` 等純拒絕分支在 `markProcessed` **之前** early-return（`registration-service.ts` signup/cancel），`getListView` 與分組策略A 則已先 mark。使用者可見症狀：LINE 重送時拒絕訊息會重覆出現。**碰 `registration-service.ts` / `event-service.ts` ⇒ R2**，需設計文件 + 雙審；動工時須窮舉所有 early-return 點。
   ②**D-007 §3「cancel candidates 唯讀讀安全」需 errata**：`freedConfirmed` 是決策輸入而非單純讀，該段措辭與 CLAUDE.md §4 新增的「決策輸入必須鎖內取得」不一致（實作已於 T-012 B1 修正為鎖內 RETURNING，僅文件未同步）。**純文件 errata，R1**。
 - **（產品面，使用者提出 2026-08-19）`關閉報名` 是否為必要指令**：使用者傾向**移除**，改為「日期到了自動結算」。現行 `closeEvent` 綁三件事——①截止報名（連 `-N`/`加開` 一併擋，且**不可逆**，無 `closed → open` 指令）②`split_venue` 凍結 `settled_per_person` ③離開 active 集以釋放單一活動槽位。移除前須解掉：**(a)** 槽位釋放改由「過期」單獨承擔 ⇒ 同群要提前開下一場必須等活動時間過去（現行可用關閉繞過）；**(b)** 凍結時機移到過期當下，但 Cloud Run min-instances=0 **無排程器** ⇒ 只能沿用 D-008 惰性 on-read 寫入（首次讀取者觸發，需防並發重複寫）；**(c)** 好處是「關閉後沒人能退出／不可逆」兩個坑自然消失。**不影響現行使用，暫不動工**；動工需新設計文件（動 `events` 狀態機 ⇒ R2）。
-- **（2026-08-19 本輪衍生，四項）** ①**`signup` 的 `available` 用交易外快照 `event.capacity`**（`registration-service.ts`）：今日安全僅因 D-010 G1 保證 capacity 單調不減（stale 偏小→保守落候補）；**若日後實作「縮減名額」，此行必須改為鎖內 `fresh.capacity`，否則靜默超賣**（architect nit，T-019）。②**測試檔不受 `tsc` 型別檢查**（`tsconfig` 排除 `*.test.ts`、eslint 未開 type-checked）⇒ 介面新增必填欄位時漏改測試呼叫端會以 `undefined` 靜默通過＝假綠；候選對策：獨立 tsconfig 跑 `tsc --noEmit` 涵蓋測試。**此為本專案第 3 次假綠類問題**，見 LESSONS 2026-08-19。③**conversation TTL（OP-6）**：複合 PK 後殘列上限由「人數」變為「人數×群數」，TTL 必要性略升；另流程綁群後，使用者離開原群／bot 被移出時該列再也無法用 `取消` 清掉，只能靠 `開團` 覆寫自癒。~~④範例日期過期~~ **已轉 T-023 動工中（2026-08-22）**。
+- **（2026-08-19 本輪衍生，四項）** ①**`signup` 的 `available` 用交易外快照 `event.capacity`**（`registration-service.ts`）：今日安全僅因 D-010 G1 保證 capacity 單調不減（stale 偏小→保守落候補）；**若日後實作「縮減名額」，此行必須改為鎖內 `fresh.capacity`，否則靜默超賣**（architect nit，T-019）。②**測試檔不受 `tsc` 型別檢查**（`tsconfig` 排除 `*.test.ts`、eslint 未開 type-checked）⇒ 介面新增必填欄位時漏改測試呼叫端會以 `undefined` 靜默通過＝假綠；候選對策：獨立 tsconfig 跑 `tsc --noEmit` 涵蓋測試。**此為本專案第 3 次假綠類問題**，見 LESSONS 2026-08-19。③**conversation TTL（OP-6）**：複合 PK 後殘列上限由「人數」變為「人數×群數」，TTL 必要性略升；另流程綁群後，使用者離開原群／bot 被移出時該列再也無法用 `取消` 清掉，只能靠 `開團` 覆寫自癒。~~④範例日期過期~~ **已由 T-023 解決並 merge（2026-08-22，PR #13）**。
 - **（同群互斥，D-011 §1 / D-013 範圍外）** 同一群內「開團問答 ↔ 分組 session」仍共用 `conversation_states` 同一列（state 二選一）：該群有分組 session 時打 `開團` 會覆寫它（已附「已結束你先前未完成的分組。」告知）。若要並行需 PK 再加 state 維度或分表 ⇒ 另案。
 - **（新功能，下一個可動工項）「我的球聚」個人待辦查詢**：規格與四項實作前提**已於 2026-08-22 移入 `docs/00-project-brief.md` FR-7**（需求屬 brief，不該長期寄居 board）。五項決策 2026-08-05 全數裁決完畢，**動工只差 D-009 設計文件，可直接派 architect**。風險 R1（若需為 `registrations.owner_user_id` 建索引則升 R2）。
 - **（P1 前期研究，2026-08-05 完成）開球前提醒的 push 費用**：**結論——技術上可行、免費層夠用，但有兩個前提未定**。①`replyMessage` 不計費（本專案至今零訊息成本之因）；`push`/`multicast` 計費且**按收訊人數計，推播到群組＝按群組總人數計**。②台灣輕用量方案 200 則/月且**不可加購**、超出直接 API 錯誤＋訊息不送出。③試算：推播給正取者本人 12 則/場 ⇒ 免費層約 **16 場/月**；推播到群組（30 人）30 則/場且吵到沒報名者 ⇒ 應走個別 multicast。④**待實測**：個別推播是否要求對方已加好友（決定能否覆蓋全部報名者）。完整計費規則與方案表見 `docs/01-architecture.md`「訊息費用結構」。**尚未決定是否實作**；若要做，另需排程器（Cloud Run min-instances=0 無排程能力）與一條非 LINE 驗簽的 cron 入口 ⇒ 建議開 ADR 而非當普通 feature。
