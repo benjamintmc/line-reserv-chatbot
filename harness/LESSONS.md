@@ -39,6 +39,8 @@
 
 | 2026-08-19 | architect-reviewer(T-019,T-022) | **orchestrator 產的審查包 diff 範圍不全，導致 reviewer 無法只讀審查包完成審查**：T-019 時把 `server.ts`/`parse.ts`/`handler.ts` 的 hunks 標「與他任務共用」而未附，reviewer 被迫展開原始檔；T-022 時 `git diff -- … src/webhook/handler.ts …` 誤寫成單檔（本意是 `src/webhook/`），**漏掉 `event-handler.test.ts`——AC-1/AC-2/AC-4 全在該檔**，只讀審查包的 reviewer 會直接漏驗三條 AC。違背 CLAUDE.md §9「reviewer 只讀審查包 + diff」的前提。 | **2** | **已回寫（2026-08-22，T-017）** | `harness/REVIEW-PACKET-TEMPLATE.md` 新增 §3.5「diff 範圍自檢」三項 + `harness/DEFINITION-OF-DONE.md` 通用段引用 |
 
+| 2026-08-22 | orchestrator(T-023 合併前) | **檢查腳本把 GitHub squash merge 的 commit 判為不合格 → CI「永久紅」且無人察覺**：squash merge 的訊息直接抄 PR 標題、結尾 `(#N)`，T 編號常落在括號而非 scope 位置（PR #12：`feat: …（T-018/019/020/021/022） (#12)`）。該 commit 永久留在歷史，而檢查掃「導入日之後全部 commit」⇒ **main 自 2026-08-19 起連紅 4 次無人發現**。腳本原本只豁免 `^Merge `（真合併），沒想到 squash。**且該 commit 其實是可追溯的**（T 編號就在標題裡）——檢查給的是誤判。**假紅與假綠同樣有害**：永遠紅的關卡等同沒有關卡，會訓練所有人忽略 CI。 | **2**（承 2026-08-05「三個 checks 缺陷／假綠比沒有檢查更糟」） | **已回寫（2026-08-22）** | `harness/checks/check_commit_trace.sh`：squash merge（結尾 `(#N)`）放寬「位置」但不放寬「追溯性」——標題任一處出現 `T-xxx`／`D-xxx` 即通過。**已跑 10 案反向測試**（5 條該擋的仍擋下，含「`feat: 隨便改改 (#14)`」與「提到 T-018 但非 squash」）|
+
 ## 已回寫紀錄（harness 演進史）
 | 日期 | 回寫內容摘要 | 落點 | 版本 |
 |---|---|---|---|

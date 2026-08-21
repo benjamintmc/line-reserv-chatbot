@@ -21,11 +21,20 @@ else
   scope="最近 $N 筆"
 fi
 pattern='^(feat|fix|refactor|test|perf)\((D-[0-9]+\/)?T-[0-9]+\): .+|^(chore|docs|ci|build)(\(.+\))?: .+|^Merge '
+# GitHub squash merge 的 commit 訊息直接抄 PR 標題，結尾為 `(#N)`，scope 位置常沒有 T 編號
+# （例：`feat: 分組／加開名額／多行報名（T-018/019/020/021/022） (#12)`）。這類 commit 永久留在
+# 歷史裡，若一律判失敗會讓 CI 從此**永遠紅**——一個永遠紅的關卡等同沒有關卡。
+# 故對 squash merge 放寬「位置」但不放寬「追溯性」：標題任一處出現 T-xxx 或 D-xxx 即通過。
+squash_pattern='\(#[0-9]+\)$'
+trace_id_pattern='(T|D)-[0-9]+'
 fail=0
 count=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   count=$((count + 1))
+  if echo "$line" | grep -Eq "$squash_pattern" && echo "$line" | grep -Eq "$trace_id_pattern"; then
+    continue
+  fi
   if ! echo "$line" | grep -Eq "$pattern"; then
     echo "  ✗ $line"; fail=1
   fi
