@@ -16,6 +16,7 @@ except (AttributeError, ValueError):
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "design"
+EXEMPT: list = []  # 待動工豁免；於輸出中列名，刻意不靜默
 DEFAULT_DIRS = ["tests", "test", "src", "app", "e2e"]
 TEST_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".cs"}
 
@@ -30,6 +31,12 @@ def approved_docs():
         if m and m.group(1).upper() == "APPROVED":
             did = re.match(r"(D-\d+)", p.name).group(1)
             acs = sorted(set(re.findall(r"\bAC-(\d+)", text)), key=int)
+            # 「核可但尚未動工」：本檢查原假設 APPROVED ⇒ 立刻實作，一標核可其 AC 就被要求
+            # 要有測試 ⇒ 尚未動工的設計會讓關卡永久紅。永久紅的關卡等同沒有關卡（同 2026-08-22
+            # check_commit_trace 的 squash 誤判，見 LESSONS）。允許顯式宣告豁免，但**必須列名**。
+            if re.search(r"AC 覆蓋[:：]\s*\*{0,2}待動工豁免", text):
+                EXEMPT.append((did, len(acs), p.name))
+                continue
             yield did, [f"AC-{n}" for n in acs], p.name
 
 def collect_markers(dirs):
@@ -57,6 +64,9 @@ def main():
             total += 1
             if (did, ac) not in markers:
                 missing.append(f"  ✗ {did} {ac}  （{fname}）")
+    if EXEMPT:
+        for _did, _n, _fname in EXEMPT:
+            print(f"  ⏸ 待動工豁免（未計入）：{_did} {_n} 條 AC（{_fname}）——動工時須移除該宣告")
     if total == 0:
         print("沒有 APPROVED 設計文件或其中沒有 AC，略過。"); return 0
     print(f"AC 覆蓋：{total - len(missing)}/{total}")
