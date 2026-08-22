@@ -66,3 +66,17 @@
 | T-020 | 多行批次報名實作（handler 拆 dispatchSingle/handleBatch、複合去重鍵、合併回覆、上限整則拒絕） | D-012（APPROVED） | R1 | backend-engineer | **DONE（2026-08-19）** | src/webhook/handler.ts, src/domain/list-formatter.ts | **2026-08-19 PASS**。G1–G6 無違反。blocker B1（摘要未依釘死字串聚合）已修：報名/取消各聚合為「已報名：A、B」/「已取消：A、B」，落候補者各自標（候補）。取消側聚合經使用者裁決補 D-012 §一.3 errata 背書。AC-1..9。審查包 `RP-T-020.md` |
 | T-022 | **D-013 實作（根治跨群）**：migration 0004（`lock_timeout`＋清 NULL＋複合 PK）、repo 簽名改 `(groupId, lineUserId)`（約 50 處測試呼叫點）、移除 `abandoned:'create'` 死碼並保留 `'grouping'`、補 D-004／D-011 errata、runbook 0004 段落 | D-013（APPROVED） | R2 | backend-engineer | **DONE（2026-08-19）** | src/db/migrations/0004_*.sql, src/db/repositories/conversation-repository.ts, src/domain/, src/webhook/, docs/deployment-runbook.md | **R2 雙審全 PASS 零 blocker**（architect：migration 逐行對設計、G1–G8 全過、`schema.ts` row 型別收斂判定「優於替代方案」、AC-3b 隔離 schema 可靠；design：AC-9 兩份 errata 品質合格、AC-7 兩處改寫照設計、AC-4 走 handler 真實路徑）。**368 tests 全綠**、AC 193/193。已採納 6 條 nit（含 2 處測試假綠通道修補與 `abandoned === 'grouping'` 明確比對） |
 | T-021 | **bug 修復（使用者回報）**：`conversation_states` 跨群——A 群開團中於 B 群發言被誤判為流程答案 | D-004 errata 1–6 / D-011 errata | R2 | backend-engineer + orchestrator | **DONE（2026-08-19）** | src/webhook/handler.ts, src/domain/{event-service,grouping-service,event-formatter}.ts | 根因：PK 為 `line_user_id`（跨群唯一）、5 個讀取點皆未比對 `group_id`。三個出口：①開團問答跨群誤攔截 ②漏下去的 `確認` 把 A 群 draft 建成 **B 群**活動（更嚴重，實作者發現）③`下一輪` 外洩他群凍結名單。修法：5 讀取點全補守衛（守衛擺在 `JSON.parse` 前、回既有 `no_session` 以免用錯誤訊息反洩漏）。**architect 複審 PASS**（讀取點窮舉無遺漏、`group_id` NULL 為 fail-closed 且實務不可達、呼叫端無漏改）。**審查缺口已於 T-022 封閉**：(N2) 的 `create` 分支已隨 D-013 移除為死碼，殘留的 `grouping` 句經 T-022 design 複審逐條判定（G7 通過、AC-4 可達性實測） |
+
+## T-023（2026-08-22 自 board 移出）
+
+| ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |
+|---|---|---|---|---|---|---|---|
+| T-023 | **開團範例日期動態產生**（4 處寫死 `2026/08/15` 已過期 → 改「今日+7 天」，時鐘以參數注入保持純函式可測） | 任務單內 stub（R0，見下方「T-023 設計 stub」） | R0 | backend-engineer | **DONE（2026-08-22）** | src/domain/event-formatter.ts, src/webhook/handler.ts, src/domain/event-formatter.billing.test.ts | **四關全綠**（lint 0、build、**371 tests**（+3）、harness --strict）。AC-1 通過且超出要求：另測時區邊界（UTC 08-21T16:30Z＝台灣 08-22 仍得 2026/08/29）與「其餘文案一字不改」回歸鎖。Guardrail 無違反——`exampleDate(nowIso)` 由 handler 注入時鐘，formatter 內無 `new Date()`。R0 依 §5 跳過 reviewer。commit `84b0a13` |
+
+### T-023 設計 stub（R0，依 CLAUDE.md §5「R0 不建 D 檔」）
+1. `event-formatter.ts` 目前 4 處把範例日期寫死為已過期的 `2026/08/15`，對新使用者是錯誤示範。
+2. 改為由呼叫端注入「今日」（台灣時區），範例日期取 **今日 +7 天**，格式沿用既有 `YYYY/MM/DD`。
+3. 為保持純函式（D-006 G4：formatter 對 LINE 零耦合、可純測），時鐘**以參數注入**，不得在 formatter 內呼叫 `new Date()`。
+4. 僅動範例字串，其餘文案一字不改；日期格式沿用既有 `utcIsoToTaipei` 的呈現慣例，不另創格式。
+- **Guardrail**：不得在 `event-formatter.ts` 內直接取系統時間（破壞純函式與可測性）。
+- **AC-1**：注入 `2026-08-22` 時，`formatFlowPrompt('awaiting_date')`、`formatFieldError('awaiting_date')` 與一行式格式提示皆顯示 `2026/08/29`；注入不同日期時範例隨之改變。（執行：`npm test`）
