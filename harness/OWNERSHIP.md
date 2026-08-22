@@ -19,6 +19,7 @@
 | 檔案 | 唯一可寫者 | 可讀者 | 說明 |
 |---|---|---|---|
 | `docs/task-board.md` | orchestrator | 全體 | 狀態真相；精簡索引 |
+| `docs/backlog.md` | orchestrator | 全體 | 暫緩事項登記簿；2026-08-22 自 board 切出（成長曲線不同，見該檔說明） |
 | `docs/task-board-archive.md` | orchestrator | 人工 | 不進 context |
 | `docs/worklists/<role>.md` | 該 role 本人 | orchestrator + 本人 | 自己的佇列與工作筆記 |
 | `docs/00-project-brief.md` | orchestrator（依使用者裁決） | 全體 | |
