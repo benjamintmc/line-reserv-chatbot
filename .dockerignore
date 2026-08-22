@@ -1,0 +1,43 @@
+# docker build context 不看 .gitignore（T-025 / 資安盤點 M7）。
+# 目的：secret 與體積大／無用的目錄一律不進 build context，
+# 連 build 階段也拿不到——避免 --target build、BuildKit cache export 帶出 .env。
+
+# Env & secrets（.env.example 無敏感值，但 build 也用不到，一併排除）
+.env
+.env.*
+
+# Dependencies（image 內以 npm ci 重裝，避免帶入本機平台的 native binary）
+node_modules
+
+# Build output（build 階段自己跑 npm run build 產生）
+dist
+build
+*.tsbuildinfo
+
+# 本機資料庫殘留
+data
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# VCS / CI / 工具設定
+.git
+.gitignore
+.gitattributes
+.github
+.claude
+
+# 文件與流程產物（不影響 build，純減少 context）
+docs
+design
+harness
+temp
+
+# Logs / OS / editor
+*.log
+npm-debug.log*
+.DS_Store
+.idea
+.vscode

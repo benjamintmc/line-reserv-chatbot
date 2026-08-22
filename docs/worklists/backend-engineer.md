@@ -10,6 +10,7 @@
 | T-020 | 批次摘要未依 D-012 §一.3 釘死字串聚合（B1） | R1 | 修復完成，待裁定 | 使用者已裁決「改實作、不改設計」；D-012 未動 |
 | T-023 | 開團範例日期動態產生（4 處寫死 `2026/08/15` 已過期 → 今日（台灣）＋7 天；時鐘注入保純函式） | R0 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-023.md`；未 commit（變更留工作區，後由 Orchestrator 以 `84b0a13` 收攏） |
 | T-022 | D-013 實作（根治跨群）：migration 0004 複合 PK、repo 簽名 `(groupId, lineUserId)`、(N2) 收斂、D-004/D-011 errata、runbook 0004 段落 | **R2** | 實作完成，待裁定 | 分支 `feat/D-011-grouping`；未 commit、未 push，變更留工作區。審查包 `docs/reviews/RP-T-022.md` |
+| T-025 | M7 容器強化：新增 `.dockerignore`＋runtime 階段 `USER node`（來源：`docs/security-review-2026-08-22.md` M7） | R0 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-025.md`；AC-1/AC-2 為**手動實跑 docker** 之輸出（非 unit test）；未 commit，變更留工作區 |
 
 ## 狀態提議（等待 Orchestrator 裁定）
 | 任務 ID | 提議轉換 | 證據（審查包/測試結果/產出路徑） |
@@ -18,6 +19,7 @@
 | T-020 | PROPOSE → DONE | B1 已修：`src/domain/list-formatter.ts` `formatBatchSummary` 改依類別聚合（`已報名：${names.join('、')}`、落候補者各自標「（候補）」；取消同理）。測試：新增 `src/domain/list-formatter.batch.test.ts`（5 案）＋更新 `src/webhook/handler.batch.test.ts` :113/:179 斷言。D-012 **未改**（依使用者裁決）。機器關卡同上 |
 | T-022 | PROPOSE → DONE | 審查包 **`docs/reviews/RP-T-022.md`**（Guardrails G1–G8 自檢全 ✓、AC-1..9 對照全 PASS）。交付：`src/db/migrations/0004_conversation_scope_pk.sql`（新增；`lock_timeout` → `DELETE WHERE group_id IS NULL` → `SET NOT NULL` → `DROP CONSTRAINT conversation_states_pkey` → `ADD PRIMARY KEY (group_id, line_user_id)`）、`conversation-repository.ts`（`get`/`delete(groupId, lineUserId)`、`ON CONFLICT (group_id, line_user_id)`、`UpsertConversationInput.groupId: string`）、`event-service.ts`／`event-formatter.ts`（`AbandonedKind` 去 `'create'`、`detectAbandoned(prev)` 單行 body 去死參數、`withAbandonedNotice` 去參數、doc-comment 錯誤理由改正）、`grouping-service.ts`／`handler.ts`（查詢鍵改雙參數，五道守衛全留）；文件 `design/D-004`（errata 標註第 5/6 條被取代）、`design/D-011` §1 errata、`docs/deployment-runbook.md` §2.1（AC-8 四要素）。新增測試 3 檔＋改寫 3 處。機器關卡：**lint 0／build 綠／368 tests 全綠（基線 358＋10，零回歸）／`harness:check --strict` 全過（AC 覆蓋 193/193）** |
 | T-023 | PROPOSE → DONE | 審查包 **`docs/reviews/RP-T-023.md`**（Guardrail 自檢全 ✓、[T-023 AC-1] 三條測試全 PASS）。交付：`src/domain/event-formatter.ts`（新增純函式 `exampleDate(nowIso)`＝`Date.parse` →＋7 天 → `utcIsoToTaipei` → `YYYY/MM/DD`；`formatFlowPrompt`／`formatFieldError`／`formatOnelineFormatHelp` 各加必填參數 `nowIso: string`）、`src/webhook/handler.ts`（4 處呼叫點改傳 `nowIso()`，import 自 `../db/time`）、`src/domain/event-formatter.billing.test.ts`（既有 4 處呼叫補基準 ISO ＋新增 3 條 `[T-023 AC-1]`）。實際輸出（真實時鐘 2026-08-22 台灣）：四處皆 `2026/08/29`。機器關卡：**lint 0／build 綠／371 tests 全綠（基線 368＋3，零回歸）／`harness:check` 全過（AC 193/193）** |
+| T-025 | PROPOSE → DONE | 審查包 **`docs/reviews/RP-T-025.md`**（2 條 Guardrail 自檢全 ✓；[T-025 AC-1]／[T-025 AC-2] 皆 PASS，**含 docker 指令與原始輸出**）。交付：`.dockerignore`（新增 41 行，排除 `.env*`／`node_modules`／`dist`／`data`／`.git` 等）、`Dockerfile`（runtime 階段 `CMD` 前加 `USER node`＋3 行註解；`CMD`／base image／build 階段**零改動**）。實測：`id` = `uid=1000(node)`、`/health` HTTP 200 `{"status":"ok"}`、final image `find / -xdev -name ".env*"` 零命中、`--target build` 階段亦零命中。機器關卡：**lint 0／build 綠／371 tests 全綠（與 T-023 基線相同，本任務未改 TS，零回歸）／`npm run harness:check` 全過（AC 193/193）** |
 
 ## 工作筆記（自由書寫，不進他人 context）
 - **F1（使用者實測回報的 bug，尚無任務 ID，請 Orchestrator 編號）**：`conversation_states` PK 為
@@ -51,6 +53,19 @@
     已額外 grep 全部呼叫點（24 行命中：定義 3、handler 4、test 17），列於審查包 §3.5。`event-service.ts` 未用到這三個 formatter。
   - 時區沿用 `src/db/time.ts` `utcIsoToTaipei`，未自寫時區邏輯；`new Date(ms + …)` 為毫秒→Date 的確定性轉換，非讀系統時鐘。
   - 凍結區零改動；無新增 migration；未自行 commit（Orchestrator 於我跑關卡期間以 `84b0a13` 收攏工作區變更）。
+- **T-025 筆記**：
+  - **`USER node` 未遇到任何權限問題**。`/app` 與 `node_modules` 仍為 root 擁有、node 使用者唯讀，
+    程式為 PG-only 不寫本機檔案系統（`better-sqlite3` 已於 T-012 移除），故無需 `chown`／`chmod`——
+    Guardrail「不得放寬權限」自然滿足，不是靠繞過。若未來需寫檔，只能寫 `/tmp`（Cloud Run 唯一可寫處）。
+  - **AC 只能手動驗**：兩條 AC 需要真實 `docker build`／`docker run`，`npm test` 無從覆蓋，
+    故依 D-000 模板新規把**指令與原始輸出**逐字貼進審查包。`check_ac_coverage.py` 亦掃不到
+    `[T-025 AC-n]`（R0 無 D 檔），這是預期，非漏測。
+  - **Git Bash 陷阱（給後續同型任務）**：`docker run ... ls -a /app` 在 Git Bash 會被 MSYS 路徑轉換
+    成 `C:/Program Files/Git/app` 而失敗；需 `export MSYS_NO_PATHCONV=1`。
+  - **`.dockerignore` 排除範圍略大於任務單最低要求**（多排 `docs`/`design`/`harness`/`.github`/`.claude`），
+    理由與影響評估已列於審查包 §5 第 1 點，供裁定時取捨。
+  - 凍結區零改動（`src/db/tx.ts`、`src/db/migrations/*` 未出現在 diff）；**零 TypeScript 改動**；
+    未夾帶同輪盤點的 H1/M2–M6 任一項；未 commit、未 `git add`，變更留工作區。
 
 ## 我要回報給 Orchestrator 的事項
 | 類型（阻塞/契約疑義/重複問題/建議） | 內容 |
