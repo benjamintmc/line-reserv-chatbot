@@ -112,6 +112,7 @@ import {
   formatGroupNotHost,
   formatGroupFormatHelp,
 } from '../domain/grouping-formatter';
+import { redactId } from '../log-redact';
 
 /**
  * D-012 §2.4：多行批次一次可執行的 +/-（signup/cancel）行數上限。
@@ -147,6 +148,20 @@ function textMessage(text: string): messagingApi.Message {
   return { type: 'text', text };
 }
 
+/**
+ * 跳脫**非本次 substitution 產生**的 `{`／`}`（資安 M4）。
+ *
+ * `textV2` 以 `{key}` 為佔位符，字面大括號須寫成 `{{`／`}}`。而顯示名與代報名字皆為使用者可控、
+ * 且 `normalize` 明確保留非白名單字元 ⇒ `{`／`}` 會原樣進入訊息文字。不跳脫的後果有二：
+ * ①`+1 {m0}` 之類可偽造成 @ 別人；②未配對的單一 `{` 會被 LINE API 直接拒絕
+ * （`Single '{' encountered at index N`）⇒ **整則回覆漏送**，且是靜默的（只在伺服器留 log）。
+ *
+ * 僅套用於 mention 分支：純 `text` 訊息不解析佔位符，跳脫反而會多出括號。
+ */
+function escapeBraces(s: string): string {
+  return s.replace(/\{/g, '{{').replace(/\}/g, '}}');
+}
+
 /** MessageDescriptor → LINE 訊息：無 mention→TextMessage；含 mention→TextMessageV2 + substitution。 */
 function toLineMessage(d: MessageDescriptor): messagingApi.Message {
   if (d.mentionees.length === 0) {
@@ -158,12 +173,12 @@ function toLineMessage(d: MessageDescriptor): messagingApi.Message {
   let cursor = 0;
   sorted.forEach((m, i) => {
     const key = `m${i}`;
-    out += d.text.slice(cursor, m.index);
+    out += escapeBraces(d.text.slice(cursor, m.index));
     out += `{${key}}`;
     substitution[key] = { type: 'mention', mentionee: { type: 'user', userId: m.lineUserId } };
     cursor = m.index + m.length;
   });
-  out += d.text.slice(cursor);
+  out += escapeBraces(d.text.slice(cursor));
   const msg: messagingApi.TextMessageV2 = { type: 'textV2', text: out, substitution };
   return msg;
 }
@@ -181,9 +196,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       const p = await deps.profile.getGroupMemberProfile(groupId, userId);
       if (p.displayName.length > 0) return p.displayName;
     } catch (err) {
+      // M5：不記原始 groupId/userId（永久識別碼），改記雜湊——除錯只需可比對性。
       logError('getGroupMemberProfile 失敗，改用 fallback', {
-        groupId,
-        userId,
+        group: redactId(groupId),
+        user: redactId(userId),
         err: String(err),
       });
     }

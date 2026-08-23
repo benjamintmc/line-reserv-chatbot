@@ -255,3 +255,16 @@ CMD ["node", "dist/index.js"]
 
 ## 討論紀錄（Orchestrator 維護）補列
 | 2026-08-02 | **註記（D-008 T-014 套用、原文不動邏輯、待 architect 追認）**：新增 0003 + 鎖內 getById re-check | §6「無 0003」→ 新增 `0003_merge_event_datetime.sql`（post-T-012，D-008）；§2 `EventRow` 改 `event_datetime`（0001 的 `event_date`/`event_time` 由 0003 演進）；§3 `runImmediate` 之 `SELECT…FOR UPDATE` 後新增**鎖內 `getById` 重讀**（供 D-008 過期 re-check，nit-2；不改防超賣鎖語意）；新增 `EventReader.findLatestDisplayable` 唯讀原語（符 N-new-2 pool-bound 只曝讀方法）。權威來源 D-008（APPROVED），**待 architect 追認**。 |
+
+
+---
+
+## Errata（2026-08-23，T-027／D-014）
+
+本文多處（§2／§7／§9 step1）以 `sslmode=require` 描述連線字串，實作端 `src/db/index.ts` 並據此
+傳入關閉憑證驗證的 `ssl` 選項（註解稱「不驗 CA 鏈，僅加密傳輸」）。**兩者的前提皆有誤**：
+該 `ssl` 選項在所有實際組態下皆不可達（`pg` 以連線字串解析結果覆蓋顯式 `ssl` 選項），
+而 `require` 在現行 `pg-connection-string` 中是 `verify-full` 的別名 ⇒ PROD 實際一直是完整驗證
+（憑證鏈 + hostname）。真正的風險是 pg v9 改採 libpq 語意時**靜默失去驗證**。
+自 T-027 起：程式端不再傳任何 `ssl` 選項，連線字串一律 `sslmode=verify-full`（D-014 G2），
+TLS 策略單一來源。升級攔截見 `src/db/__tests__/pool-ssl.test.ts` 的金絲雀測試。
