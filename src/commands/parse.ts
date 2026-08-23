@@ -10,7 +10,7 @@
 // D-011：新增 `分組`（`{M}場 [{R}輪] [單打]`）與 `下一輪` 解析。
 
 import type { EditEventField, InvalidCommandKind, ParsedCommand } from './types';
-import { MAX_COUNT, MAX_GROUP_PARAM, MAX_LOCATION_LEN } from './types';
+import { MAX_COUNT, MAX_GROUP_PARAM } from './types';
 import {
   equalsIgnoreAsciiCase,
   normalizeProxyName,
@@ -20,6 +20,7 @@ import {
   validateCapacity,
   validateDate,
   validateFee,
+  validateLocation,
   validateTime,
 } from './validators';
 
@@ -278,11 +279,13 @@ function parseEditEvent(args: string[], raw: string): ParsedCommand {
   }
   if (field === 'location') {
     const value = rest.join(' ').trim();
-    if (value === '') return { type: 'edit_help' };
-    if (value.length > MAX_LOCATION_LEN) {
-      return { type: 'invalid', command, reason: 'bad_location', raw, detail: { len: value.length } };
+    if (value === '') return { type: 'edit_help' }; // 空值＝問「現在的場地是什麼」，非錯誤
+    const r = validateLocation(value);
+    if (!r.ok) {
+      // detail 帶實際字數供文案顯示（D-015 §1）；此處已知非空，故必為超長。
+      return { type: 'invalid', command, reason: r.reason, raw, detail: { len: value.length } };
     }
-    return { type: 'edit_event', field, value };
+    return { type: 'edit_event', field, value: r.value };
   }
   // fee：F2 compact；金額格式與計費模式一致性由 domain 依 price_mode 判（§2 步驟 5）。
   const value = rest.join('').replace(/\s+/g, '');
@@ -322,6 +325,12 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     return { type: 'invalid', command, reason: time.reason, raw };
   }
 
+  // D-017：地點上限原本只存在於「編輯 場地」路徑，開團完全沒有 ⇒ 可建出事後不能編輯的長地點。
+  const location = validateLocation(locationTok);
+  if (!location.ok) {
+    return { type: 'invalid', command, reason: location.reason, raw };
+  }
+
   const capacity = validateCapacity(capacityTok);
   if (!capacity.ok) {
     return { type: 'invalid', command, reason: capacity.reason, raw };
@@ -337,7 +346,7 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
       type: 'create_event_oneline',
       date: date.value,
       time: time.value,
-      location: locationTok,
+      location: location.value,
       capacity: capacity.value,
       price: 0,
       priceMode: 'split_venue',
@@ -349,7 +358,7 @@ function parseOnelineCreate(args: string[], raw: string): ParsedCommand {
     type: 'create_event_oneline',
     date: date.value,
     time: time.value,
-    location: locationTok,
+    location: location.value,
     capacity: capacity.value,
     price: fee.value.amount,
     priceMode: 'per_person',

@@ -225,6 +225,20 @@ describe('D-015 §3/§4 成功句 + mention 行', () => {
     expect(d.mentionees).toEqual([]);
   });
 
+  it('[D-017 AC-7] 正取 0 人 → 只回成功句，不對空氣喊「已報名的各位請確認」', () => {
+    // 主辦開團後自行 -1，正取歸零；此時仍輸出提示句會讓主辦誤以為有人收到通知。
+    const d = formatEditOk(ok({ field: 'location', before: 'A', after: 'B', confirmedCount: 0, tagOwnerIds: [] }), []);
+    expect(d.text).toBe('已更新場地：A → B');
+    expect(d.text).not.toContain('已報名的各位請確認');
+    expect(d.mentionees).toEqual([]);
+  });
+
+  it('[D-017 AC-7] overflow 的 targets 同樣是空陣列，但提示句必須保留（判斷順序）', () => {
+    // overflow 與「沒人」的 targets 都是 []，只有 overflow 旗標能分辨：人在，只是不逐一標註。
+    const d = formatEditOk(ok({ field: 'location', before: 'A', after: 'B', overflow: true }), []);
+    expect(d.text).toBe('已更新場地：A → B\n活動資訊已更新，已報名的各位請確認。');
+  });
+
   it('[D-015 AC-13] 未 overflow（＝上限）→ 正常 tag 全員', () => {
     const exact: EditMentionTarget[] = Array.from({ length: MAX_MENTIONS_PER_MESSAGE }, (_, i) => ({
       displayName: `人${i}`,

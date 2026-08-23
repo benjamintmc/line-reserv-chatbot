@@ -14,6 +14,7 @@ import {
   validateCapacity,
   validateDate,
   validateFee,
+  validateLocation,
   validateTime,
 } from '../commands';
 
@@ -129,11 +130,13 @@ export function applyAnswer(
       return { ok: true, payload: { ...payload, time: r.value }, nextState: nextState(state) };
     }
     case 'awaiting_location': {
-      // 任意非空字串（可含空白）；location 保留內部空白，僅去頭尾。
-      if (trimmed.length === 0) return { ok: false, state };
+      // 非空且不超過 MAX_LOCATION_LEN（D-017 起與一行式、`編輯 場地` 共用同一規則）；
+      // location 保留內部空白，僅去頭尾。超長時停留同一 state 重問，與其他欄位一致。
+      const r = validateLocation(trimmed);
+      if (!r.ok) return { ok: false, state };
       return {
         ok: true,
-        payload: { ...payload, location: trimmed },
+        payload: { ...payload, location: r.value },
         nextState: nextState(state),
       };
     }

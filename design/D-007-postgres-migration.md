@@ -268,3 +268,11 @@ CMD ["node", "dist/index.js"]
 （憑證鏈 + hostname）。真正的風險是 pg v9 改採 libpq 語意時**靜默失去驗證**。
 自 T-027 起：程式端不再傳任何 `ssl` 選項，連線字串一律 `sslmode=verify-full`（D-014 G2），
 TLS 策略單一來源。升級攔截見 `src/db/__tests__/pool-ssl.test.ts` 的金絲雀測試。
+
+
+## Errata 之二（2026-08-23，T-028／D-017；T-017 遺留項）
+
+§3「cancel candidates 唯讀讀安全」的措辭與 CLAUDE.md §4 新增的通則
+「**決策輸入必須鎖內取得**」不一致：`freedConfirmed` 並非單純唯讀，它是**遞補數量的決策輸入**，
+沿用交易外快照會導致釋出數算錯。**實作早已正確**（T-012 B1 已改為鎖內 `RETURNING`），
+本次僅補文件同步，無碼變動。

@@ -27,6 +27,7 @@
 
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { parseCommand } from '../commands';
+import type { InvalidReason } from '../commands/types';
 import type { RegistrationRow } from '../db/schema';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
@@ -539,11 +540,35 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  /** `invalid{command:'edit_event'}` 的原因碼 → 編輯專用格式錯的欄位（D-015 §1）。 */
-  function editErrorField(reason: string): 'date' | 'time' | 'location' {
-    if (reason === 'create_bad_date') return 'date';
-    if (reason === 'create_bad_time') return 'time';
-    return 'location'; // bad_location
+  /**
+   * `invalid{command:'edit_event'}` 的原因碼 → 編輯專用格式錯的欄位（D-015 §1）。
+   *
+   * D-017：原簽名為 `(reason: string)` 且以 `return 'location'` 收尾——parser 日後為
+   * `edit_event` 新增第 4 個原因碼時會**靜默套上錯誤的欄位文案**，編譯器不會有意見。
+   * 改吃 `InvalidReason` 並窮舉：新增原因碼時 `_exhaustive` 會直接編譯失敗。
+   */
+  function editErrorField(reason: InvalidReason): 'date' | 'time' | 'location' {
+    switch (reason) {
+      case 'create_bad_date':
+        return 'date';
+      case 'create_bad_time':
+        return 'time';
+      case 'bad_location':
+        return 'location';
+      // 以下原因碼不會由 `編輯 …` 產生（只出現在開團／報名／分組路徑）。
+      // 顯式列出而非以 default 吞掉，是為了讓「新增原因碼」這件事在此處現形。
+      case 'count_out_of_range':
+      case 'create_wrong_arity':
+      case 'create_bad_capacity':
+      case 'create_bad_price':
+      case 'create_bad_venue_fee':
+      case 'group_bad_args':
+        return 'location';
+      default: {
+        const _exhaustive: never = reason;
+        return _exhaustive;
+      }
+    }
   }
 
   function renderInvalidOneline(result: InvalidOnelineResult): messagingApi.Message[] {

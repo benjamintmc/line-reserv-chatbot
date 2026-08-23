@@ -9,6 +9,16 @@ import { resolve } from 'node:path';
 const root = resolve(__dirname, '..', '..');
 const read = (...seg: string[]): string => readFileSync(resolve(root, ...seg), 'utf8');
 
+describe('D-017 型別層防呆', () => {
+  it('[D-017 AC-8] editErrorField 吃 InvalidReason 並窮舉，不得回退為 (reason: string)', () => {
+    // 回退成 string + `return 'location'` 收尾時，parser 新增第 4 個 edit 原因碼會靜默給錯文案。
+    const src = read('src', 'webhook', 'handler.ts');
+    expect(src).toContain('function editErrorField(reason: InvalidReason)');
+    const body = src.slice(src.indexOf('function editErrorField'));
+    expect(body.slice(0, 1200)).toContain('_exhaustive');
+  });
+});
+
 describe('D-014 / D-016 設定與文件落點', () => {
   it('[D-014 AC-5] 四條回歸關卡指令俱在（lint/build/test/harness:check）', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
