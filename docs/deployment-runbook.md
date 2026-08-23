@@ -146,7 +146,7 @@ gcloud run deploy golf-reserv-chatbot \
 | **Cloud Run service** | `golf-reserv-chatbot`（`min-instances=0`、`concurrency=4`、`--allow-unauthenticated`） |
 | **Service URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app` |
 | **LINE Webhook URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app/webhook`（已 Verify + 真機冒煙通過） |
-| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag **`:v3`**（revision `golf-reserv-chatbot-00003-7lc`，2026-08-19 部署 T-018~T-022；`:v2`/`00002-dhd`、`:v1`/`00001-sr7` 可回滾，但**退回 v2 以前需同時處理 0004 退版**，見 §2.1 ⚠️） |
+| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag **`:v4`**（revision `golf-reserv-chatbot-00004-f5l`，**2026-08-23 部署 T-026 編輯活動資訊**；冒煙：`/health` 200、未簽章 `POST /webhook` 401。**本次無 migration**，故回滾至 `:v3` 無 schema 顧慮）；`:v3`/`00003-7lc`（T-018~T-022）、`:v2`/`00002-dhd`、`:v1`/`00001-sr7` 可回滾，但**退回 v2 以前需同時處理 0004 退版**，見 §2.1 ⚠️ |
 | **DB（Neon）** | host `ep-old-cherry-az822uzr`（Singapore）；app runtime 用 **pooled**（`-pooler`）、migrate 用直連（同 host 去掉 `-pooler`）；已套用 migration 0001/0002/0003/**0004** |
 | **驗證** | `GET /health` → 200 `{"status":"ok"}`；4 個 env vars 已設（`DATABASE_URL`/`LINE_CHANNEL_SECRET`/`LINE_CHANNEL_ACCESS_TOKEN`/`ADMIN_USER_IDS`），`DEBUG_WEBHOOK` 未設（生產關閉） |
 
