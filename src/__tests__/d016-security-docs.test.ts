@@ -17,10 +17,20 @@ describe('D-014 / D-016 設定與文件落點', () => {
     }
   });
 
-  it('[D-014 AC-6] runbook 附錄記錄 T-027 部署 revision 與 /health 驗證', () => {
+  it('[D-014 AC-6] runbook 附錄記錄 T-027 部署 revision 與冒煙結果', () => {
     const rb = read('docs', 'deployment-runbook.md');
-    expect(rb).toContain('golf-reserv-chatbot-00005-89q');
+    expect(rb).toContain('golf-reserv-chatbot-00007-pdv');
     expect(rb).toContain('/health');
+  });
+
+  it('[D-016 AC-9] runbook 釘住「憑證改動後的必要冒煙」兩項（2026-08-23 事故）', () => {
+    // /health 200 與未簽章 401 都不碰 channel secret 與 DB——驗簽壞掉時回的照樣是 401。
+    // 只驗這兩項曾讓一個 100% 收不到訊息的 revision 上線 33 分鐘。
+    const rb = read('docs', 'deployment-runbook.md');
+    expect(rb).toContain('憑證改動後的必要冒煙');
+    expect(rb).toContain('x-line-signature: $SIG'); // ① 帶正確簽章打回去
+    expect(rb).toMatch(/select 1 as ok/); // ② 用該連線字串跑真實查詢
+    expect(rb).toContain('--format=json'); // 取值陷阱的正解
   });
 
   it('[D-014 AC-7] runbook 附錄記錄 cold start log 已無 pg SSL 別名警告', () => {

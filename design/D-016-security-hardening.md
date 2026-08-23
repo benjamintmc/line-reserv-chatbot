@@ -87,8 +87,19 @@
 - [x] **AC-8（回歸關卡未被移除）**：`package.json` 仍具備 `lint`／`build`／`test`／`harness:check` 四條關卡指令，
       且本次四者全綠。（執行：`npm test` 釘住指令存在；全綠與否見任務單證據）
 
-> **真機待驗（不列為 AC，避免文件宣稱未發生的驗證）**：群組實測一則 `名單` 正常回覆
-> （證明 Secret Manager + verify-full 下 DB 與 LINE 皆通）。已登記於 `docs/task-board.md` 阻塞清單。
+- [x] **AC-9（事故後補）**：runbook 釘住「憑證改動後的必要冒煙」兩項——以 secret 計算正確簽章
+      打回 `/webhook` 預期 200、以該連線字串跑一次真實查詢——並記載 `gcloud value()` 對 list
+      加 `['…']` 包裝的取值陷阱。（執行：`npm test`）
+
+> **真機待驗（不列為 AC，避免文件宣稱未發生的驗證）**：群組實測一則 `名單` 正常回覆。
+> orchestrator 已補驗「帶正確簽章 webhook 回 200」與「真實查詢連上 Neon」，但兩者都**繞過 LINE 平台本身**，
+> 故端到端仍需使用者實打。已登記於 `docs/task-board.md` 阻塞清單。
+
+### 事故紀錄（2026-08-23）
+
+首次部署（`00005-89q`）三個憑證取值錯誤，全部 LINE 訊息回 401、33 分鐘全故障，
+**由使用者實測發現而非我的驗證發現**。根因與教訓見 `harness/LESSONS.md` 2026-08-23 條目；
+修復後最終 revision `00007-pdv`，壞掉的 secret 版本 1 已 disable。
 
 ## 討論紀錄（Orchestrator 維護）
 

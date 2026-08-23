@@ -153,6 +153,35 @@ gcloud run deploy golf-reserv-chatbot \
    `gcloud run revisions delete golf-reserv-chatbot-0000N-xxx --region asia-east1`
    注意：刪掉即失去該回滾點，請先確認新 revision 穩定。
 
+### 4.4 ⚠️ 憑證改動後的必要冒煙（2026-08-23 事故教訓）
+
+**`/health` 200 與未簽章 401 都不會碰到 channel secret 或 DB**——驗簽壞掉時回的**照樣是 401**。
+只驗這兩項就宣告成功，會讓一個 100% 收不到訊息的 revision 上線而無人察覺（本次實際發生 33 分鐘）。
+憑證或連線字串改動後**必須**加驗下列兩項：
+
+```bash
+# ① 用 secret 算出正確簽章打回去，預期 200（空 events 無副作用）
+URL=https://golf-reserv-chatbot-1006751446489.asia-east1.run.app/webhook
+SIG=$(gcloud secrets versions access latest --secret=line-channel-secret | python -c "
+import sys,hmac,hashlib,base64
+s=sys.stdin.read().encode()
+print(base64.b64encode(hmac.new(s,b'{\"events\":[]}',hashlib.sha256).digest()).decode(),end='')")
+curl -s -o /dev/null -w '%{http_code}
+' -X POST "$URL" -H 'Content-Type: application/json'   -H "x-line-signature: $SIG" -d '{"events":[]}'
+
+# ② 用該連線字串跑一次真實查詢，證明 verify-full 下 DB 可通
+gcloud secrets versions access latest --secret=database-url | node --input-type=module -e "
+let s='';process.stdin.setEncoding('utf8');for await (const c of process.stdin) s+=c;
+const { default: pg } = await import('pg');
+const pool = new pg.Pool({ connectionString: s.trim(), max: 1 });
+console.log((await pool.query('select 1 as ok')).rows[0]); await pool.end();"
+```
+
+> **取值陷阱（本次根因）**：`gcloud ... --format="value(env.filter(...).extract(value))"` 對 list 欄位
+> 會輸出 **`['…']` 包裝**，三個憑證因此全部多了 4 個字元存進 Secret Manager。
+> **取單一值一律走 `--format=json` 再解析**，並在寫入前核對長度
+> （LINE channel secret = 32 字元、access token = 172 字元）。
+
 ### 4.3 告警（資安 M3）
 
 已建立 Cloud Monitoring 政策 **「webhook 驗簽失敗異常（資安 M3）」**：
@@ -191,7 +220,7 @@ gcloud run deploy golf-reserv-chatbot \
 | **Cloud Run service** | `golf-reserv-chatbot`（`min-instances=0`、`max-instances=3`、`concurrency=4`、`--allow-unauthenticated`；secret 走 Secret Manager） |
 | **Service URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app` |
 | **LINE Webhook URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app/webhook`（已 Verify + 真機冒煙通過） |
-| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag **`:v5`**（revision `golf-reserv-chatbot-00005-89q`，**2026-08-23 部署 T-027 資安加固 H1/M2–M5**；冒煙：`/health` 200、未簽章 `POST /webhook` 401、cold start log 已無 pg SSL 別名警告。**本次無 migration**，回滾至 `:v4` 無 schema 顧慮）；`:v4`（revision `golf-reserv-chatbot-00004-f5l`，**2026-08-23 部署 T-026 編輯活動資訊**；冒煙：`/health` 200、未簽章 `POST /webhook` 401。**本次無 migration**，故回滾至 `:v3` 無 schema 顧慮）；`:v3`/`00003-7lc`（T-018~T-022）、`:v2`/`00002-dhd`、`:v1`/`00001-sr7` 可回滾，但**退回 v2 以前需同時處理 0004 退版**，見 §2.1 ⚠️ |
+| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag **`:v5`**（revision **`golf-reserv-chatbot-00007-pdv`**，**2026-08-23 部署 T-027 資安加固 H1/M2–M5**；冒煙：`/health` 200、**帶正確簽章 `POST /webhook` 200**、未簽章 401、**真實查詢連上 Neon（verify-full）**、cold start log 已無 pg SSL 別名警告。⚠️ 中途 `00005-89q`／`00006-9hc` 為修正過程（見 §4.4）。**本次無 migration**，回滾至 `:v4` 無 schema 顧慮）；`:v4`（revision `golf-reserv-chatbot-00004-f5l`，**2026-08-23 部署 T-026 編輯活動資訊**；冒煙：`/health` 200、未簽章 `POST /webhook` 401。**本次無 migration**，故回滾至 `:v3` 無 schema 顧慮）；`:v3`/`00003-7lc`（T-018~T-022）、`:v2`/`00002-dhd`、`:v1`/`00001-sr7` 可回滾，但**退回 v2 以前需同時處理 0004 退版**，見 §2.1 ⚠️ |
 | **DB（Neon）** | host `ep-old-cherry-az822uzr`（Singapore）；app runtime 用 **pooled**（`-pooler`）、migrate 用直連（同 host 去掉 `-pooler`）；已套用 migration 0001/0002/0003/**0004** |
 | **憑證來源** | **Secret Manager**（T-027／資安 M2）：`database-url`／`line-channel-secret`／`line-channel-access-token`，皆授予 runtime SA `1006751446489-compute@developer.gserviceaccount.com` 的 `roles/secretmanager.secretAccessor`。僅 `ADMIN_USER_IDS` 維持明文 env var（非憑證） |
 | **告警** | Cloud Monitoring 政策「webhook 驗簽失敗異常（資安 M3）」：5 分鐘內 401 > 20 次 → 通知管道 `chatbot-owner-email` |
