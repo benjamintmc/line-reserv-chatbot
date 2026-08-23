@@ -21,6 +21,8 @@
 - 對 `closed`/`done`/`cancelled`/`draft`（未物化）活動加開（一律拒絕）。
 - 整批原子遞補（quota < 候補隊首批次時沿用 D-003 允許拆批，記 Backlog）。
 
+> **errata（2026-08-23，D-015／T-026）：「改時間/地點/費用」已由 D-015 實作。** 原文（本節與 §0）寫「現況無編輯指令」「改時間/地點/費用」屬範圍外——該敘述僅描述 D-010 自身範圍，**不構成禁止**；D-015「編輯活動資訊」已 APPROVED 並落地 T-026，四欄（日期／時間／場地／費用）可經 `編輯` 指令修改，**capacity 仍只加不減（G1 不變）**。
+
 ### 1. 指令與解析（協調 D-002；handler dispatch 增列）
 - 提案 `ParsedCommand` 新增 `{ type: 'add_capacity'; count: number }`；`count` 為正整數、`1 ≤ N ≤ MAX_COUNT`（沿用 §討論-3 上限）。`加開 0`/負數/非數字 → `unknown`（不回覆，防洗版）；`加開 <過大>` → `invalid(command:'add_capacity', reason:'count_out_of_range')`（政策同 signup：靜默）。**解析屬 D-002 parser 擴充，非契約回應結構變更；須回報 Orchestrator 與 api-contract-designer 協調，本文件不私改。**
 - handler 分派：`add_capacity` → `registrationService.addCapacity(...)`；`switch` union 窮舉（`default: never`）。
@@ -50,6 +52,7 @@
 - **G2（鎖內改 capacity + 遞補）**：不得在 `runImmediate`（`FOR UPDATE`）交易外執行 `UPDATE events.capacity` 或遞補寫入；capacity 與遞補須於**同一交易**，`fresh.capacity`/`countConfirmed` 皆鎖內取值，不得用交易外快照。不得繞過 `src/db/tx.ts` runner 另開交易。
 - **G3（僅 open 可加開）**：不得對非 `open`（draft/closed/cancelled/done）或已過期活動加開；交易內須以 `getById` 重讀 re-check，非 open/過期一律不 UPDATE、不遞補。
 - **G4（授權）**：非 `canManageEvent`（`host_user_id` ∪ super-admin）者不得改 capacity、不得 mark、不得寫任何 users 列（唯讀 `getByLineUserId` 解析）。
+  > **errata（2026-08-23，D-015／T-026）：G4「不得 mark」的適用範圍限 `addCapacity`。** 原文字面是全域禁令（非授權者一律不得 `markProcessed`）；**收斂為只約束本文件的 `加開 N` 路徑**。編輯活動資訊路徑（D-015 §二 G5）依 CLAUDE.md §4 去重政策，**含 `not_authorized` 在內的所有拒絕回覆一律 `markProcessed`**，唯一 DB 變更為 `processed_events`（`users` 仍**不得** upsert，該半條在兩處皆成立）。**為什麼**：§4 政策要求「凡本次會送出回覆的訊息一律消費 `message.id`」，否則使用者重送會重複收到拒絕文案；`加開 N` 的非授權路徑不回覆故不 mark，`編輯` 的非授權路徑**會回覆**故必須 mark——兩者不衝突，差別在「是否回覆」。倉庫內兩條看似相反的政策**各有明確適用範圍**，reviewer 逐字比對時勿誤判為矛盾。
 - **G5（不超賣／守恆）**：遞補數不得超過 `promotionQuota = newCapacity − 鎖內有效正取數`；遞補一律 `pickWaitlistForPromotion`（最小 seq）→ `promoteByIds`，遞補後有效正取數 ≤ `newCapacity`。不得直接 `DELETE` registrations、不得自拼 SQL（domain 一律經 repo 原語，沿用 D-003 G6/G10）。
 
 ## 三、Acceptance Checks（每條可轉測試）

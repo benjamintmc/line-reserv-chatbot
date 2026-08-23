@@ -9,8 +9,8 @@
 // D-005 §6.1：第 5 欄（費用）改呼叫 validateFee，依前綴判定 per_person / split_venue。
 // D-011：新增 `分組`（`{M}場 [{R}輪] [單打]`）與 `下一輪` 解析。
 
-import type { InvalidCommandKind, ParsedCommand } from './types';
-import { MAX_COUNT, MAX_GROUP_PARAM } from './types';
+import type { EditEventField, InvalidCommandKind, ParsedCommand } from './types';
+import { MAX_COUNT, MAX_GROUP_PARAM, MAX_LOCATION_LEN } from './types';
 import {
   equalsIgnoreAsciiCase,
   normalizeProxyName,
@@ -94,6 +94,13 @@ export function parseCommand(text: string): ParsedCommand {
   // D-010：加開名額（`加開 N`）。head==='加開'。
   if (head === '加開') {
     return parseAddCapacity(tokens.slice(1), text);
+  }
+
+  // D-015：編輯活動資訊（`編輯 <欄位> <新值>`）。首 token 為 `編輯` 者一律產生可回覆的結果
+  // （edit_event / edit_help / invalid），**不落入 unknown**——`編輯` 不會出現在閒聊，
+  // 故不套用 `+N`／`加開` 的靜默防洗版政策（D-015 §1 畸形輸入裁定）。
+  if (head === '編輯') {
+    return parseEditEvent(tokens.slice(1), text);
   }
 
   // 9. `+` 開頭 → 報名；10. `-` 開頭 → 取消（§3.1）。
@@ -215,6 +222,72 @@ function parseAddCapacity(args: string[], raw: string): ParsedCommand {
     return { type: 'invalid', command: 'add_capacity', reason: 'count_out_of_range', raw };
   }
   return { type: 'add_capacity', count };
+}
+
+/** `編輯` 的欄位名 → 內部欄位鍵（D-015 §1）。`地點` 為 F1 隱藏別名：parser 收、但文案一律示範「場地」。 */
+const EDIT_FIELD_ALIASES: ReadonlyMap<string, EditEventField> = new Map<string, EditEventField>([
+  ['日期', 'date'],
+  ['時間', 'time'],
+  ['場地', 'location'],
+  ['地點', 'location'], // F1 隱藏別名（不對外示範）
+  ['費用', 'fee'],
+  ['人數', 'capacity'], // 導向用；domain 不執行任何異動（D-015 G2）
+]);
+
+/**
+ * D-015 §1 編輯活動資訊：`編輯 <欄位> <新值>`。`args` 為丟棄首 token（編輯）後的剩餘 token。
+ *
+ * 取值規則（逐欄不同，勿統一）：
+ * - date/time：compact（`join('')`）後送既有 validateDate/validateTime 正規化；格式錯 → invalid。
+ * - location：`join(' ')` **保留空格**（場地名需要，如「東方 A 場」）；空 → edit_help；
+ *   > MAX_LOCATION_LEN → invalid(bad_location)，**不截斷**（G6）。
+ * - fee：**F2 compact**（`join('')` 後再去空白）。`validateVenueFee`／`validatePrice` 不吸收空白
+ *   （只有被 G6 禁用的 `validateFee` 會 compact），不先壓掉空白則 `場地費 4000`／`2500 元` 會被誤拒。
+ *   格式須依 `event.price_mode` 判定，parser 無此資訊 → 原樣下傳，由 domain 驗（§2 步驟 5）。
+ * - capacity：不論有無新值一律回 edit_event{field:'capacity'}（domain 回導向文案、零異動）。
+ * - 無參數／未知欄位名／date·time·location·fee 缺新值 → edit_help（回現值＋範例）。
+ */
+function parseEditEvent(args: string[], raw: string): ParsedCommand {
+  const command: InvalidCommandKind = 'edit_event';
+  const field = EDIT_FIELD_ALIASES.get(args[0] ?? '');
+  if (field === undefined) {
+    // `編輯`（無參數）／未知欄位名（如 `編輯 費率 100`）→ 導引。
+    return { type: 'edit_help' };
+  }
+  const rest = args.slice(1);
+
+  // 人數：一律導向（不落 help、不帶新值語意），缺值與帶值同路徑（AC-7）。
+  if (field === 'capacity') {
+    return { type: 'edit_event', field, value: rest.join(' ') };
+  }
+
+  if (rest.length === 0) {
+    // 缺新值：`編輯 日期`／`編輯 場地`… → 導引（靜默會變成「打對一半卻沒反應」的死角）。
+    return { type: 'edit_help' };
+  }
+
+  if (field === 'date') {
+    const r = validateDate(rest.join(''));
+    if (!r.ok) return { type: 'invalid', command, reason: r.reason, raw };
+    return { type: 'edit_event', field, value: r.value };
+  }
+  if (field === 'time') {
+    const r = validateTime(rest.join(''));
+    if (!r.ok) return { type: 'invalid', command, reason: r.reason, raw };
+    return { type: 'edit_event', field, value: r.value };
+  }
+  if (field === 'location') {
+    const value = rest.join(' ').trim();
+    if (value === '') return { type: 'edit_help' };
+    if (value.length > MAX_LOCATION_LEN) {
+      return { type: 'invalid', command, reason: 'bad_location', raw, detail: { len: value.length } };
+    }
+    return { type: 'edit_event', field, value };
+  }
+  // fee：F2 compact；金額格式與計費模式一致性由 domain 依 price_mode 判（§2 步驟 5）。
+  const value = rest.join('').replace(/\s+/g, '');
+  if (value === '') return { type: 'edit_help' };
+  return { type: 'edit_event', field, value };
 }
 
 /**

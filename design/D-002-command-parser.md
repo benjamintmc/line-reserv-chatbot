@@ -88,6 +88,12 @@ export type ParsedCommand =
   | { type: 'unknown' };
 ```
 
+> **errata（2026-08-23，D-015／T-026）：新增 `編輯` 指令家族。** 原文的 union／原因碼清單是 T-005 當時的完整集合，**不是封閉集**；後續設計得依其自身流程擴充（`group`／`group_next`／`add_capacity` 亦同此理）。D-015「編輯活動資訊」新增：
+> - `ParsedCommand` 增 **`{ type:'edit_event'; field:'date'|'time'|'location'|'fee'|'capacity'; value:string }`**（`date`／`time` 之 `value` 已經 `validateDate`／`validateTime` 正規化；`capacity` 只用於回「請改用 `加開 N`」導向文案，不帶異動語意）與 **`{ type:'edit_help' }`**（無參數 `編輯`／未知欄位名／缺新值）。
+> - `InvalidCommandKind` 增 **`'edit_event'`**；`InvalidReason` 增 **`'bad_location'`**（場地名超過 40 個 code unit；刻意不加 `create_` 前綴，因其不屬開團家族）；`invalid` 增選填 **`detail?: { len: number }`**（供回覆顯示使用者實際輸入字數）。
+> - **與既有靜默政策的差異（刻意）**：`+N`／`加開` 的畸形輸入多歸 `unknown`（防洗版）；**首 token 為 `編輯` 者一律回覆、不落入 `unknown`**。理由：`編輯` 不會出現在閒聊，且既然無參數 `編輯` 要回現值清單，`編輯 日期`（缺值）若靜默就成了「打對一半卻沒反應」的死角。G3「不可識別必 silent」的適用對象仍是**無法辨識**的輸入，`編輯 …` 屬**可辨識**，不在其射程內。
+> - **取值規則兩者相反，勿混用**：`location` 為 `tokens.slice(2).join(' ')`（**保留空格**，場地名需要）；`fee` 為 `tokens.slice(2).join('').replace(/\s+/g,'')`（**compact**，因 `validateVenueFee`／`validatePrice` 不吸收空白，`場地費 4000` 不壓縮會被誤拒）。
+
 **畸形輸入的兩層歸類（重要取捨，見 §四 O-2）**：
 
 - `unknown`：**完全不是指令，或視為 no-op 的靜默輸入**（閒聊、無指令前綴、`+`/`-` 後非數字、`+0`/`-0`、空白等）。webhook **必須不回覆**（satisfies FR-5、成功條件 #5）。
@@ -134,6 +140,8 @@ export function parseCommand(text: string): ParsedCommand;
 | 11 | 其餘一切 | `{ type: 'unknown' }` |
 
 > row 3/4（`取消活動`、`取消`）皆以**完全相等**比對，各為獨立字串，**順序不影響正確性**；列於此僅為閱讀順序。`確認`/`取消` 為 stateless token；D-003 依 conversation_states 判斷當下是否有進行中流程來決定實際語意（無流程時可視為 no-op/unknown，屬 D-003）。
+
+> **errata（2026-08-23，D-015／T-026）：dispatch 表新增 `編輯` 分支（置於 row 10 與 row 11 之間，即 `+`/`-` 之後、fallback `unknown` 之前）。** 首 token 為 `編輯` 時：第 2 token 為 `日期`／`時間`／`場地`（**別名 `地點`，parser 收但對外文案一律示範「場地」**）／`費用`／`人數` → `edit_event{field, value}`（`value` 取法見 §1 errata）；第 2 token 為其他字串、或缺第 3 token（`人數` 除外，其恆走導向文案）→ `edit_help`；`日期`／`時間` 的值格式錯 → `invalid{command:'edit_event', reason:'create_bad_date'|'create_bad_time'}`；場地超長 → `invalid{reason:'bad_location', detail:{len}}`。**此分支不會回 `unknown`**（理由見 §1 errata）。
 
 #### 3.1 `+N` / `-N`（含代報名 `+N 名字` / `-N 名字`）
 
@@ -209,6 +217,8 @@ export function parseCommand(text: string): ParsedCommand;
   - 其餘（`signup`/`cancel`/`list`/`create_*`/`confirm`/`abort`/`close_event`/`cancel_event`/`my_id`）→ 交由 D-003/M2/M3 的 domain handler 執行（授權、額滿、DB 寫入、組版皆在那層）。
 - `switch` 須對 union **窮舉**（exhaustive，含 `default: never` 檢查），保證新增指令型別時編譯期即被提醒（G7）。
 
+> **errata（2026-08-23，D-015／T-026）：`invalid` 的回覆政策對 `edit_event` 家族是例外。** 上文「`signup`/`cancel` 類 invalid 傾向靜默」與 handler 現行「非 create/group 的 `invalid` 一律回 `[]`」對 `edit_event` **不適用**——`invalid{command:'edit_event'}` 與 `edit_help` **都必須送進 `eventService.editEvent()`**，由其在交易內 `markProcessed` 後回格式提示（CLAUDE.md §4：會回覆的分支一律消費 `message.id`）。G7 窮舉仍成立：新增兩個 union 成員會使 `dispatchSingle` 的 `never` 檢查編譯失敗，必須補分支。
+
 ### 範圍內
 
 - 文字 → `ParsedCommand` 的**純解析**：`+N`/`-N`（含代報名 `+N 名字`/`-N 名字`）、`名單`/`list`、`開團`（一行式與無參數觸發）、`確認`、`取消`、`關閉報名`、`取消活動`、`我的ID`。
@@ -239,6 +249,8 @@ export function parseCommand(text: string): ParsedCommand;
 - **G6（正規化不逾越）**：不得對整串做無差別 `NFKC`/全形標點正規化；正規化**僅限** §5 對照表的白名單字元類（數字、`+`、`-`、`:`、全形空格）與 proxyName 截斷，不得改動 location/proxyName 內**非白名單字元**（中文、英文字母等）的語意。
 - **G7（型別窮舉）**：不得回傳未定義於 `ParsedCommand` union 的 `type`；消費端 `switch` 須 exhaustive（含 `never` 檢查），新增指令型別時編譯期報錯。
 - **G8（永不拋例外）**：`parseCommand` 對任意輸入（含空字串、超長字串、亂碼、非字串）**不得拋例外**；一律回傳合法 `ParsedCommand`（最壞為 `unknown`）。
+
+> **errata（2026-08-23，D-015／T-026）：G3 的射程界定。** G3 約束的是「**無法辨識**為任何指令」的輸入必須靜默；`編輯 …`（含缺值／未知欄位名）屬**可辨識**的指令嘗試，回 `edit_help`／`invalid` 並由上層回覆，**不違反 G3**。G1／G2／G6／G7／G8 對 `編輯` 分支一律照舊成立（純函式、禁 any、只做白名單正規化、窮舉、不拋例外）。
 
 ---
 
@@ -273,6 +285,8 @@ export function parseCommand(text: string): ParsedCommand;
 - [ ] **AC-25**：一行式 location 含空白導致 arity 錯（O-5）——`開團 2026/08/15 07:30 東方 球場 16 2200`（location 被空白拆成 2 token → 共 6 個非首 token）→ `{ type:'invalid', command:'create_event', reason:'create_wrong_arity' }`。（驗證：unit test / §4 arity、§四 O-5）
 - [ ] **AC-26**：`+N` 數字後緊接非空白字元（寬鬆 proxyName 規則，O-6）——`+1abc` → `{ type:'signup', count:1, proxyName:'abc' }`；`+1.5` → `{ type:'signup', count:1, proxyName:'.5' }`（數字後剩餘字串經 trim/截斷即 proxyName，不要求空白分隔）。（驗證：unit test / §3.1 step 4、§四 O-6）
 
+> **errata（2026-08-23，D-015／T-026）：`編輯` 家族的解析 AC 不在本文件列舉，一律以 D-015 AC-9 為準**（`編輯`／未知欄位／缺值 → `edit_help`；`編輯 日期 2026-13-99` → `invalid(create_bad_date)`；`編輯 場地 東方 A 場` 與別名 `編輯 地點 …` → `value='東方 A 場'` 保留空格；`編輯 費用 場地費 4000` → `value='場地費4000'` compact；全形輸入正常解析）。本文件 AC-1~26 編號與內容一律不動（`check_ac_coverage` 依賴其編號）。
+
 ---
 
 ## 四、開放問題與裁決（2026-07-23 已裁決，留痕）
@@ -285,6 +299,7 @@ export function parseCommand(text: string): ParsedCommand;
 - **O-6（`+N` 名字是否要求空白分隔）→ 維持寬鬆規則（errata 2026-07-23，architect-reviewer nit-3）**：數字後剩餘字串（不論是否以空白分隔）經 trim/折疊/截斷後即 proxyName。故 `+1abc`→proxyName `abc`、`+1.5`→proxyName `.5`。以 AC-26 鎖定此語意。取捨：規則簡單（「數字 + 剩餘即名字」）、對 `+1陳大哥`（無空白）這類自然輸入友善；代價是 `+1.5`/`+1abc` 會被當成代報名而非畸形，但 proxyName 內容的業務校驗可由 D-003 再做（非 D-002 職責）。
 
 > 上述裁決後，本文件無新增開放問題。
+> **errata（2026-08-23，D-015／T-026）：O-5 的「location 限單一 token」只約束一行式開團**；`編輯 場地 <名稱>` 因採「首兩 token 之後全部剩餘」取值，**允許含空格的場地名**（不走位置式解析，無 arity 概念）。兩者規則不同是刻意的，勿相互套用。
 
 ---
 
@@ -299,3 +314,4 @@ export function parseCommand(text: string): ParsedCommand;
 | 2026-07-23 | O-5 location 含空白 | 限單一 token，含空白走逐步問答 |
 | 2026-07-23 | architect-reviewer errata | nit-1 正規化措辭精確化（白名單字元對全串生效、含 location/proxyName）；nit-2 補 AC-21~25 覆蓋 time/capacity/price/多欄順序/arity；nit-3 維持寬鬆 proxyName 規則並加 AC-26（記為 O-6）；nit-5 §3 表註淡化為「完全相等比對，順序不影響」 |
 | 2026-07-23 | 最終核可 | 使用者 APPROVED，解鎖 T-005 實作 |
+| 2026-08-23 | D-015／T-026 errata（架構 reviewer 要求補登） | 新增 `編輯` 家族：`edit_event`／`edit_help`、`InvalidCommandKind` 增 `'edit_event'`、`InvalidReason` 增 `'bad_location'`、`invalid` 增 `detail?:{len}`；首 token `編輯` 一律回覆不落 `unknown`（G3 射程界定）；fee compact／location 保留空格；解析 AC 以 D-015 AC-9 為準，本文件 AC 編號不動 |

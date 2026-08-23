@@ -56,6 +56,15 @@
 > - 驗證改由 `[D-013 AC-1]`（`src/webhook/event-handler.test.ts`：兩列並存、無告知句）與 `[D-013 AC-7]`（`src/domain/event-service.test.ts`：別群列不再被視為 abandoned）承接；`[D-013 AC-4]` 覆蓋保留的 grouping 告知句。
 > - 權威來源：`design/D-013-conversation-scope-pk.md`。本文件其餘攔截語意與 (N2) 文案敘述仍有效。
 
+## errata（2026-08-23，來源 D-015／T-026「編輯活動資訊」；不改本文件 APPROVED 狀態）
+
+> D-015 新增 `編輯 日期／時間／場地／費用`（T-026）。對本文件的影響僅三處，**授權模型與狀態機本體不變**：
+>
+> 1. **§5.1 轉移表**：`編輯` **不觸發任何狀態轉移**（`open → open`，只改 `event_datetime`／`location`／`price_per_person`／`venue_fee` 其中一欄），故轉移表**不需新增列**；但須註明「並非所有生命週期指令都會改 status」——`編輯` 是第一個只改欄位的指令。其可用前提與 close/cancel 相同（`open` ∧ 未過期），`closed` 另回專屬文案（D-015 §3）。
+> 2. **§8 訊息清單**：新增編輯系列文案（成功「已更新…：舊 → 新」＋@ 正取者、`not_authorized`、`no_active`、`closed_not_editable`、`event_ended`、`past_datetime`、`bad_fee`、`bad_location`、格式錯、`編輯 人數` 導向、無參數 `編輯` 的現值清單）——**逐字釘死於 D-015 §3，不在本文件複製**（避免雙份字串漂移）。既有 **(H′) `formatNotAuthorized` 僅涵蓋 close/cancel**，編輯**另立** formatter（既有字串一字不動）；(C) `formatFieldError` 亦**不得**被編輯路徑沿用（其提示「請輸入 YYYY/MM/DD」會誘使使用者裸打日期而落入 `unknown` 靜默，D-015 G7）。
+> 3. **§9 分派表 / 去重政策**：`dispatchSingle` 新增 `edit_event`／`edit_help` 兩分支（新增 union 成員會使 exhaustive `never` 編譯失敗，必補）；且 `invalid{command:'edit_event'}` **不得**沿用「非 create/group 的 invalid 一律回 `[]`」——須送進 `eventService.editEvent()`。**去重政策**：編輯路徑依 CLAUDE.md §4，**所有會回覆的分支（含 `not_authorized`）一律於交易內 `markProcessed`**，與本文件 §9 散文所述 close/cancel「拒絕於交易外 early-return 不 mark」**刻意不同**（該做法成文於 §4 政策之前，依 §4.5 不回溯）。兩者各有適用範圍，勿判為矛盾。
+> 4. **權威來源**：`design/D-015-edit-event.md`（APPROVED，R2 三輪雙審封閉）。**插入者**：orchestrator 代筆——撰稿為 architect，因其 subagent 僅有 Read/Write、整檔重寫 594 行會被截斷而毀檔，故改由 orchestrator 精準插入；內容未經改動。
+
 ---
 
 ## 一、設計內容

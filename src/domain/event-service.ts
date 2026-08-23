@@ -38,8 +38,10 @@ import { GROUPING_STATE } from './grouping-service';
 import type { EventReader } from '../db/repositories/event-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
-import type { TransactionRunner } from '../db/tx';
-import { nowIso, taipeiToUtcIso } from '../db/time';
+import type { ImmediateRunner, TransactionRunner } from '../db/tx';
+import { nowIso, taipeiToUtcIso, utcIsoToTaipei } from '../db/time';
+import { validatePrice, validateVenueFee } from '../commands/validators';
+import type { EditEventField } from '../commands/types';
 import { isExpired } from './event-status';
 import { perPersonAmount } from './billing';
 import { canManageEvent as canManageEventAuthz } from './authz';
@@ -117,6 +119,83 @@ export type CancelResult =
   | { kind: 'no_active' }
   | { kind: 'ok'; event: EventRow };
 
+// ── D-015 編輯活動資訊（`編輯 日期／時間／場地／費用`） ──────────────────────
+
+/**
+ * 單則訊息可帶的 mention 數上限（LINE 平台硬限制）。
+ *
+ * **官方出處**（AC-13 前置）：LINE Messaging API reference,
+ * Text message (v2) → Mention object：「Up to 20 mentions can be substituted in a single message.」
+ * <https://developers.line.biz/en/reference/messaging-api/#text-message-v2-mention-object>
+ * （同頁另載：mention object 只能用於 reply／push message，且收訊端須為 group/multi-person chat
+ *   ——本設計走 reply 回群組，皆滿足。）
+ *
+ * 註：LINE 官方 SDK（v9.5.0）的 `TextMessageV2.substitution` 由官方 OpenAPI 產生、
+ * 為開放 map 無 `maxProperties`，故此上限**無法**由型別強制，必須在應用層自行守住：
+ * （此處刻意不寫出 SDK 套件名字面，以免觸發 domain 純度靜態檢查的字串比對——
+ *   本檔確實**未** import 任何 LINE SDK 型別，D-004 AC-19／D-005 AC-16／D-006 AC-14）
+ * 超限致 reply 400 時 DB 已 COMMIT 且 message.id 已消費 → 使用者看不到成功訊息、重送也不再回覆。
+ */
+export const MAX_MENTIONS_PER_MESSAGE = 20;
+
+/** 可實際編輯的欄位（`capacity` 不在此集合——人數不可編輯，D-015 §1）。 */
+export type EditField = Exclude<EditEventField, 'capacity'>;
+
+/**
+ * 編輯請求（D-015 §2）。由 handler 依 parser 結果轉換：
+ * `edit_event{field!=capacity}` → `set`；`edit_event{field=capacity}` → `capacity`；
+ * `edit_help` → `help`；`invalid{command:'edit_event'}` → `format_error`。
+ */
+export type EditEventRequest =
+  | { kind: 'set'; field: EditField; value: string }
+  | { kind: 'capacity' }
+  | { kind: 'help' }
+  | { kind: 'format_error'; field: 'date' | 'time' | 'location'; detail?: { len: number } };
+
+export interface EditEventInput {
+  groupId: string;
+  executorLineUserId: string;
+  messageId: string;
+  request: EditEventRequest;
+}
+
+/**
+ * 編輯結果（D-015 §2）。
+ *
+ * 對 §2 型別表的兩處**唯讀補充**（非行為變更，供 §3 釘死文案取值；已回報 Orchestrator）：
+ * - `ok` 增 `confirmedCount`：split 成功句需顯示「目前正取 {K} 人」，K 為正取**列數**，
+ *   與去重後的 `tagOwnerIds.length` 不同（同一人可有多列），不可互相替代。
+ * - `help` 增 `confirmedCount` 與 `now`：help 的 `{費用列}` 為 `feeLine(event, K, 'live')` 需 K，
+ *   範例日期需 now（§2「時鐘由 service 取一次、下傳 formatter」；formatter 不得自取時鐘，G7）。
+ */
+export type EditEventResult =
+  | {
+      kind: 'ok';
+      field: EditField;
+      /** 改前值（date/time 為合併後完整時刻 `YYYY-MM-DD HH:MM`）。 */
+      before: string;
+      /** 改後值（同上格式）。 */
+      after: string;
+      /** split_venue 改費用時的**改後**每人攤額（per_person 不帶）。 */
+      perPerson?: number;
+      /** 有效正取列數（split 成功句的 K）。 */
+      confirmedCount: number;
+      /** 待 @ 的正取 owner user id（依 seq 首見序、已去重）。 */
+      tagOwnerIds: number[];
+      /** 超過單則 mention 上限 → 整則退化為無 @ 提醒句（G9）。 */
+      overflow: boolean;
+    }
+  | { kind: 'help'; event: EventRow; confirmedCount: number; now: string }
+  | { kind: 'capacity' }
+  | { kind: 'format_error'; field: 'date' | 'time' | 'location'; detail?: { len: number } }
+  | { kind: 'bad_fee'; priceMode: PriceMode }
+  | { kind: 'past_datetime'; now: string }
+  | { kind: 'not_authorized' }
+  | { kind: 'no_active' }
+  | { kind: 'closed_not_editable' }
+  | { kind: 'event_ended' }
+  | { kind: 'duplicate' };
+
 // ── 輸入型別 ─────────────────────────────────────────────────────────
 
 export interface StartCreationInput {
@@ -175,6 +254,11 @@ export interface EventServiceDeps {
   users: UserRepository;
   conversations: ConversationReader;
   runInTransaction: TransactionRunner;
+  /**
+   * D-015 §2：`編輯` 的鎖內 read-modify-write 需 `FOR UPDATE`（既有 runner，server.ts 注入）。
+   * 選填以維持既有測試/呼叫端零回歸；未注入時呼叫 `editEvent` 會明確拋錯（不靜默降級為無鎖）。
+   */
+  runImmediate?: ImmediateRunner;
   /** super-admin 集合（來源 env ADMIN_USER_IDS，由 server.ts 注入；跨群安全網、domain 不讀 env，D-006 G3）。 */
   superAdminUserIds: ReadonlyArray<string>;
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
@@ -197,6 +281,7 @@ export class EventService {
   private readonly users: UserRepository;
   private readonly conversations: ConversationReader;
   private readonly tx: TransactionRunner;
+  private readonly runImmediate: ImmediateRunner | undefined;
   private readonly superAdmins: ReadonlySet<string>;
   private readonly logError: (msg: string, meta?: Record<string, unknown>) => void;
 
@@ -205,6 +290,7 @@ export class EventService {
     this.users = deps.users;
     this.conversations = deps.conversations;
     this.tx = deps.runInTransaction;
+    this.runImmediate = deps.runImmediate;
     this.superAdmins = new Set(deps.superAdminUserIds);
     this.logError =
       deps.logError ??
@@ -531,6 +617,152 @@ export class EventService {
       // G2：open → cancelled（終態）。G6：僅狀態轉移，不刪 registrations。
       await repos.events.updateStatus(active.id, 'cancelled');
       return { kind: 'ok', event: { ...active, status: 'cancelled' } };
+    });
+  }
+
+  // ── `編輯 日期／時間／場地／費用`（D-015 §2；R2 鎖內 read-modify-write） ──────────
+  //
+  // 與 close/cancel 的差異（刻意，且已由 D-015 明文界定 D-006 §2/G2 與 D-010 §二/G4 的適用範圍）：
+  //   1. 授權判定改**在鎖內**做——`canManageEvent` 的輸入 `fresh` 必須是鎖內權威重讀值（G1），
+  //      交易外 `findActiveByGroup` 的快照只用來取 `id` 當鎖鍵，其欄位不得作任何決策輸入。
+  //   2. **拒絕回覆一律消費 message.id**（CLAUDE.md §4 去重政策）：`markProcessed` 是交易第一步，
+  //      置於所有拒絕 early-return 之前（G5）。非授權者仍**不得** upsert users（唯讀解析，G4）。
+  async editEvent(input: EditEventInput): Promise<EditEventResult> {
+    const runImmediate = this.runImmediate;
+    if (runImmediate === undefined) {
+      // 不靜默降級為無鎖交易（無鎖等於失去 read-modify-write 的正確性，G1）。
+      throw new Error('EventService.editEvent 需要注入 runImmediate（D-015 §2）');
+    }
+    // §2：時鐘由 service 取一次，下傳過期判定、past_datetime 與 formatter（G7 formatter 不自取時鐘）。
+    const now = nowIso();
+
+    // 交易外唯讀：**僅**用於取 id 當鎖鍵。取 id 後該列若被並行 flip，鎖內重讀會回 no_active
+    // （窄競態、良性，刻意不加補償邏輯，N10）。
+    const candidate = await this.events.findActiveByGroup(input.groupId);
+
+    // (B) 無候選活動（含 closed 已離開 active 集）→ 仍須消費 message.id（G5）。
+    if (candidate === undefined) {
+      return this.tx<EditEventResult>(async (repos) => {
+        if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
+        const latest = await repos.events.findLatestDisplayable(input.groupId);
+        if (latest !== undefined && latest.status === 'closed') {
+          return { kind: 'closed_not_editable' };
+        }
+        return { kind: 'no_active' };
+      });
+    }
+
+    // (A) 有候選活動 → FOR UPDATE 鎖住該列後才做任何判定與寫入。
+    return runImmediate<EditEventResult>(candidate.id, async (repos) => {
+      // 1. 去重為第一步，且在所有拒絕 early-return 之前（G5）。
+      if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
+
+      // 2. 鎖內權威重讀：改前值與所有狀態/過期判定的**唯一**來源（G1）。
+      const fresh = await repos.events.getById(candidate.id);
+      if (fresh === undefined) return { kind: 'no_active' };
+      if (fresh.status === 'closed') return { kind: 'closed_not_editable' };
+      if (fresh.status !== 'open') return { kind: 'no_active' };
+      if (isExpired(fresh, now)) return { kind: 'event_ended' };
+
+      // 3. 授權：共用謂詞（唯讀 getByLineUserId，不 upsert users；G4）。
+      if (!(await canManageEventAuthz(repos.users, this.superAdmins, fresh, input.executorLineUserId))) {
+        return { kind: 'not_authorized' };
+      }
+
+      // 4. 三條唯讀分派（已 mark、無 UPDATE）。仍走同一個 FOR UPDATE 入口：
+      //    統一入口的可維護性優先於省一次列鎖（刻意取捨，N9）。
+      const req = input.request;
+      if (req.kind === 'capacity') return { kind: 'capacity' };
+      if (req.kind === 'format_error') {
+        return req.detail === undefined
+          ? { kind: 'format_error', field: req.field }
+          : { kind: 'format_error', field: req.field, detail: req.detail };
+      }
+      if (req.kind === 'help') {
+        return {
+          kind: 'help',
+          event: fresh,
+          confirmedCount: await repos.registrations.countConfirmed(fresh.id),
+          now,
+        };
+      }
+
+      // 5. set：改前值一律取自 fresh。
+      //    鎖內只取該 event 的 confirmed 列一次——K（正取列數）與 tagOwnerIds（去重 owner）共用；
+      //    等價於 countConfirmed()（同一 WHERE 述詞、同一交易快照），少一次鎖內查詢（N5 精神）。
+      const confirmedRows = await repos.registrations.listConfirmed(fresh.id);
+      const confirmedCount = confirmedRows.length;
+      // owner_user_id 去重（同一人只 tag 一次；依 seq 首見序，listConfirmed 已 ORDER BY seq）。
+      const tagOwnerIds = [...new Set(confirmedRows.map((r) => r.owner_user_id))];
+      // overflow 於解析 line_user_id **之前**判定（可能高估 → 偏向退化，N-b 釘死，不留第二種算法）。
+      const overflow = tagOwnerIds.length > MAX_MENTIONS_PER_MESSAGE;
+
+      let before: string;
+      let after: string;
+      let perPerson: number | undefined;
+
+      switch (req.field) {
+        case 'date':
+        case 'time': {
+          // 日期與時間共用 event_datetime：拆本地 → 只換被編輯的半邊 → 合回 UTC（另一半原樣保留）。
+          const cur = utcIsoToTaipei(fresh.event_datetime);
+          const next =
+            req.field === 'date'
+              ? { date: req.value, time: cur.time }
+              : { date: cur.date, time: req.value };
+          const newIso = taipeiToUtcIso(next.date, next.time);
+          // G3：不得存在任何可寫入 event_datetime <= now 的分支（同一注入時鐘、UTC ISO 字串比較）。
+          if (newIso <= now) return { kind: 'past_datetime', now };
+          await repos.events.updateEventDatetime(fresh.id, newIso);
+          // 成功句恆顯示合併後完整時刻，讓使用者確認另一半沒被動到（§3，刻意設計）。
+          before = `${cur.date} ${cur.time}`;
+          after = `${next.date} ${next.time}`;
+          break;
+        }
+        case 'location': {
+          await repos.events.updateLocation(fresh.id, req.value);
+          before = fresh.location;
+          after = req.value;
+          break;
+        }
+        case 'fee': {
+          // G6：**不得**呼叫 validateFee（會依前綴自動判模式＝靜默切換 price_mode）。
+          // 一律以 fresh.price_mode 決定驗證器與寫入原語 → 計費方式不可變更（G2）。
+          if (fresh.price_mode === 'split_venue') {
+            const r = validateVenueFee(req.value);
+            if (!r.ok) return { kind: 'bad_fee', priceMode: 'split_venue' };
+            await repos.events.updateVenueFee(fresh.id, r.value);
+            before = String(fresh.venue_fee ?? 0);
+            after = String(r.value);
+            // N6：新攤額必須以**改後**值算（不得用 fresh.venue_fee）。
+            perPerson = perPersonAmount({ ...fresh, venue_fee: r.value }, confirmedCount);
+          } else {
+            const r = validatePrice(req.value);
+            if (!r.ok) return { kind: 'bad_fee', priceMode: 'per_person' };
+            await repos.events.updatePricePerPerson(fresh.id, r.value);
+            before = String(fresh.price_per_person);
+            after = String(r.value);
+          }
+          break;
+        }
+        default: {
+          const _exhaustive: never = req;
+          return _exhaustive;
+        }
+      }
+
+      // 6. 回結果即 COMMIT。`users.getById` 解析 line_user_id／顯示名於**交易外**進行
+      //    （比照 buildPromotionNotice／renderAddCapacity），不得在鎖內做 N+1 查詢延長鎖期（N5/G9）。
+      return {
+        kind: 'ok',
+        field: req.field,
+        before,
+        after,
+        ...(perPerson !== undefined ? { perPerson } : {}),
+        confirmedCount,
+        tagOwnerIds,
+        overflow,
+      };
     });
   }
 }

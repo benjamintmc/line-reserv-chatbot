@@ -1,8 +1,7 @@
 # D-015: 編輯活動資訊（`編輯 日期／時間／場地／費用`）
 
-- 狀態：**APPROVED（2026-08-22，使用者核可）** — 三輪 R2 雙審全數封閉（5+2 blocker）+ 使用者最終核可。**核可但暫不動工**：T-026 依使用者裁決留在待動工，不排入本輪。
+- 狀態：**APPROVED（2026-08-22，使用者核可）** — 三輪 R2 雙審全數封閉（5+2 blocker）+ 使用者最終核可。**2026-08-22 使用者指示動工**：T-026 已派工 backend-engineer，「待動工豁免」行已由 orchestrator 移除（15 條 AC 自此納入 `check_ac_coverage`，未補測試前該關卡會紅——這是刻意的施工中訊號，不得再加豁免繞過）。
 - 撰寫者：architect
-- AC 覆蓋：**待動工豁免**（任務 T-026 尚未開始，15 條 AC 暫不計入 `check_ac_coverage`；**動工時必須移除本行**，否則 AC 將不受檢查＝假綠）
 - 關聯：任務 T-026 ／ 相依 D-002（parser）、D-003 §4（mention）、D-004、D-005、D-006 §2、D-008、D-010、D-012 §2（多行批次）
 - 風險等級：**R2（高）**——動 `src/domain/event-service.ts`（CLAUDE.md §4.5 預設高風險模組）＋鎖內 read-modify-write ＋授權。依 §5：雙 reviewer + e2e，Guardrails ≥3（本文件 9 條）。
 - 修訂：R2 雙審 5 blocker（A1–A5）已封閉；複審殘留 2 blocker 亦已回填——**F1**（顯示一律用「場地」，`地點` 降為隱藏別名）、**F2**（fee 取值改 compact，`validateVenueFee`／`validatePrice` 不吸收空白）。
@@ -49,13 +48,13 @@
 - **bad_fee**：per_person → `本活動是每人固定費用，請輸入金額（例：編輯 費用 2500）。本活動的計費方式無法變更。`；split → `本活動是場地費均攤，請輸入場地費總額（例：編輯 費用 場地費4000）。本活動的計費方式無法變更。`
 - **bad_location**：`場地名稱請控制在 40 字以內（你輸入了 {n} 字）。`
 - **capacity 導向**（`編輯 人數 N` 與 `編輯 人數` 皆走此）：`人數不能直接編輯。要增加名額請輸入「加開 N」（例：加開 2）；縮減名額目前不支援。`
-- **help 全文（A5，逐字釘死）**：`{費用列}` 沿用 `list-formatter.feeLine(event, K, 'live')`；`{現值}` 為 `event.location`；**`{費用範例}` 依 `price_mode` 動態產生**——per_person → `編輯 費用 2500`，split → `編輯 費用 場地費4000`（否則 split 活動照範例打會改錯對象）。標籤與範例關鍵字逐字對齊（F1：一律「場地」）。**註記：現值顯示用 `YYYY-MM-DD`、範例用 `YYYY/MM/DD`，`validateDate` 兩者皆收，非不一致，勿改。**
+- **help 全文（A5，逐字釘死）**：`{費用列}` 沿用 `list-formatter.feeLine(event, K, 'live')`——**該函式自帶標籤**（per_person 回 `每人費用：2500 元`；split 回 `場地費：4000 元，平均每人約 N 元（暫估，關閉報名後結算）`），故 code block 內**不得**再加外層 `費用：` 前綴（2026-08-23 errata：原寫 `費用：{費用列}` 會輸出「費用：每人費用：2500 元」重複標籤）；`{現值}` 為 `event.location`；**`{費用範例}` 依 `price_mode` 動態產生**——per_person → `編輯 費用 2500`，split → `編輯 費用 場地費4000`（否則 split 活動照範例打會改錯對象）。標籤與範例關鍵字逐字對齊（F1：一律「場地」）。**註記：現值顯示用 `YYYY-MM-DD`、範例用 `YYYY/MM/DD`，`validateDate` 兩者皆收，非不一致，勿改。**
 ```
 活動目前資訊：
 日期：{YYYY-MM-DD}
 時間：{HH:MM}
 場地：{location}
-費用：{費用列}
+{費用列}
 人數上限：{capacity}
 
 編輯 日期 {exampleDate(now)}
@@ -103,7 +102,7 @@
 - [ ] **AC-7（人數導向）**：`編輯 人數 12` 與 `編輯 人數`（缺值）→ 皆回導向文案（不落 help）、`capacity` 不變、無任何 `events` UPDATE，且 `message.id` 已消費。（`npm test`）
 - [ ] **AC-8（去重全分支）**：對 G5 列舉之每一分支以同 `messageId` 送第二次 → 一律 `duplicate`、不回覆、無二次寫入；特別涵蓋 `edit_help` 與 `invalid(edit_event)` 兩條經 handler 新分支的路徑。（`npm test`，表格驅動）
 - [ ] **AC-9（parser 契約；注意 §1 已知取捨，非全域保證）**：`編輯`／`編輯 費率 100`／`編輯 場地`（缺值）→ `edit_help`；`編輯 日期 2026-13-99` → `invalid(create_bad_date)`；`編輯 場地 東方 A 場` 與**隱藏別名** `編輯 地點 東方 A 場` → 同為 `location`、`value='東方 A 場'`（保留空格）；`編輯 費用 場地費 4000` → `value='場地費4000'`（compact）；全形『編輯　日期　2026/09/01』→ 正常解析。（`npm test`）
-- [ ] **AC-10（help 逐字比對＋動態日期＋中性）**：`編輯` 回覆與 §3 釘死全文**逐字相等**（標題「活動目前資訊：」＋五列現值＋空行＋四條範例＋導向句），**per_person 與 split 兩種 `price_mode` 各比一次**（`{費用列}`／`{費用範例}` 各自正確）；換兩個 now 得兩種 `exampleDate`（證明未寫死、未讀系統時鐘）；全文不得出現「編輯 地點」字樣（F1）。球種中性由 reviewer 逐字檢視，結論記於 `docs/reviews/RP-T-026.md`。（`npm test` + 人工檢視）
+- [ ] **AC-10（help 逐字比對＋動態日期＋中性）**：`編輯` 回覆與 §3 釘死全文**逐字相等**（標題「活動目前資訊：」＋五列現值〔第 4 列為 `feeLine` 自帶標籤的費用列，**無外層 `費用：` 前綴**〕＋空行＋四條範例＋導向句），**per_person 與 split 兩種 `price_mode` 各比一次**（`{費用列}`／`{費用範例}` 各自正確）；換兩個 now 得兩種 `exampleDate`（證明未寫死、未讀系統時鐘）；全文不得出現「編輯 地點」字樣（F1）。球種中性由 reviewer 逐字檢視，結論記於 `docs/reviews/RP-T-026.md`。（`npm test` + 人工檢視）
 - [ ] **AC-11（場地 40 字上限＋G2 逐欄斷言）**：40 字 → 成功且以整列 diff 斷言除 `location`／`updated_at` 外逐欄相等；41 字 → `bad_location` 文案且 `{n}` 為實際字數、**不截斷**、`location` 不變。（`npm test`）
 - [ ] **AC-12（mention 對象正確）**：confirmed 3 人（其中一人有兩列自報名＋一列代報名）+ 候補 2 人 → 恰 tag 3 個不重複 owner、不含候補；代報名列 tag 代報者本人；owner 無 `line_user_id` 者以純文字 `@名字` 出現且不在 `mentionees`；訊息型別為 `textV2` + `{mN}` substitution。（`npm test`）
 - [ ] **AC-13（超限整則退化）**：**前置**：`MAX_MENTIONS_PER_MESSAGE` 已依**官方出處**確證並填入保守值（無出處前本條不得標記通過，亦不得以「參考值」代替）。`tagOwnerIds.length` = 上限 → 正常 tag；= 上限 + 1 → `overflow` 為真、`mentionees` 為空、文案為退化句、仍為單一則。（`npm test`）
@@ -118,3 +117,4 @@
 | 2026-08-22 | R2 雙審 5 blocker（A1–A5）＋複審 2 blocker（F1 顯示統一「場地」、F2 fee compact）＋ nit | 全數採納回填；不採納：`formatNoActiveEvent`/`formatNoOpenEvent` 併案（Backlog）、排除編輯者自己、mention 上限直接填 20（須官方出處）、成功句改用「日期」（恆顯示合併時刻為刻意設計） |
 | 2026-08-22 | §4 成功後 @ 全體正取者是否採用（使用者稍早曾裁決「標記正取者不做」，理由為需付費推播） | **採用**。兩者情境不同：`關閉報名` 無人下指令故只能 push（計費）；`編輯` 由使用者主動下指令，@ 夾在既有 reply 內（不計費）。使用者確認「多一則 TAG 大家沒問題」 |
 | 2026-08-22 | 跨任務衝突（orchestrator 登記） | 與「移除 `關閉報名`」相撞三處（split 文案「關閉報名後結算」、`closed_not_editable` 語意、`findLatestDisplayable` 判 closed）。**不影響本設計正確性**（`closed` 現仍存在）；已登記 `docs/backlog.md`，要求該案設計文件把 D-015 列入預列 errata。 |
+| 2026-08-23 | help 費用列重複標籤（實作暴露） | errata：去掉外層 `費用：` 前綴，改為直接嵌入 `feeLine` 自帶標籤（§3 help block 第 5 列 → `{費用列}`；§3 敘述句與 AC-10 同步） |

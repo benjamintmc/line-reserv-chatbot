@@ -10,6 +10,14 @@
 
 ## 條目
 
+- **（T-026 雙審 nit，2026-08-23，實作已 PASS 不阻塞）** 兩位 reviewer 提出、經 orchestrator 裁定「不值得為此再跑一輪設計 errata + 實作 + 複審」的項目，逐條記於此供後續同型任務**順手**清償：
+  ①**`formatEditOk` 對空氣喊話**：正取為 0 時（主辦自行 `-1` 後）仍輸出「已報名的各位請確認。」。極低頻、非資料錯誤；修法是該情況只輸出成功句，但會動 D-015 §3 釘死字串 ⇒ 需 errata。
+  ②**`event-formatter.ts:245` 仍為「活動已關閉報名。」**，與 D-015 收斂後的「報名已截止」並存——**與本檔既有條目④（`formatNoActiveEvent` vs `formatNoOpenEvent`）同族**，屬 LESSONS 登記過的「同一狀態兩種說法」；建議與④併案一次收斂。
+  ③**`handler.ts:493` 顯示名 fallback `'使用者'` vs 同檔 203 行既有 `'代報者'`** 風格不一（皆為防禦路徑、不在釘死清單內）。
+  ④**`users.getByIds` 批次原語缺席**：`renderEdit` 成功路徑對 ≤20 個 owner 各發一次 `getById`（交易外、`Promise.all`，符合 G9 不延長鎖期），但同型 N+1 在 `buildPromotionNotice`／`renderAddCapacity` 已存在三處；加一個批次原語可一次清掉。R1。
+  ⑤**`editErrorField(reason: string)` 非 exhaustive**：非 `create_bad_date`／`create_bad_time` 一律落 `'location'`，日後 parser 對 `edit_event` 新增第 4 個 reason 會**靜默給錯文案**；建議改吃 `InvalidReason` 並對已知值 exhaustive。
+  ⑥**`EventServiceDeps.runImmediate?` 為選填＋runtime throw**：`server.ts` 已注入故現況安全，改必填即可讓編譯器擋住未來新建構點（僅需改測試 fixture）。
+  ⑦**`MAX_MENTIONS_PER_MESSAGE = 20` 的真機驗證**：出處為官方送訊方向文件（非 SDK 型別，OpenAPI 無 `maxProperties`），唯一守門是應用層常數；LINE 若日後調整我方不會自動得知。建議部署後真機驗一次 21 人退化路徑。
 - **（D-015／T-026 衍生，2026-08-22，兩條）** 編輯活動資訊設計階段裁決後留下：
   ①**縮減名額（`capacity` 下修）無合法路徑**——`編輯 人數` 只導向 `加開 N`，D-010 保證只加不減，想縮只能「取消活動重開」（報名與候補 FIFO 全毀）。**動工前必須先解**：`registration-service.signup` 目前以**交易外**的 `event.capacity` 快照作容量決策，安全性完全依賴 D-010 G1「單調不減」；未先改為鎖內重讀就開放縮減 = 靜默超賣（同 2026-08-19 條目①，此為其產品面出口）。另需裁決「縮到低於現有正取人數時，誰被踢回候補」。碰 `registration-service.ts` ⇒ **R2**。
   ④**同一狀態兩種說法（文案不一致）**：`formatNoActiveEvent()`「目前沒有進行中的活動。」（有句號）與 `formatNoOpenEvent()`「目前沒有開放報名的活動」（無句號）並存，指涉情境高度重疊。D-015 選用前者正確，不阻塞任何任務；收斂需逐一比對兩者現行呼叫點的語意差異（是否真的一個指「沒有活動」、一個指「有活動但不開放」）再決定合併或明確分工。純文案，R0–R1。**design-reviewer 標為疑似重複問題**——若再出現一次同型缺陷，登記 LESSONS。

@@ -47,6 +47,8 @@ import type {
   CloseResult,
   CancelResult as EventCancelResult,
   InvalidOnelineResult,
+  EditEventRequest,
+  EditEventResult,
 } from '../domain/event-service';
 import type {
   GroupingService,
@@ -89,6 +91,16 @@ import {
   formatOnelineFormatHelp,
   formatRaceLost,
   formatConfirmReprompt,
+  formatEditOk,
+  formatEditHelp,
+  formatEditCapacityRedirect,
+  formatEditFormatError,
+  formatEditPastDatetime,
+  formatEditBadFee,
+  formatEditNotAuthorized,
+  formatEditClosedNotEditable,
+  formatEditEventEnded,
+  type EditMentionTarget,
 } from '../domain/event-formatter';
 import { nowIso } from '../db/time';
 import {
@@ -462,6 +474,62 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
+  // ── D-015 render（編輯活動資訊；單一則 reply，成功時同則附 @ 正取者） ──────────
+  //
+  // `users.getById` 的逐人解析刻意留在**這裡**（交易外、鎖已釋放），
+  // 不進 domain 的 FOR UPDATE 區段（N5/G9），比照既有 buildPromotionNotice／renderAddCapacity。
+  async function renderEdit(result: EditEventResult): Promise<messagingApi.Message[]> {
+    switch (result.kind) {
+      case 'duplicate':
+        return []; // 重送：不回覆、不二次寫入
+      case 'ok': {
+        // G9：overflow 為真 → 整則退化，**不新增任何解析查詢**（連 users.getById 都不打）。
+        const targets: EditMentionTarget[] = result.overflow
+          ? []
+          : await Promise.all(
+              result.tagOwnerIds.map(async (id) => {
+                const owner = await deps.users.getById(id);
+                return {
+                  displayName: owner?.display_name ?? '使用者',
+                  lineUserId: owner?.line_user_id ?? null,
+                };
+              }),
+            );
+        return [toLineMessage(formatEditOk(result, targets))];
+      }
+      case 'help':
+        return [toLineMessage(formatEditHelp(result.event, result.confirmedCount, result.now))];
+      case 'capacity':
+        return [toLineMessage(formatEditCapacityRedirect())];
+      case 'format_error':
+        // 時鐘於邊界層注入（formatter 不得自取，G7）；沿用既有 formatOnelineFormatHelp(nowIso()) 的作法。
+        return [toLineMessage(formatEditFormatError(result.field, nowIso(), result.detail))];
+      case 'bad_fee':
+        return [toLineMessage(formatEditBadFee(result.priceMode))];
+      case 'past_datetime':
+        return [toLineMessage(formatEditPastDatetime(result.now))];
+      case 'not_authorized':
+        return [toLineMessage(formatEditNotAuthorized())];
+      case 'no_active':
+        return [toLineMessage(formatNoActiveEvent())]; // (J) 沿用既有字串
+      case 'closed_not_editable':
+        return [toLineMessage(formatEditClosedNotEditable())];
+      case 'event_ended':
+        return [toLineMessage(formatEditEventEnded())];
+      default: {
+        const _exhaustive: never = result;
+        return _exhaustive;
+      }
+    }
+  }
+
+  /** `invalid{command:'edit_event'}` 的原因碼 → 編輯專用格式錯的欄位（D-015 §1）。 */
+  function editErrorField(reason: string): 'date' | 'time' | 'location' {
+    if (reason === 'create_bad_date') return 'date';
+    if (reason === 'create_bad_time') return 'time';
+    return 'location'; // bad_location
+  }
+
   function renderInvalidOneline(result: InvalidOnelineResult): messagingApi.Message[] {
     // D-006：開團全開 → InvalidOnelineResult 收斂為單一 format_help。
     switch (result.kind) {
@@ -618,6 +686,33 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'my_id':
         // D-006 §3：接線回 (MyID)——傳訊人自身 userId（群回、唯讀、不 mark）。
         return [toLineMessage(formatMyId(userId))];
+      // D-015：編輯活動資訊。`人數` 轉導向請求（domain 零異動），其餘為單欄 set。
+      case 'edit_event': {
+        const request: EditEventRequest =
+          cmd.field === 'capacity'
+            ? { kind: 'capacity' }
+            : { kind: 'set', field: cmd.field, value: cmd.value };
+        return renderEdit(
+          await deps.eventService.editEvent({
+            groupId,
+            executorLineUserId: userId,
+            messageId,
+            request,
+          }),
+        );
+      }
+      // D-015 N3：`edit_help` 也**必須**進 editEvent（要回覆就要消費 message.id，G5），
+      // 不可在此直接組文案——現值來自鎖內權威重讀的 event。
+      case 'edit_help': {
+        return renderEdit(
+          await deps.eventService.editEvent({
+            groupId,
+            executorLineUserId: userId,
+            messageId,
+            request: { kind: 'help' },
+          }),
+        );
+      }
       case 'invalid': {
         // create_event 類 → 格式提示 (K′)；group 類 → 分組格式提示；signup/cancel/add_capacity 類 → 靜默（D-010 §一.1）。
         if (cmd.command === 'create_event') {
@@ -626,6 +721,23 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         }
         if (cmd.command === 'group') {
           return [textMessage(formatGroupFormatHelp())];
+        }
+        // D-015 N4/G5：edit_event 類**不得**照抄下方 `return []`——那會「有回覆卻未消費 message.id」。
+        // 一律送進 editEvent（轉 format_error），由 domain 在交易內先 markProcessed。
+        if (cmd.command === 'edit_event') {
+          const field = editErrorField(cmd.reason);
+          const request: EditEventRequest =
+            cmd.detail === undefined
+              ? { kind: 'format_error', field }
+              : { kind: 'format_error', field, detail: cmd.detail };
+          return renderEdit(
+            await deps.eventService.editEvent({
+              groupId,
+              executorLineUserId: userId,
+              messageId,
+              request,
+            }),
+          );
         }
         return [];
       }

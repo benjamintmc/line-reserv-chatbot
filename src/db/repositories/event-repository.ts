@@ -151,6 +151,53 @@ export class EventRepository implements EventReader {
     return res.rowCount ?? 0;
   }
 
+  // ── D-015 編輯活動資訊：四個單欄寫入原語（§2） ────────────────────────
+  //
+  // 一律 `UPDATE events SET <單欄>, updated_at WHERE id`：一次呼叫只動一欄，
+  // 使「單次編輯只能 UPDATE 一個欄位」（G2 可寫欄位封閉集）由原語形狀保證，
+  // 呼叫端無從一次寫兩欄。皆屬 client-bound `TxRepos.events` 寫方法，
+  // 必於 `runImmediate`（FOR UPDATE）交易內呼叫（G1）。回傳受影響列數。
+
+  /** 改活動開始時刻（UTC ISO-8601；由 domain 以 taipeiToUtcIso 合併台灣本地日期＋時間後傳入）。 */
+  async updateEventDatetime(id: number, eventDatetime: string): Promise<number> {
+    const now = nowIso();
+    const res = await this.q.query(
+      'UPDATE events SET event_datetime = $1, updated_at = $2 WHERE id = $3',
+      [eventDatetime, now, id],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  /** 改場地名稱（長度上限由 commands 邊界層把關，本層不截斷）。 */
+  async updateLocation(id: number, location: string): Promise<number> {
+    const now = nowIso();
+    const res = await this.q.query(
+      'UPDATE events SET location = $1, updated_at = $2 WHERE id = $3',
+      [location, now, id],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  /** 改每人固定費用（per_person 模式；不動 price_mode，計費方式不可切換，G2）。 */
+  async updatePricePerPerson(id: number, pricePerPerson: number): Promise<number> {
+    const now = nowIso();
+    const res = await this.q.query(
+      'UPDATE events SET price_per_person = $1, updated_at = $2 WHERE id = $3',
+      [pricePerPerson, now, id],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  /** 改場地費總額（split_venue 模式；不動 price_mode／settled_per_person，G2）。 */
+  async updateVenueFee(id: number, venueFee: number): Promise<number> {
+    const now = nowIso();
+    const res = await this.q.query(
+      'UPDATE events SET venue_fee = $1, updated_at = $2 WHERE id = $3',
+      [venueFee, now, id],
+    );
+    return res.rowCount ?? 0;
+  }
+
   /**
    * D-010 §一.4：加開名額原子寫入原語（只加不減語意由 domain 保證，本層僅寫入）。
    * 與 updateStatus 分離（capacity 與狀態轉移為兩種關注點）。回傳受影響列數。

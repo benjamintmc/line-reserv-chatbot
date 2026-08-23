@@ -11,6 +11,13 @@ export const MAX_COUNT = 20;
 /** 代報名 display_name 長度上限（JS string length / UTF-16 code unit 計）；超長截斷取前 20（O-4 裁決）。 */
 export const MAX_PROXY_NAME_LEN = 20;
 
+/**
+ * `編輯 場地 …` 的場地名稱長度上限（D-015 §1；UTF-16 code unit 計，同 MAX_PROXY_NAME_LEN 計法）。
+ * 超長一律回 `invalid{reason:'bad_location'}`，**不截斷**（D-015 G6）。
+ * 註：開團路徑目前對場地無長度限制，此不一致已由 Orchestrator 記入 Backlog（D-015 §1）。
+ */
+export const MAX_LOCATION_LEN = 40;
+
 /** 一行式開團 capacity 上限（sanity 保護；events.capacity CHECK>0，D-001 §2）。 */
 export const MAX_CAPACITY = 1000;
 
@@ -18,7 +25,13 @@ export const MAX_CAPACITY = 1000;
 export const MAX_GROUP_PARAM = 20;
 
 /** 畸形但可辨識為某指令嘗試時，標記是哪個指令家族。 */
-export type InvalidCommandKind = 'signup' | 'cancel' | 'create_event' | 'group' | 'add_capacity';
+export type InvalidCommandKind =
+  | 'signup'
+  | 'cancel'
+  | 'create_event'
+  | 'group'
+  | 'add_capacity'
+  | 'edit_event'; // D-015：`編輯 <欄位> <新值>` 的值格式畸形
 
 /**
  * 畸形原因（供 D-003/webhook 決定是否回提示；D-002 不決定要不要回覆）。
@@ -32,7 +45,21 @@ export type InvalidReason =
   | 'create_bad_capacity' // 人數非正整數
   | 'create_bad_price' // 價格非非負整數（per_person）
   | 'create_bad_venue_fee' // 場地費非正整數（split_venue；D-005 §6.1 / OP-2）
-  | 'group_bad_args'; // 分組參數畸形（D-011 §1；非 {M}場/{R}輪/單打 或超界）
+  | 'group_bad_args' // 分組參數畸形（D-011 §1；非 {M}場/{R}輪/單打 或超界）
+  | 'bad_location'; // `編輯 場地 …` 場地名稱超過 MAX_LOCATION_LEN（D-015 §1；不截斷）
+
+/**
+ * `編輯` 可指定的欄位（D-015 §1）。`capacity` 僅供導向文案使用——
+ * **人數不可編輯**（`registration-service.signup` 以交易外 capacity 快照決策，縮減會靜默超賣），
+ * domain 收到 capacity 一律回導向、不執行任何異動（D-015 G2）。
+ */
+export type EditEventField = 'date' | 'time' | 'location' | 'fee' | 'capacity';
+
+/** invalid 的結構化補充資訊（目前僅 `bad_location` 帶實際字數）。 */
+export interface InvalidDetail {
+  /** 使用者實際輸入的字數（UTF-16 code unit）。 */
+  len: number;
+}
 
 export type ParsedCommand =
   // 報名（含代報名）：count>=1；proxyName 存在即代報名（kind='proxy'）
@@ -79,7 +106,20 @@ export type ParsedCommand =
   | { type: 'group_next' }
   // 加開名額（D-010）：`加開 N` 對 open 活動加開 N 個名額（新增量；1..MAX_COUNT）
   | { type: 'add_capacity'; count: number }
-  // 可辨識為某指令嘗試，但參數畸形；帶原因供上層決定是否回提示
-  | { type: 'invalid'; command: InvalidCommandKind; reason: InvalidReason; raw: string }
+  // 編輯活動資訊（D-015 §1）：`編輯 <欄位> <新值>`。值僅做「取得」與長度檢查，
+  // 格式合法性（日期/時間）於此判、費用格式須依 event.price_mode 判定故延到 domain（§2 步驟 5）。
+  | { type: 'edit_event'; field: EditEventField; value: string }
+  // 編輯導引（D-015 §1）：`編輯`（無參數）／未知欄位名／缺新值 → 回現值＋範例
+  | { type: 'edit_help' }
+  // 可辨識為某指令嘗試，但參數畸形；帶原因供上層決定是否回提示。
+  // `detail` 為選填的結構化補充（目前僅 D-015 `bad_location` 用，帶實際字數供文案顯示
+  // 「你輸入了 {n} 字」）；不帶時上層一律以無 detail 處理，既有指令行為零變更。
+  | {
+      type: 'invalid';
+      command: InvalidCommandKind;
+      reason: InvalidReason;
+      raw: string;
+      detail?: InvalidDetail;
+    }
   // 完全無法辨識（群組閒聊、+0/-0、sign 後非數字等）→ webhook 一律不回覆（FR-5）
   | { type: 'unknown' };

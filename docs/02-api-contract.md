@@ -1,6 +1,6 @@
 # 02 — 指令契約（LINE Command Contract）
 
-> 擁有者：api-contract-designer。**版本：v0.1（由既有實作反向產生，尚未凍結）**
+> 擁有者：api-contract-designer。**版本：v0.2（由既有實作反向產生，尚未凍結）**
 >
 > **本專案沒有前後端分離**：對外介面是 **LINE 群組對話**，不是 REST。真正需要凍結的「介面」
 > 是指令語法與回覆範本——使用者記得的是 `+1`，不是 endpoint。REST 面只有 LINE 平台呼叫的
@@ -34,10 +34,59 @@
 | `關閉報名` | `close_event` | 授權 = `canManageEvent` |
 | `取消活動` | `cancel_event` | 授權 = `canManageEvent`；狀態轉移，**不刪 registrations** |
 | `我的ID`（大小寫不拘） | `my_id` | 回自己的 userId，供設定 `ADMIN_USER_IDS` |
+| `編輯`（無參數） | `edit_help` | 回目前活動資訊（日期／時間／場地／費用／人數上限）＋四條範例。未知欄位名（如 `編輯 費率 100`）與「有欄位但缺新值」（`編輯 日期`）亦走此 |
+| `編輯 日期 <YYYY/MM/DD 或 YYYY-MM-DD>` | `edit_event{field:'date'}` | 值經既有 `validateDate` 正規化為 `YYYY-MM-DD`；格式錯 → `invalid{command:'edit_event', reason:'create_bad_date'}` |
+| `編輯 時間 <H:MM 或 HH:MM>` | `edit_event{field:'time'}` | 值經既有 `validateTime` 正規化為 `HH:MM`（24h 零填充）；格式錯 → `invalid{command:'edit_event', reason:'create_bad_time'}` |
+| `編輯 場地 <名稱>` | `edit_event{field:'location'}` | **`地點` 為 parser 收但對外不示範的隱藏別名**（D-015 F1：所有文案一律用「場地」）；值 > 40 字（`MAX_LOCATION_LEN`，UTF-16 code unit）→ `invalid/bad_location`，**不截斷** |
+| `編輯 費用 <金額>` | `edit_event{field:'fee'}` | 依活動計費模式解讀：`per_person` → 每人金額（`編輯 費用 2500`）；`split_venue` → 場地費總額（`編輯 費用 場地費4000`）。**不支援切換計費模式**；模式與金額格式不符 → 由 domain 回 `bad_fee`（parser 不判） |
+| `編輯 人數 <N>` / `編輯 人數`（缺值） | `edit_event{field:'capacity'}` | **不執行任何異動**，一律回導向文案：增加名額請用 `加開 N`，縮減名額不支援（D-015 G2） |
 | 其餘（含 `+0`、`+abc`、`+ 1`、閒聊） | `unknown` | **不回覆** |
 
 **授權**（D-006）：開團全開，任何群成員都能開；`關閉報名` / `取消活動` 限
-`events.host_user_id` 本人 ∪ super-admin（`ADMIN_USER_IDS`）。
+`events.host_user_id` 本人 ∪ super-admin（`ADMIN_USER_IDS`）。`編輯` 系列同樣是
+`canManageEvent`（host ∪ super-admin），且僅限 `open` 且未過期的活動。
+
+### `編輯` 的取值規則（逐欄不同，勿統一）
+
+parser 對 `編輯 <欄位> <新值>` 的「新值」取法**依欄位而異**，兩者刻意相反，抄錯會造成誤拒或壞值：
+
+| 欄位 | 取值 | 為什麼 |
+|---|---|---|
+| `fee` | **compact**：`tokens.slice(2).join('').replace(/\s+/g,'')` | `validateVenueFee` / `validatePrice` **不吸收空白**（會 compact 的 `validateFee` 已被 D-015 G6 禁用，因它依前綴自動切換 `price_mode`）。不先壓掉空白，`編輯 費用 場地費 4000`、`編輯 費用 2500 元` 會被誤拒 |
+| `location` | **保留空格**：`tokens.slice(2).join(' ')` 後 trim | 場地名本身含空格（例：`東方 A 場`）；壓掉會改壞名稱 |
+| `date` / `time` | `tokens.slice(2).join('')` 後送 `validateDate` / `validateTime` | 日期時間不含空格，黏合可容忍使用者誤打空白 |
+
+`location` 取值為空字串 → `edit_help`；`fee` compact 後為空字串 → `edit_help`。
+
+### `編輯` 的回覆政策（與 `+N` 的靜默政策刻意不同）
+
+- **首 token 為 `編輯` 者一律回覆、不落入 `unknown`**：`編輯` 不會出現在閒聊，故不套用
+  `+N` / `加開` 的靜默防洗版政策。既然無參數 `編輯` 要回現值，`編輯 日期`（缺值）靜默
+  就會變成「打對一半卻沒反應」的死角。
+- **已知例外（非全域保證）**：
+  1. 開團問答進行中時，handler 的 conversation 攔截**優先於**指令解析——本人在該群打
+     `編輯 …` 會被當成該題答案（回 field error，非靜默）。
+  2. 多行訊息只執行 `+N` / `-N`（D-012 G1），其中含 `編輯` 的行**被忽略**。
+
+## 型別（`src/commands/types.ts` 為實作真值）
+
+`ParsedCommand` 為 discriminated union，判別鍵是 `type`。D-015 新增：
+
+| 成員 | 形狀 | 說明 |
+|---|---|---|
+| `edit_event` | `{ type:'edit_event'; field: EditEventField; value: string }` | `EditEventField = 'date' \| 'time' \| 'location' \| 'fee' \| 'capacity'`；`capacity` 僅供導向，domain 不執行異動 |
+| `edit_help` | `{ type:'edit_help' }` | 回目前資訊＋範例 |
+
+`invalid` 成員同步擴充（**既有指令行為零變更**）：
+
+| 型別 | 新增值 | 說明 |
+|---|---|---|
+| `InvalidCommandKind` | `'edit_event'` | 可辨識為 `編輯` 嘗試但值畸形 |
+| `InvalidReason` | `'bad_location'` | `編輯 場地 …` 超過 `MAX_LOCATION_LEN`（40，UTF-16 code unit 計，同 `MAX_PROXY_NAME_LEN` 計法）；**不截斷** |
+| `invalid.detail?` | `{ len: number }`（`InvalidDetail`，**選填**） | 供 `bad_location` 回覆顯示「你輸入了 {n} 字」的實際字數；不帶時上層一律以無 `detail` 處理 |
+
+> 註：開團路徑目前對場地**無**長度限制，40 字上限只在編輯路徑收斂；此不一致已入 Backlog，
+> 不在本次契約範圍內。
 
 ## 回覆範本索引
 
@@ -52,6 +101,7 @@
 | 關閉報名 / 取消活動 / 放棄流程 | `formatClosed` / `formatCancelled` / `formatAborted` | `event-formatter.ts` |
 | 未授權 / 已有活動 / 無 active | `formatNotAuthorized` / `formatAlreadyActiveEntry` / `formatNoActiveEvent` | `event-formatter.ts` |
 | 一行式格式說明 | `formatOnelineFormatHelp` | `event-formatter.ts` |
+| 編輯成功（改前 → 改後）＋ @ 正取者 / 導引 / 各類拒絕 | 編輯專用 formatter（**不得沿用 `formatFieldError`** 的開團問答字串——那會叫使用者裸打日期，落入 `unknown` 靜默死角） | D-015 §3 逐字釘死 |
 
 > 【技術債】`formatAlreadyClosed`、`formatRaceLost` 於 D-008 把 `closed` 移出 active 集合後
 > 已成不可達的防禦死碼。
@@ -64,12 +114,18 @@
 |---|---|---|
 | 有副作用的步驟（報名、取消、開團、關閉…） | ✔ | 不重複執行、回「重複」 |
 | `list` 的 `no_open_event` | ✔ | 不重複回 |
+| **`編輯` 路徑的所有會回覆分支（含全部拒絕：`edit_help`、人數導向、未授權、無 active、已截止、已結束、不得改到過去、`bad_fee`、`bad_location`／格式錯）** | ✔ | 不重複回（`markProcessed` 位於該交易內所有拒絕 early-return **之前**；D-015 G5） |
 | `signup` / `cancel` 的 `no_open_event`、非白名單、無 active、重複開團 | ✘ | **會重覆回覆一次** |
 | `unknown`、無流程的 `confirm`/`abort` | ✘（且不回覆） | 無 |
 
 **這是已知缺口，非設計意圖**：同型問題在 D-003 nit-3、D-004 §9、D-006 三處各出現一次
 （LESSONS 登記 ×3，已達回寫門檻）。統一政策待 `T-016 LESSONS 回寫清償` 裁決後回填本節，
 **在那之前新增 handler 請沿用「有副作用才 mark」，並在設計文件明確寫出該分支的選擇**。
+
+> **`編輯` 是明文例外**：該路徑直接落實 CLAUDE.md §4 的通則（凡會回覆者一律消費
+> `message.id`），不沿用上述舊政策。D-006 §2／G2「非授權者不 mark」的範圍限
+> `closeEvent`／`cancelEvent`，D-010 G4 的範圍限 `addCapacity`。非授權者在編輯路徑
+> **會** mark `processed_events`，但仍**不得** upsert `users`。
 
 ## REST 面（僅供平台呼叫）
 
@@ -87,3 +143,4 @@ CLAUDE.md §4 記載的統一錯誤格式 `{ code, message, details }` 目前**�
 | 版本 | 日期 | 變更 | 審查者 |
 |---|---|---|---|
 | v0.1 | 2026-08-05 | 由既有實作反向產生；重定位為指令契約（原 REST 模板全為佔位符，從未填寫） | 待審 |
+| v0.2 | 2026-08-23 | D-015／T-026 回填：指令一覽新增 `編輯` 6 列；新增〈`編輯` 的取值規則〉〈`編輯` 的回覆政策〉〈型別〉三節（`edit_event`／`edit_help`、`InvalidCommandKind:'edit_event'`、`InvalidReason:'bad_location'`、選填 `invalid.detail{len}`）；去重政策表新增編輯路徑列與明文例外註；回覆範本索引新增編輯列。REST 面與 `openapi.yaml` 無異動（本功能不新增 HTTP endpoint） | architect-reviewer（T-026 PASS） |
