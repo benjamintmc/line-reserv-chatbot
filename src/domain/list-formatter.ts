@@ -157,9 +157,13 @@ function bodyRoster(view: RegistrationView, phase: ListPhase = 'live'): string[]
 
 // ── 各指令組版 ───────────────────────────────────────────────────────
 
-/** 無 open 活動定型句（§8(F)、§7）。 */
+/**
+ * 無 open 活動定型句（§8(F)、§7）。用於**報名類**指令；管理類指令用
+ * `event-formatter.formatNoActiveEvent()`（兩者為刻意分工，理由見該函式註解）。
+ * D-017：補上句號，與專案其餘定型句一致。
+ */
 export function formatNoOpenEvent(): MessageDescriptor {
-  return { text: '目前沒有開放報名的活動', mentionees: [] };
+  return { text: '目前沒有開放報名的活動。', mentionees: [] };
 }
 
 /** 過期 open 的 +N/-N 拒絕（D-008 §8(1)/OP-2/AC-4）。 */

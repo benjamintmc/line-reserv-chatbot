@@ -117,4 +117,4 @@
 | 2026-08-22 | R2 雙審 5 blocker（A1–A5）＋複審 2 blocker（F1 顯示統一「場地」、F2 fee compact）＋ nit | 全數採納回填；不採納：`formatNoActiveEvent`/`formatNoOpenEvent` 併案（Backlog）、排除編輯者自己、mention 上限直接填 20（須官方出處）、成功句改用「日期」（恆顯示合併時刻為刻意設計） |
 | 2026-08-22 | §4 成功後 @ 全體正取者是否採用（使用者稍早曾裁決「標記正取者不做」，理由為需付費推播） | **採用**。兩者情境不同：`關閉報名` 無人下指令故只能 push（計費）；`編輯` 由使用者主動下指令，@ 夾在既有 reply 內（不計費）。使用者確認「多一則 TAG 大家沒問題」 |
 | 2026-08-22 | 跨任務衝突（orchestrator 登記） | 與「移除 `關閉報名`」相撞三處（split 文案「關閉報名後結算」、`closed_not_editable` 語意、`findLatestDisplayable` 判 closed）。**不影響本設計正確性**（`closed` 現仍存在）；已登記 `docs/backlog.md`，要求該案設計文件把 D-015 列入預列 errata。 |
-| 2026-08-23 | help 費用列重複標籤（實作暴露） | errata：去掉外層 `費用：` 前綴，改為直接嵌入 `feeLine` 自帶標籤（§3 help block 第 5 列 → `{費用列}`；§3 敘述句與 AC-10 同步） |
+| 2026-08-23 | help 費用列重複標籤（實作暴露）＋文案整潔化（T-028／D-017） | errata 之一：去掉外層 `費用：` 前綴，改為直接嵌入 `feeLine` 自帶標籤（§3 help block 第 5 列 → `{費用列}`；§3 敘述句與 AC-10 同步）。errata 之二：§3 釘死句「…已報名的各位請確認。」**正取 0 人時不再輸出**（`overflow` 仍輸出，兩者 targets 皆空、只有旗標能分辨）；`MAX_LOCATION_LEN` 改為開團／編輯三路徑共用。詳見 `design/D-017-copy-and-validation-consistency.md` (D)(A) |

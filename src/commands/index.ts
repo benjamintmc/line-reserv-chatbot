@@ -21,6 +21,7 @@ export {
   validatePrice,
   validateFee,
   validateVenueFee,
+  validateLocation, // D-017：開團／編輯共用的場地名稱上限
   type ValidationResult,
 } from './validators';
 export { normalizeWhitelist } from './normalize';

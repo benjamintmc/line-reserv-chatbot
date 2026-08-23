@@ -9,6 +9,13 @@
 > 中疑慮直接從 `M2` 起編。這是編號習慣不一致，**不是遺漏項目**，請勿再去尋找 M1。
 > 全部項目共 12 條：H1、M2–M7、L1–L5。
 
+> **2026-08-23 結案狀態（T-027／D-016）**：**H1、M2、M3、M4、M5 已全數修復並部署**
+> （PROD revision `00005-89q`）。**M7** 已於 T-025 完成。**M6** 經使用者裁決**不做**
+> （改授權模型 = R2；且「過期自動釋放」一案落地後鎖死時間自然有上限）。
+> **L1–L5** 維持記錄備查。**唯一遺留待辦**：輪替 LINE token 並刪除仍帶明文 secret 的
+> 舊 revision（00001–00004），程序見 `deployment-runbook.md` §4.2——需在 LINE Console 操作。
+> 各條下方原始分析保留不動（作為當時判斷的紀錄）；處置結果以本段與 `design/D-016` 為準。
+
 ## 動工前的通則
 
 - 各項**彼此獨立、不得夾帶**（LESSONS「審查包 diff 範圍不全」已累計 2 次）。一項一任務一 PR。
@@ -17,7 +24,7 @@
 
 ---
 
-## H1（原判高 → **實測降為中，潛伏**）DB 連線 TLS 驗證未顯式化
+## H1 ✅**已修復（T-027）** DB 連線 TLS 驗證未顯式化
 
 - **落點**：[src/db/index.ts:24-31](../src/db/index.ts#L24-L31)
 - **設計文件**：[design/D-014-db-tls-verification.md](../design/D-014-db-tls-verification.md)（DRAFT，已寫好待核可）／任務 **T-024**／R1
@@ -41,7 +48,7 @@ pg 8.22.0 + pg-connection-string 2.14.0 實測後確認：
 
 ---
 
-## M2 secret 以 `--set-env-vars` 明文帶進 Cloud Run
+## M2 ✅**已修復（T-027）** secret 以 `--set-env-vars` 明文帶進 Cloud Run
 
 - **落點**：[docs/deployment-runbook.md:109](deployment-runbook.md#L109)、§4 與附錄「上線座標」
 - **風險**：`LINE_CHANNEL_ACCESS_TOKEN` 是**冒充 bot 發訊的完整憑證**。明文 env var 會出現在
@@ -51,7 +58,7 @@ pg 8.22.0 + pg-connection-string 2.14.0 實測後確認：
 - **注意**：runbook 自己已標「待收斂（post-MVP）」，task-board 開頭「目前階段」亦有記。此為**同一件事**，
   動工時三處要一起更新，勿各自留一份。
 
-## M3 `/webhook` 無流量控管
+## M3 ✅**已處理（T-027，告警＋帳單天花板）** `/webhook` 無流量控管
 
 - **落點**：[src/server.ts:104-153](../src/server.ts#L104)（endpoint）／runbook 的 `--allow-unauthenticated`
 - **風險**：驗簽本身正確，但驗簽**之前**沒有任何節流。知道網址的人可持續灌 POST，每發都喚醒
@@ -59,7 +66,7 @@ pg 8.22.0 + pg-connection-string 2.14.0 實測後確認：
   且驗簽失敗只回 401、**不計數也不告警** ⇒ 無從得知網址是否已被掃到。
 - **修法**：Cloud Armor 或應用層 per-IP 限流；**至少**先對 401 率設一條告警（成本最低、資訊量最高）。
 
-## M4 `textV2` 的 `{}` 佔位符未跳脫
+## M4 ✅**已修復（T-027）** `textV2` 的 `{}` 佔位符未跳脫
 
 - **落點**：[src/webhook/handler.ts:138-156](../src/webhook/handler.ts#L138-L156)（`toLineMessage`）
 - **⚠️ 非新發現**：task-board Backlog 的 **T-006 reviewer nit-3** 早已記載，當時裁決
@@ -72,7 +79,7 @@ pg 8.22.0 + pg-connection-string 2.14.0 實測後確認：
   **後者未經實測**——動工第一步應先對 LINE API 驗證實際行為，再決定嚴重度。
 - **修法**：組 `textV2` 前跳脫非本次 mention 產生的 `{`/`}`。
 
-## M5 `DEBUG_WEBHOOK` 與錯誤日誌寫入 PII
+## M5 ✅**已修復（T-027）** `DEBUG_WEBHOOK` 與錯誤日誌寫入 PII
 
 - **落點**：[src/server.ts:123-133](../src/server.ts#L123-L133)（訊息全文 + groupId + userId）、
   [src/webhook/handler.ts:171-175](../src/webhook/handler.ts#L171-L175)（**無條件**帶 groupId/userId，平時就在跑）
@@ -81,7 +88,7 @@ pg 8.22.0 + pg-connection-string 2.14.0 實測後確認：
 - **修法**：`NODE_ENV=production` 時強制關閉（程式層 fail-safe，非仰賴文件紀律）；
   常態錯誤日誌改記雜湊或截短後的識別碼。
 
-## M6 開團全開 + 生命週期 host-only ⇒ 無回收路徑的鎖死
+## M6 ⛔**裁決不做（2026-08-23）** 開團全開 + 生命週期 host-only ⇒ 無回收路徑的鎖死
 
 - **落點**：[src/domain/authz.ts:23-32](../src/domain/authz.ts#L23-L32)、`ux_events_active_group`（同群唯一）
 - **風險**：群內任何人可開團，但 `關閉報名`/`取消活動` 僅 host ∪ super-admin。
@@ -91,7 +98,7 @@ pg 8.22.0 + pg-connection-string 2.14.0 實測後確認：
 - **兩條低成本出路**：①把 `ADMIN_USER_IDS` 列為部署必填（改 runbook + 啟動時 fail-fast）
   ②Backlog 既有的「過期自動結算」讓它自然解鎖——**後者可能一併解決，動工前先確認是否重複**。
 
-## M7 容器以 root 執行 + 無 `.dockerignore`
+## M7 ✅**已修復（T-025）** 容器以 root 執行 + 無 `.dockerignore`
 
 - **落點**：[Dockerfile](../Dockerfile)
 - **風險**：runtime 階段沒有 `USER node`。另 build 階段 `COPY . .`，而專案根目錄**確實有 `.env`**
@@ -130,4 +137,4 @@ pg 8.22.0 + pg-connection-string 2.14.0 實測後確認：
 
 ## 建議處理順序（若日後恢復動工）
 
-**M7（兩行）→ H1/T-024（設計已備妥）→ M5 → M2 → M3 → M4（先驗 LINE 行為）→ M6（R2，改授權模型）**
+~~M7 → H1 → M5 → M2 → M3 → M4 → M6~~ **已無待辦順序**：M7（T-025）與 H1／M2–M5（T-027）皆完成，M6 裁決不做。

@@ -107,7 +107,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
 
     // 成員 B（無 conversation）+1 → 走 signup 分派；此時無 open 活動 → 回定型句（D-003 處理）。
     const bOut = await handler.handleEvent(groupTextEvent('+1', { userId: 'U-b', messageId: 'b0' }));
-    expect(textOf(bOut)).toBe('目前沒有開放報名的活動');
+    expect(textOf(bOut)).toBe('目前沒有開放報名的活動。'); // D-017 補句號
     // host 的流程未被 B 的訊息影響。
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_date');
     expect(JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}').date).toBeUndefined();

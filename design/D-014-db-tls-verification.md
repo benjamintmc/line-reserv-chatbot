@@ -1,6 +1,7 @@
 # D-014: DB 連線 TLS 驗證顯式化（H1）
 
-- 狀態：**DRAFT — 暫緩**（2026-08-22 使用者裁決排入 Backlog；設計已完備，恢復動工只差核可）
+- 狀態：**APPROVED → 已實作（T-027，2026-08-23）**。AC-1~AC-5 由 `src/db/__tests__/pool-ssl.test.ts` 覆蓋並全綠；
+  AC-6／AC-7 已於 PROD revision `00005-89q` 真機驗證（`/health` 200、cold start log 不再出現 SSL 別名警告）。
 - 撰寫者：orchestrator（資安觀察 H1 衍生）
 - 關聯：D-007 §5（連線工廠）／`src/db/index.ts`／任務 T-024／風險等級 **R1**
 

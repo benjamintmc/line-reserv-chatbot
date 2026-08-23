@@ -241,11 +241,22 @@ export function formatAlreadyActiveEntry(event: EventRow): MessageDescriptor {
 }
 
 // (J) 生命週期指令但狀態不符：已關閉報名（D-008：closed 釋放後 close 路徑不可達，保留供防禦）。
+//
+// D-017 文案收斂：原為「活動已關閉報名。」，與同一狀態在別處的說法（本檔 §189/§444、
+// list-formatter 的 closed 標籤）不一致 ⇒ 一律用「報名已截止」。
 export function formatAlreadyClosed(): MessageDescriptor {
-  return text('活動已關閉報名。');
+  return text('這場活動的報名已截止。');
 }
 
-// (J) 生命週期指令但狀態不符：無 active 活動。
+/**
+ * (J) 生命週期指令（`取消活動`／`編輯 …`）但無 active 活動。
+ *
+ * **與 `list-formatter.formatNoOpenEvent()`「目前沒有開放報名的活動。」是刻意分工，不合併**
+ * （D-017 逐一比對 14 個呼叫點後的結論）：本句用於**管理類**指令——使用者想動一場活動，
+ * 但沒有活動可動；另一句用於**報名類**指令（`+N`／`-N`／`名單`／`加開`／`分組`）——
+ * 活動可能存在但不接受報名。兩者的下一步動作不同（開一場 vs 等下一場），
+ * 收斂成同一句會讓使用者失去這個線索。
+ */
 export function formatNoActiveEvent(): MessageDescriptor {
   return text('目前沒有進行中的活動。');
 }
@@ -334,8 +345,16 @@ export function formatEditOk(
 ): MessageDescriptor {
   const head = editSuccessLine(result);
   const prompt = '活動資訊已更新，已報名的各位請確認';
-  if (result.overflow || targets.length === 0) {
+  // D-017：正取 0 人（例如主辦開團後自行 -1）時**不輸出提示句**——沒有「各位」可以請確認，
+  // 對空氣喊話會讓主辦誤以為有人收到了通知。
+  //
+  // ⚠️ overflow 必須先判：超限退化時呼叫端傳入的 targets **也是空陣列**（整則不帶 mention），
+  // 但那是「人很多，多到不逐一標註」，提示句仍然必要。兩者的 targets 都是 0，只有 overflow 能分辨。
+  if (result.overflow) {
     return text(`${head}\n${prompt}。`);
+  }
+  if (targets.length === 0) {
+    return text(head);
   }
   let out = `${head}\n${prompt}：`;
   const mentionees: MentionDescriptor[] = [];

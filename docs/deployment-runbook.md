@@ -20,8 +20,8 @@
 
 1. Neon Console → 新建 Project（region 選離使用者近的，如 Singapore `ap-southeast-1`）。
 2. 取得**兩條**連線字串（Dashboard → Connection Details）：
-   - **Pooled（app runtime 用）**：host 含 `-pooler`，例 `postgres://user:pw@ep-xxx-pooler.ap-southeast-1.aws.neon.tech/dbname?sslmode=require`
-   - **Direct（migrate 用）**：host **不含** `-pooler`，例 `postgres://user:pw@ep-xxx.ap-southeast-1.aws.neon.tech/dbname?sslmode=require`
+   - **Pooled（app runtime 用）**：host 含 `-pooler`，例 `postgres://user:pw@ep-xxx-pooler.ap-southeast-1.aws.neon.tech/dbname?sslmode=verify-full`
+   - **Direct（migrate 用）**：host **不含** `-pooler`，例 `postgres://user:pw@ep-xxx.ap-southeast-1.aws.neon.tech/dbname?sslmode=verify-full`
 
 > 為何分兩條：migrate 是一次性、走直連即可；app runtime 走 pooler（PgBouncer）控管連線數。**不要**把 app runtime 指到直連（多實例會撞連線上限）。
 
@@ -33,7 +33,7 @@
 
 PowerShell：
 ```powershell
-$env:DATABASE_URL = "postgres://user:pw@ep-xxx.ap-southeast-1.aws.neon.tech/dbname?sslmode=require"  # 直連（非 -pooler）
+$env:DATABASE_URL = "postgres://user:pw@ep-xxx.ap-southeast-1.aws.neon.tech/dbname?sslmode=verify-full"  # 直連（非 -pooler）
 npm run db:migrate
 ```
 預期輸出（全新 DB）：`[migrate] 本次套用：0001_init, 0002_billing_modes, 0003_merge_event_datetime`。重跑會顯示 `已套用略過`（冪等）。
@@ -50,7 +50,7 @@ npm run db:migrate
 
 1. **對直連（非 `-pooler`）字串執行**，然後**立即**部署新 revision（§3–§4）：
    ```powershell
-   $env:DATABASE_URL = "postgres://user:pw@ep-xxx...neon.tech/dbname?sslmode=require"  # 直連
+   $env:DATABASE_URL = "postgres://user:pw@ep-xxx...neon.tech/dbname?sslmode=verify-full"  # 直連
    npm run db:migrate    # 預期：[migrate] 本次套用：0004_conversation_scope_pk
    ```
    兩步之間的窗口越短越好（min-instances=0、流量極低，實務上數分鐘可接受）。
@@ -98,22 +98,96 @@ docker push asia-east1-docker.pkg.dev/PROJECT_ID/golf-reserv/chatbot:v1
 
 ## 4. Cloud Run 部署
 
+### 4.0 一次性：把憑證放進 Secret Manager（資安 M2，2026-08-23 起為正式做法）
+
+**不得**再用 `--set-env-vars` 帶 `DATABASE_URL` / `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN`——
+明文 env var 會出現在 Cloud Run console、`gcloud run services describe`（任何 `roles/viewer` 可讀），
+以及**所有歷史 revision 的設定**（無法回頭修改，只能刪 revision）。
+
+```bash
+gcloud services enable secretmanager.googleapis.com
+
+# 建立三個 secret（值從 stdin 餵入，不留在 shell history）
+printf '%s' '<POOLED 連線字串，須 ?sslmode=verify-full>' | gcloud secrets create database-url --replication-policy=automatic --data-file=-
+printf '%s' '<LINE channel secret>'       | gcloud secrets create line-channel-secret --replication-policy=automatic --data-file=-
+printf '%s' '<LINE channel access token>' | gcloud secrets create line-channel-access-token --replication-policy=automatic --data-file=-
+
+# 授權 Cloud Run runtime service account 讀取
+SA=$(gcloud run services describe golf-reserv-chatbot --region asia-east1 --format='value(spec.template.spec.serviceAccountName)')
+for s in database-url line-channel-secret line-channel-access-token; do
+  gcloud secrets add-iam-policy-binding "$s" --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
+done
+```
+
+### 4.1 部署
+
 ```bash
 gcloud run deploy golf-reserv-chatbot \
-  --image=asia-east1-docker.pkg.dev/PROJECT_ID/golf-reserv/chatbot:v1 \
+  --image=asia-east1-docker.pkg.dev/PROJECT_ID/golf-reserv/chatbot:vN \
   --region=asia-east1 \
   --platform=managed \
   --allow-unauthenticated \
   --min-instances=0 \
+  --max-instances=3 \
   --concurrency=4 \
-  --set-env-vars="DATABASE_URL=<POOLED 連線字串>,LINE_CHANNEL_SECRET=<...>,LINE_CHANNEL_ACCESS_TOKEN=<...>,ADMIN_USER_IDS=<你的userId>"
+  --set-env-vars="ADMIN_USER_IDS=<你的userId>" \
+  --set-secrets="DATABASE_URL=database-url:latest,LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest"
 ```
-- **`DATABASE_URL` 用 POOLED（-pooler）字串**（步驟 1 的第一條）。
+- **`DATABASE_URL` 用 POOLED（-pooler）字串且結尾 `?sslmode=verify-full`**（步驟 1 第一條、D-014 G2）。
+- **`--max-instances=3`（資安 M3）**：`/webhook` 必須開放未驗證存取（LINE 平台要打得到），
+  驗簽**之前**沒有節流 ⇒ 被灌流量時每則都會喚醒實例。此上限是**帳單天花板**；
+  正常用量 1–2 個實例綽綽有餘，調高前請先確認不是被掃。
 - `--allow-unauthenticated`：LINE 平台要能 POST 到 `/webhook`（驗簽在應用層做，見下）。
-- **不要**設 `DEBUG_WEBHOOK`（生產關閉）。
+- **不要**設 `DEBUG_WEBHOOK`：即使設了，`NODE_ENV=production` 下程式也會忽略（資安 M5 fail-safe）。
 - 部署完取得服務 URL：`https://golf-reserv-chatbot-xxxx.a.run.app`。
 
-> **憑證安全（建議升級，非 MVP 阻擋）**：上面用 `--set-env-vars` 直接帶 secret 最省事，但更安全的做法是走 **Secret Manager** + `--set-secrets`（避免 secret 出現在 Cloud Run 設定明文）。MVP 可先用 env vars，之後再收斂。
+### 4.2 憑證輪替程序（資安 M2 要求；憑證可能外洩時執行）
+
+1. LINE Developers Console → Messaging API channel → 重新簽發 **Channel access token**（必要時含 **Channel secret**）。
+2. `printf '%s' '<新值>' | gcloud secrets versions add line-channel-access-token --data-file=-`
+3. 重新部署或 `gcloud run services update ... --set-secrets="...:latest"`
+   ——**新 revision 才會讀到新版本**，`:latest` 不會自動套用到已運行的 revision。
+4. 真機驗一則指令 → 確認新憑證可用後：
+   `gcloud secrets versions disable <舊版本號> --secret=line-channel-access-token`
+5. **刪除仍帶明文 secret 的舊 revision**：
+   `gcloud run revisions delete golf-reserv-chatbot-0000N-xxx --region asia-east1`
+   注意：刪掉即失去該回滾點，請先確認新 revision 穩定。
+
+### 4.4 ⚠️ 憑證改動後的必要冒煙（2026-08-23 事故教訓）
+
+**`/health` 200 與未簽章 401 都不會碰到 channel secret 或 DB**——驗簽壞掉時回的**照樣是 401**。
+只驗這兩項就宣告成功，會讓一個 100% 收不到訊息的 revision 上線而無人察覺（本次實際發生 33 分鐘）。
+憑證或連線字串改動後**必須**加驗下列兩項：
+
+```bash
+# ① 用 secret 算出正確簽章打回去，預期 200（空 events 無副作用）
+URL=https://golf-reserv-chatbot-1006751446489.asia-east1.run.app/webhook
+SIG=$(gcloud secrets versions access latest --secret=line-channel-secret | python -c "
+import sys,hmac,hashlib,base64
+s=sys.stdin.read().encode()
+print(base64.b64encode(hmac.new(s,b'{\"events\":[]}',hashlib.sha256).digest()).decode(),end='')")
+curl -s -o /dev/null -w '%{http_code}
+' -X POST "$URL" -H 'Content-Type: application/json'   -H "x-line-signature: $SIG" -d '{"events":[]}'
+
+# ② 用該連線字串跑一次真實查詢，證明 verify-full 下 DB 可通
+gcloud secrets versions access latest --secret=database-url | node --input-type=module -e "
+let s='';process.stdin.setEncoding('utf8');for await (const c of process.stdin) s+=c;
+const { default: pg } = await import('pg');
+const pool = new pg.Pool({ connectionString: s.trim(), max: 1 });
+console.log((await pool.query('select 1 as ok')).rows[0]); await pool.end();"
+```
+
+> **取值陷阱（本次根因）**：`gcloud ... --format="value(env.filter(...).extract(value))"` 對 list 欄位
+> 會輸出 **`['…']` 包裝**，三個憑證因此全部多了 4 個字元存進 Secret Manager。
+> **取單一值一律走 `--format=json` 再解析**，並在寫入前核對長度
+> （LINE channel secret = 32 字元、access token = 172 字元）。
+
+### 4.3 告警（資安 M3）
+
+已建立 Cloud Monitoring 政策 **「webhook 驗簽失敗異常（資安 M3）」**：
+5 分鐘內 `/webhook` 回 401 超過 20 次 → 寄信至通知管道 `chatbot-owner-email`。
+正常情況 401 幾乎為 0（LINE 送來的請求必帶正確簽章），持續 401 ＝ 網址已被掃到，或 channel secret 不符。
+> 未做主動阻擋：Cloud Armor 需先架 Load Balancer（約 $18+/月起），以 `--max-instances` 限制損失上限取代。
 
 ---
 
@@ -143,14 +217,19 @@ gcloud run deploy golf-reserv-chatbot \
 | 項目 | 值 |
 |---|---|
 | **GCP 專案 / region** | `group-chatbot-504305` / `asia-east1` |
-| **Cloud Run service** | `golf-reserv-chatbot`（`min-instances=0`、`concurrency=4`、`--allow-unauthenticated`） |
+| **Cloud Run service** | `golf-reserv-chatbot`（`min-instances=0`、`max-instances=3`、`concurrency=4`、`--allow-unauthenticated`；secret 走 Secret Manager） |
 | **Service URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app` |
 | **LINE Webhook URL** | `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app/webhook`（已 Verify + 真機冒煙通過） |
-| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag **`:v4`**（revision `golf-reserv-chatbot-00004-f5l`，**2026-08-23 部署 T-026 編輯活動資訊**；冒煙：`/health` 200、未簽章 `POST /webhook` 401。**本次無 migration**，故回滾至 `:v3` 無 schema 顧慮）；`:v3`/`00003-7lc`（T-018~T-022）、`:v2`/`00002-dhd`、`:v1`/`00001-sr7` 可回滾，但**退回 v2 以前需同時處理 0004 退版**，見 §2.1 ⚠️ |
+| **Artifact Registry** | repo `golf-reserv`，image `asia-east1-docker.pkg.dev/group-chatbot-504305/golf-reserv/chatbot`，現行 tag **`:v5`**（revision **`golf-reserv-chatbot-00007-pdv`**，**2026-08-23 部署 T-027 資安加固 H1/M2–M5**；冒煙：`/health` 200、**帶正確簽章 `POST /webhook` 200**、未簽章 401、**真實查詢連上 Neon（verify-full）**、cold start log 已無 pg SSL 別名警告、**使用者群組實測 `名單` 正常回覆**。⚠️ 中途 `00005-89q`／`00006-9hc` 為修正過程（見 §4.4）。**本次無 migration**，回滾至 `:v4` 無 schema 顧慮）；`:v4`（revision `golf-reserv-chatbot-00004-f5l`，**2026-08-23 部署 T-026 編輯活動資訊**；冒煙：`/health` 200、未簽章 `POST /webhook` 401。**本次無 migration**，故回滾至 `:v3` 無 schema 顧慮）；`:v3`/`00003-7lc`（T-018~T-022）、`:v2`/`00002-dhd`、`:v1`/`00001-sr7` 可回滾，但**退回 v2 以前需同時處理 0004 退版**，見 §2.1 ⚠️ |
 | **DB（Neon）** | host `ep-old-cherry-az822uzr`（Singapore）；app runtime 用 **pooled**（`-pooler`）、migrate 用直連（同 host 去掉 `-pooler`）；已套用 migration 0001/0002/0003/**0004** |
-| **驗證** | `GET /health` → 200 `{"status":"ok"}`；4 個 env vars 已設（`DATABASE_URL`/`LINE_CHANNEL_SECRET`/`LINE_CHANNEL_ACCESS_TOKEN`/`ADMIN_USER_IDS`），`DEBUG_WEBHOOK` 未設（生產關閉） |
+| **憑證來源** | **Secret Manager**（T-027／資安 M2）：`database-url`／`line-channel-secret`／`line-channel-access-token`，皆授予 runtime SA `1006751446489-compute@developer.gserviceaccount.com` 的 `roles/secretmanager.secretAccessor`。僅 `ADMIN_USER_IDS` 維持明文 env var（非憑證） |
+| **告警** | Cloud Monitoring 政策「webhook 驗簽失敗異常（資安 M3）」：5 分鐘內 401 > 20 次 → 通知管道 `chatbot-owner-email` |
+| **驗證** | `GET /health` → 200 `{"status":"ok"}`；`POST /webhook` 未簽章 → 401；三個憑證於 `services describe` 皆為 `valueFrom.secretKeyRef`（無明文 `value`）；cold start log **不再出現** pg-connection-string 的 SSL 別名警告（**D-014 AC-6／AC-7 通過**，revision `00005-89q`）；`DEBUG_WEBHOOK` 未設，且 `NODE_ENV=production` 下程式強制忽略（資安 M5） |
 
-> 待收斂（post-MVP）：secret 目前以 `--set-env-vars` 明文帶 → 可改 Secret Manager；`--min-instances=0` 冷啟遺失窗口 → 需消除可切 `--min-instances=1`（犧牲 $0）。
+> **2026-08-23 T-027（資安 H1／M2–M5）**：secret 已全數遷入 **Secret Manager**（`--set-secrets`）；
+> `DATABASE_URL` 收斂為 `sslmode=verify-full`；`--max-instances=3` 帳單天花板 + 401 告警。
+> **仍待辦**：①輪替 LINE token 並刪除仍帶明文 secret 的舊 revision（00001–00004，見 §4.2）；
+> ②`--min-instances=0` 冷啟遺失窗口 → 需消除可切 `--min-instances=1`（犧牲 $0）。
 
 ## 附錄：常見問題
 

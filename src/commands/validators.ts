@@ -9,12 +9,27 @@
 
 import type { PriceMode } from '../db/schema';
 import type { InvalidReason } from './types';
-import { MAX_CAPACITY } from './types';
+import { MAX_CAPACITY, MAX_LOCATION_LEN } from './types';
 
 /** 欄位驗證結果：成功帶正規化後的值，失敗帶 D-002 原因碼。嚴禁 any（G6）。 */
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; reason: InvalidReason };
+
+/**
+ * 場地名稱：去頭尾空白後須非空、且不超過 `MAX_LOCATION_LEN`（**不截斷**，D-015 G6）。
+ * 內部空白保留（「東方 A 場」是合法場地名）。
+ *
+ * D-017：原本只有 `編輯 場地` 這條路徑有上限檢查，開團（一行式與逐步問答）完全沒有
+ * ⇒ 可以建出 100 字的地點，事後卻不能編輯它。此函式是三條路徑的共同上限。
+ */
+export function validateLocation(tok: string): ValidationResult<string> {
+  const value = tok.trim();
+  if (value.length === 0 || value.length > MAX_LOCATION_LEN) {
+    return { ok: false, reason: 'bad_location' };
+  }
+  return { ok: true, value };
+}
 
 /** `YYYY/MM/DD` 或 `YYYY-MM-DD`；月 1–12、日 1–31；零填充輸出 `YYYY-MM-DD`。 */
 export function validateDate(tok: string): ValidationResult<string> {

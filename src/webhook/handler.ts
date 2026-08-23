@@ -27,6 +27,7 @@
 
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { parseCommand } from '../commands';
+import type { InvalidReason } from '../commands/types';
 import type { RegistrationRow } from '../db/schema';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
@@ -112,6 +113,7 @@ import {
   formatGroupNotHost,
   formatGroupFormatHelp,
 } from '../domain/grouping-formatter';
+import { redactId } from '../log-redact';
 
 /**
  * D-012 §2.4：多行批次一次可執行的 +/-（signup/cancel）行數上限。
@@ -147,6 +149,20 @@ function textMessage(text: string): messagingApi.Message {
   return { type: 'text', text };
 }
 
+/**
+ * 跳脫**非本次 substitution 產生**的 `{`／`}`（資安 M4）。
+ *
+ * `textV2` 以 `{key}` 為佔位符，字面大括號須寫成 `{{`／`}}`。而顯示名與代報名字皆為使用者可控、
+ * 且 `normalize` 明確保留非白名單字元 ⇒ `{`／`}` 會原樣進入訊息文字。不跳脫的後果有二：
+ * ①`+1 {m0}` 之類可偽造成 @ 別人；②未配對的單一 `{` 會被 LINE API 直接拒絕
+ * （`Single '{' encountered at index N`）⇒ **整則回覆漏送**，且是靜默的（只在伺服器留 log）。
+ *
+ * 僅套用於 mention 分支：純 `text` 訊息不解析佔位符，跳脫反而會多出括號。
+ */
+function escapeBraces(s: string): string {
+  return s.replace(/\{/g, '{{').replace(/\}/g, '}}');
+}
+
 /** MessageDescriptor → LINE 訊息：無 mention→TextMessage；含 mention→TextMessageV2 + substitution。 */
 function toLineMessage(d: MessageDescriptor): messagingApi.Message {
   if (d.mentionees.length === 0) {
@@ -158,12 +174,12 @@ function toLineMessage(d: MessageDescriptor): messagingApi.Message {
   let cursor = 0;
   sorted.forEach((m, i) => {
     const key = `m${i}`;
-    out += d.text.slice(cursor, m.index);
+    out += escapeBraces(d.text.slice(cursor, m.index));
     out += `{${key}}`;
     substitution[key] = { type: 'mention', mentionee: { type: 'user', userId: m.lineUserId } };
     cursor = m.index + m.length;
   });
-  out += d.text.slice(cursor);
+  out += escapeBraces(d.text.slice(cursor));
   const msg: messagingApi.TextMessageV2 = { type: 'textV2', text: out, substitution };
   return msg;
 }
@@ -181,9 +197,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       const p = await deps.profile.getGroupMemberProfile(groupId, userId);
       if (p.displayName.length > 0) return p.displayName;
     } catch (err) {
+      // M5：不記原始 groupId/userId（永久識別碼），改記雜湊——除錯只需可比對性。
       logError('getGroupMemberProfile 失敗，改用 fallback', {
-        groupId,
-        userId,
+        group: redactId(groupId),
+        user: redactId(userId),
         err: String(err),
       });
     }
@@ -523,11 +540,35 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  /** `invalid{command:'edit_event'}` 的原因碼 → 編輯專用格式錯的欄位（D-015 §1）。 */
-  function editErrorField(reason: string): 'date' | 'time' | 'location' {
-    if (reason === 'create_bad_date') return 'date';
-    if (reason === 'create_bad_time') return 'time';
-    return 'location'; // bad_location
+  /**
+   * `invalid{command:'edit_event'}` 的原因碼 → 編輯專用格式錯的欄位（D-015 §1）。
+   *
+   * D-017：原簽名為 `(reason: string)` 且以 `return 'location'` 收尾——parser 日後為
+   * `edit_event` 新增第 4 個原因碼時會**靜默套上錯誤的欄位文案**，編譯器不會有意見。
+   * 改吃 `InvalidReason` 並窮舉：新增原因碼時 `_exhaustive` 會直接編譯失敗。
+   */
+  function editErrorField(reason: InvalidReason): 'date' | 'time' | 'location' {
+    switch (reason) {
+      case 'create_bad_date':
+        return 'date';
+      case 'create_bad_time':
+        return 'time';
+      case 'bad_location':
+        return 'location';
+      // 以下原因碼不會由 `編輯 …` 產生（只出現在開團／報名／分組路徑）。
+      // 顯式列出而非以 default 吞掉，是為了讓「新增原因碼」這件事在此處現形。
+      case 'count_out_of_range':
+      case 'create_wrong_arity':
+      case 'create_bad_capacity':
+      case 'create_bad_price':
+      case 'create_bad_venue_fee':
+      case 'group_bad_args':
+        return 'location';
+      default: {
+        const _exhaustive: never = reason;
+        return _exhaustive;
+      }
+    }
   }
 
   function renderInvalidOneline(result: InvalidOnelineResult): messagingApi.Message[] {
