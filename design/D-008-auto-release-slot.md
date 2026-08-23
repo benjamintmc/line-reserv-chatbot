@@ -94,6 +94,7 @@ runInTransaction:
 | **阻擋/生命週期**（`開團` 入口/`確認` 重讀、`關閉報名`、`取消活動`） | `events.findActiveByGroup` | `ACTIVE_EVENT_STATUSES = {draft,open}` | 回過期或未過期 open（**不回 closed**）；由 `isExpired` 決定擋團/flip（§1b、§5） |
 | **報名用**（`+N`/`-N`） | `findOpenEventForSignup` | `findActiveByGroup`（{draft,open}） | 要求 `isOpenForSignup`（open ∧ 未過期）；否則 `undefined`：過期 open → **拒絕**回 `event_ended`（OP-2 文案）；closed/無 → 現行 `no_open_event` |
 | **顯示用**（`名單`） | `findEventForDisplay` | `DISPLAYABLE_EVENT_STATUSES = {draft,open,closed}`，latest by id（新 repo 原語 `findLatestDisplayable`） | 回**最新一場**未取消/未被取代之活動，交 formatter；domain 帶 `phase` 分類（見下） |
+| **編輯用**（`編輯 日期／時間／場地／費用`）〔**errata 2026-08-23，D-015／T-026 新增第四列**〕 | `events.findActiveByGroup` + `isExpired`（**不新增 accessor**） | 同「阻擋/生命週期」（{draft,open}） | 只有 `open ∧ 未過期` 可編輯：過期 open → `event_ended`、非 open → `no_active`；`closed` 因不在 `{draft,open}` 而查不到，改以**顯示用**原語 `findLatestDisplayable` 判別最新一場是否 `closed` → 專屬拒絕文案 `報名已截止的活動無法編輯。`（與 `no_active` 分流）。**為何不新增第四個 accessor**：編輯的可用集合與「阻擋/生命週期」完全相同，複用可避免第四種讀取語意漂移（本節開頭「不得共用一個 accessor」約束的是**語意不同**的三種讀取，不是禁止語意相同者複用） |
 
 **顯示分類 `phase`（domain 依 `isExpired`/`status` 判定後傳 formatter；formatter 純函式不持時鐘）**：
 
@@ -148,7 +149,7 @@ function utcIsoToTaipei(iso: string): { date: string; time: string };
 | `src/domain/datetime.ts` | ➕ 新增（純函式） | `taipeiToUtcIso`/`utcIsoToTaipei`（固定 +8，§3）；不觸 DB/LINE、嚴禁 any |
 | `src/db/repositories/event-repository.ts` | 🔧 改 | `CreateEventInput.eventDatetime`；INSERT 欄位 `event_date/event_time` → `event_datetime`；`findActiveByGroup` 隨 `ACTIVE_EVENT_STATUSES` 變更（不再回 closed）；**新增** 唯讀原語 `findLatestDisplayable(groupId)`（`status = ANY(DISPLAYABLE_EVENT_STATUSES) ORDER BY id DESC LIMIT 1`）於 `EventReader` |
 | `src/domain/event-service.ts` | 🔧 改 | 入口早退加 `!isExpired`；`confirm` 交易內過期 open → `updateStatus('done')` flip（§1b）；`confirm` 建立前 `taipeiToUtcIso` 合併；close/cancel 遇過期 open → `no_active`（OP-7 定案，不 flip） |
-| `src/domain/registration-service.ts` | 🔧 改 | `findOpenEvent` 拆為 `findOpenEventForSignup`（+過期排除）/ `findEventForDisplay`（用 `findLatestDisplayable`，含 closed/過期，回 `phase`）；signup/cancel 新增 `event_ended` 結果；`runImmediate` **交易內以 `getById(event.id)` 重讀鎖內最新列** re-check status/過期（§6b、nit-2）；`getListView` 帶 `phase`（live/closed/ended） |
+| `src/domain/registration-service.ts` | 🔧 改 | `findOpenEvent` 拆為 `findOpenEventForSignup`（+過期排除）/ `findEventForDisplay`（用 `findLatestDisplayable`，含 closed/過期，回 `phase`）；signup/cancel 新增 `event_ended` 結果；`runImmediate` **交易內以 `getById(event.id)` 重讀鎖內最新列** re-check status/過期（§6b、nit-2）；`getListView` 帶 `phase` |
 | `src/domain/event-formatter.ts` | 🔧 改（純函式） | D/I 的 event 日期顯示改 `utcIsoToTaipei(event.event_datetime)`；**`formatClosed` 即時回覆用詞由「已關閉報名」→「報名已截止」與名單 closed 標籤收斂（B1）**；（B 摘要不改，用 draft 本地值） |
 | `src/domain/list-formatter.ts` | 🔧 改（純函式） | `eventHeader` 日期改 `utcIsoToTaipei`；`feeLine` phase 化（live 暫估／closed 取 `settled_per_person`／ended 取 `perPersonAmount`，去「暫估」）；ended/closed **移除「剩餘名額」列**、總金額列去「預估/暫估」；新增 `closed`/`ended` 標題（§8，B2） |
 | `src/webhook/handler.ts` | 🔧 改 | signup/cancel 的 `event_ended` → formatter 拒絕文案；名單 `phase` → 對應 live/closed/ended 顯示 |
@@ -267,6 +268,8 @@ CREATE UNIQUE INDEX ux_events_active_group ON events (group_id)
 - **G4（合併欄位 migration 語意等義，不得漏索引/約束）**：0003 **必須**完成 (a) 台灣本地→UTC **等義** backfill `event_datetime`、(b) `event_datetime NOT NULL`、(c) drop `event_date`/`event_time`、(d) **重定義** `ux_events_active_group` 的 `WHERE` 由 `{draft,open,closed}` 為 `{draft,open}`（移除 `closed`）。**不得**遺漏 (d)（否則 closed 仍擋團，釋放條件 (a) 失效）；**不得**改動 `ix_events_group_status`／`status` CHECK／FK／0002 計費欄／`registrations` 任何索引之語意；**不得**修改已凍結的 0001/0002（獨立 0003，OP-1）。backfill 轉換須與應用層 `taipeiToUtcIso` 同語意（未來日期無歷史 DST 交集，nit-3）。
 - **G5（唯讀不寫；flip 僅於寫入語境）**：`名單`／`+N`／`-N` 等**唯讀讀取路徑不得**對過期 open 或 closed 執行任何狀態寫入（避免唯讀路徑產生寫入、serverless 下無謂併發寫）。`done` 的**物理** flip **只**於 `開團` `確認` 交易（已是寫入語境、需原子釋放索引槽）內發生；其餘時刻「活動已結束」為 **on-read `phase`**，不倚賴物理 `done`。**不得**因追求物理狀態一致而在讀取點加寫入。
 
+> **errata（2026-08-23，D-015／T-026）：G2 末句「三讀取點不得共用同一查詢集」的射程。** 該句禁止的是**語意不同**的讀取點混用同一查詢集（例：報名用不得直接吃顯示集而放進 closed）。D-015 的「編輯用」讀取與「阻擋/生命週期」**語意相同**（皆要求 `{draft,open}` ∧ 由 `isExpired` 決定），故複用 `findActiveByGroup` **不違反 G2**；其 `closed` 專屬拒絕文案另以 `findLatestDisplayable` 判別，屬顯示集的正當用途（唯讀、不寫入，亦不違反 G5）。編輯路徑同樣**不得**對過期 open 執行 flip 或任何狀態寫入（G5 全條在編輯路徑成立）。
+
 ---
 
 ## 三、Acceptance Checks（`[D-008 AC-n]`，可轉測試）
@@ -324,7 +327,9 @@ CREATE UNIQUE INDEX ux_events_active_group ON events (group_id)
 ## 六、Backlog / 後續（非本次阻塞）
 
 - **nit-6（T-014 或後續）**：`確認` 建立 open 時，建議加驗 `event_datetime > NOW()`（台灣本地→UTC 後）以防主辦輸入**已過去**的日期時間 → 建立即刻過期的「死團」（建立後立即 `ended`、無法報名、且立即可被下次開團 flip）。屬**輸入驗證強化**，非釋放/併發正確性核心（即使建立即死團，釋放機制仍正確處理）；於 T-014 或後續處理，可回 create-flow 欄位驗證層與 D-002 validator 協調（新增 `awaiting_date`/`awaiting_time` 或確認前的「未來時間」檢查）。
+  - > **errata（2026-08-23，D-015／T-026）：nit-6 尚未清償，勿誤判為已解。** D-015 已實作「**不得把活動時間改到過去**」（G3：合併後 `newIso` 必須 `> now`，鎖內以注入時鐘判定，否則拒絕且不 UPDATE），但**其射程只有編輯路徑**（`編輯 日期`／`編輯 時間`）。**建立路徑**（一行式 `開團 …` 與逐步問答 `確認`）**仍未加未來時間驗證**，主辦照樣可建立一個立刻過期的死團。故本條 backlog **維持開啟**；後續若要清償，宜與 D-015 G3 共用同一判定原語（避免第二套規則）。
 - **nit-5（設計註記，範圍外）**：closed 事件的 `+N` 現回 `no_open_event`（「目前沒有開放報名的活動」），與名單 closed 顯示「報名已截止」措辭不對稱；為既有行為、低頻（關閉後多不再 `+N`），本次不改，記此供未來一致化（可讓 signup 對 closed 回專屬「報名已截止」訊息）。
+  - > **errata（2026-08-23，D-015／T-026）：`編輯` 已就 closed 走「對稱」路線**——不沿用 `no_active`（「目前沒有進行中的活動。」），而回專屬文案 `報名已截止的活動無法編輯。`。此為 nit-5 所指一致化方向的**首個落地案例**，但 `+N`／`-N` 對 closed 的措辭**仍未改**，nit-5 維持開啟。
 
 ---
 
@@ -334,3 +339,4 @@ CREATE UNIQUE INDEX ux_events_active_group ON events (group_id)
 | 2026-08-01 | D-008 DRAFT 產出 | 待 design-reviewer + architect-reviewer（R2 雙審）與使用者最終 APPROVED 後解鎖實作任務（T-013/T-014，待建）。實作於 T-012（PG 移植）落地後。 |
 | 2026-08-01 | OP-1~7 使用者裁決 | OP-1 獨立 0003；OP-2 拒絕文案「這場活動已結束，無法再報名／取消」；OP-3 過期/done 措辭「活動已結束」；**OP-4 closed 名單顯示最終名單標「報名已截止」（實質變更：`findEventForDisplay` 納入 closed、formatter 兩種 `phase`）**；OP-5 draft 無需特別處理；OP-6 固定 UTC+8；OP-7 close/cancel 遇過期 open 回 `no_active` 不 flip。設計正文（§2/§4/§5/§8、Guardrails G2、AC-5/AC-11/AC-12）已依定案更新自洽。 |
 | 2026-08-02 | R2 雙審回饋修訂 | architect-reviewer 零 blocker（併發/正確性/0003/errata PASS）；design-reviewer **B1**（closed 用詞漂移）→ 收斂「報名已截止」（`formatClosed` 即時回覆 + 名單標籤同詞，pin §8(2)/AC-13、errata D-004(E)/D-005）、**B2**（closed/ended 名單列組成）→ 明訂列組成：ended/closed 移除「剩餘名額」列、split 費用列 closed 取 `settled_per_person`/ended 取 `perPersonAmount` 去「暫估」、總金額去「預估」（pin §8(3)/AC-5/AC-11）。採 architect nit-1（§1b already_active 補 `conversations.delete`）、nit-2（§6b/AC-9/errata：鎖內 `getById` 重讀，非 stale）、nit-3（§7 backfill 未來日期無歷史 DST）、nit-4（§2 被取代場名單轉歷史 v2）、nit-6（§六 backlog：確認驗未來時間）；nit-5 §六 設計註記。Guardrails 5 條、AC 13 條。待 design-reviewer 複審封閉 B1/B2。 |
+| 2026-08-23 | D-015／T-026 errata（架構 reviewer 要求補登） | §2 三取用語意表新增第四列「編輯用」＝複用 `findActiveByGroup`+`isExpired`（不新增 accessor；closed 判別用 `findLatestDisplayable`），並界定 G2 末句射程；§六 nit-6「不得改到過去」**只在編輯路徑落地、建立路徑仍未清償**（維持開啟）；nit-5 一致化首個落地案例為 `編輯` 的 closed 專屬文案（`+N`/`-N` 未改，維持開啟）。 |

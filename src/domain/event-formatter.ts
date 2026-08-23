@@ -16,10 +16,12 @@
 //   無效日期），改為「基準時刻（台灣時區）＋7 天」動態產生。時鐘由呼叫端以 nowIso（UTC ISO-8601）
 //   注入；本檔不得直接讀系統時鐘，以維持純函式與可測性（D-006 G4）。
 
-import type { EventRow } from '../db/schema';
+import type { EventRow, PriceMode } from '../db/schema';
 import { utcIsoToTaipei } from '../db/time';
 import type { CreateState, CreateEventDraft } from './create-flow';
-import type { MessageDescriptor } from './list-formatter';
+import { feeLine, type MentionDescriptor, type MessageDescriptor } from './list-formatter';
+import type { EditEventResult } from './event-service';
+import { MAX_LOCATION_LEN } from '../commands';
 
 function text(s: string): MessageDescriptor {
   return { text: s, mentionees: [] };
@@ -273,4 +275,176 @@ export function formatRaceLost(): MessageDescriptor {
 // (M) 等待確認時輸入無法辨識（停留 awaiting_confirm，不建立）。
 export function formatConfirmReprompt(): MessageDescriptor {
   return text('請輸入「確認」建立活動，或「取消」放棄。');
+}
+
+// ── D-015 編輯活動資訊組版（§3 逐字釘死；球種中性，CLAUDE.md §0） ─────────────
+//
+// **對外示範一律用「場地」**：`地點` 只是 parser 的隱藏別名，任何使用者可見文案
+// 都不得出現「編輯 地點」（F1 / G7）。
+// 時鐘一律由呼叫端以 UTC ISO 注入（`now`），本檔不得呼叫 nowIso()／new Date()（G7）。
+// **不得沿用 `formatFieldError` 等開團問答字串**：那些字串會叫使用者裸打日期，
+// 而裸值在群組裡會被 parseCommand 判為 unknown → 靜默死角（A3）。
+
+type EditOk = Extract<EditEventResult, { kind: 'ok' }>;
+
+/** 待 @ 的對象（handler 於**交易外**以 users.getById 解析後傳入；formatter 不觸 DB）。 */
+export interface EditMentionTarget {
+  /** 顯示名（既有快照 users.display_name）。 */
+  displayName: string;
+  /** mention 目標 userId；取不到 → null → 退化為不可點純文字 `@名字`（D-003 §4 fallback）。 */
+  lineUserId: string | null;
+}
+
+/** UTC ISO → 台灣本地顯示字串 `YYYY-MM-DD HH:MM`（同 eventDateTimeDisplay 的格式）。 */
+function isoDisplay(iso: string): string {
+  const { date, time } = utcIsoToTaipei(iso);
+  return `${date} ${time}`;
+}
+
+/** 成功句（改前 → 改後）。日期/時間**恆顯示合併後完整時刻**，讓使用者確認另一半沒被動到。 */
+function editSuccessLine(r: EditOk): string {
+  switch (r.field) {
+    case 'date':
+    case 'time':
+      return `已更新活動時間：${r.before} → ${r.after}`;
+    case 'location':
+      return `已更新場地：${r.before} → ${r.after}`;
+    case 'fee':
+      // perPerson 有值 ⟺ split_venue（per_person 不帶；見 EditEventResult）。
+      return r.perPerson === undefined
+        ? `已更新每人費用：${r.before} 元 → ${r.after} 元`
+        : `已更新場地費：${r.before} 元 → ${r.after} 元（目前正取 ${r.confirmedCount} 人，` +
+            `平均每人約 ${r.perPerson} 元；暫估，關閉報名後結算）`;
+    default: {
+      const _exhaustive: never = r.field;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * 編輯成功（§3 + §4）：成功句 + **同一則**的 mention 提醒行。
+ * 對象只 confirmed、已由 domain 依 owner_user_id 去重（proxy 列 tag 代報者本人，G8）。
+ * `overflow`（> MAX_MENTIONS_PER_MESSAGE）→ **整則**退化為無 `@` 提醒句，
+ * 不部分 tag、不拆多則（G9）；`targets` 為空亦走同一退化句（防禦，正常不可達：主辦恆為第 1 正取）。
+ */
+export function formatEditOk(
+  result: EditOk,
+  targets: readonly EditMentionTarget[],
+): MessageDescriptor {
+  const head = editSuccessLine(result);
+  const prompt = '活動資訊已更新，已報名的各位請確認';
+  if (result.overflow || targets.length === 0) {
+    return text(`${head}\n${prompt}。`);
+  }
+  let out = `${head}\n${prompt}：`;
+  const mentionees: MentionDescriptor[] = [];
+  targets.forEach((t, i) => {
+    if (i > 0) out += ' ';
+    const mentionText = `@${t.displayName}`;
+    const index = out.length;
+    out += mentionText;
+    if (t.lineUserId !== null) {
+      mentionees.push({ index, length: mentionText.length, lineUserId: t.lineUserId });
+    }
+  });
+  return { text: out, mentionees };
+}
+
+/**
+ * 無參數 `編輯`／未知欄位名／缺新值 → 現值＋範例（§3 help 全文逐字釘死）。
+ * `{費用列}` 沿用 `list-formatter.feeLine(event, K, 'live')`（**自帶標籤，外層不再加 `費用：`**，
+ * D-015 errata 2026-08-23）；`{費用範例}` 依 price_mode 動態產生
+ * （否則 split 活動照範例打會改錯對象）。**現值顯示用 `YYYY-MM-DD`、範例用 `YYYY/MM/DD`，
+ * `validateDate` 兩者皆收，非不一致，勿改。**
+ */
+export function formatEditHelp(
+  event: EventRow,
+  confirmedCount: number,
+  now: string,
+): MessageDescriptor {
+  const { date, time } = utcIsoToTaipei(event.event_datetime);
+  const feeExample =
+    event.price_mode === 'split_venue' ? '編輯 費用 場地費4000' : '編輯 費用 2500';
+  return text(
+    [
+      '活動目前資訊：',
+      `日期：${date}`,
+      `時間：${time}`,
+      `場地：${event.location}`,
+      // D-015 errata（2026-08-23）：原模板為 `費用：{費用列}`，但 feeLine 自帶標籤
+      // （`每人費用：…`／`場地費：…`）會產生「費用：每人費用：…」的重複標籤。
+      // 去掉外層 `費用：`，與名單畫面用詞一致。
+      feeLine(event, confirmedCount, 'live'),
+      `人數上限：${event.capacity}`,
+      '',
+      `編輯 日期 ${exampleDate(now)}`,
+      '編輯 時間 07:30',
+      `編輯 場地 ${event.location}`,
+      feeExample,
+      '人數請用「加開 N」',
+    ].join('\n'),
+  );
+}
+
+/** `編輯 人數 N`／`編輯 人數`（缺值）→ 導向 `加開 N`（人數不可編輯，縮減會靜默超賣）。 */
+export function formatEditCapacityRedirect(): MessageDescriptor {
+  return text('人數不能直接編輯。要增加名額請輸入「加開 N」（例：加開 2）；縮減名額目前不支援。');
+}
+
+/**
+ * 值格式錯（編輯專用；A3 不得沿用開團問答的 `formatFieldError`）。
+ * `detail.len` 由 parser 帶入實際字數；缺值為防禦性不可達路徑（parser 對 bad_location 恆帶）。
+ */
+export function formatEditFormatError(
+  field: 'date' | 'time' | 'location',
+  now: string,
+  detail?: { len: number },
+): MessageDescriptor {
+  switch (field) {
+    case 'date':
+      return text(
+        `日期格式不正確，請輸入「編輯 日期 YYYY/MM/DD」（例：編輯 日期 ${exampleDate(now)}）。`,
+      );
+    case 'time':
+      return text('時間格式不正確，請輸入「編輯 時間 HH:MM」（例：編輯 時間 07:30）。');
+    case 'location':
+      return text(
+        `場地名稱請控制在 ${MAX_LOCATION_LEN} 字以內（你輸入了 ${detail?.len ?? MAX_LOCATION_LEN + 1} 字）。`,
+      );
+    default: {
+      const _exhaustive: never = field;
+      return _exhaustive;
+    }
+  }
+}
+
+/** 合併後時刻不在未來（G3 拒絕，不 UPDATE）。`{now}` 格式釘死 `YYYY-MM-DD HH:MM`。 */
+export function formatEditPastDatetime(now: string): MessageDescriptor {
+  return text(
+    `不能把活動時間改到過去（現在是 ${isoDisplay(now)}）。` +
+      `請改輸入未來的時間（例：編輯 日期 ${exampleDate(now)}）。`,
+  );
+}
+
+/** 費用值與本活動計費模式不合（計費方式不可變更，G2/G6）。 */
+export function formatEditBadFee(priceMode: PriceMode): MessageDescriptor {
+  return priceMode === 'split_venue'
+    ? text('本活動是場地費均攤，請輸入場地費總額（例：編輯 費用 場地費4000）。本活動的計費方式無法變更。')
+    : text('本活動是每人固定費用，請輸入金額（例：編輯 費用 2500）。本活動的計費方式無法變更。');
+}
+
+/** 非開團者、非 super-admin 試 `編輯`（既有 (H′) 字串不動，本文案另立）。 */
+export function formatEditNotAuthorized(): MessageDescriptor {
+  return text('只有開團的人（或系統管理員）可以編輯活動資訊。');
+}
+
+/** 目標活動已 `closed`（報名已截止；不放寬編輯）。 */
+export function formatEditClosedNotEditable(): MessageDescriptor {
+  return text('報名已截止的活動無法編輯。');
+}
+
+/** 目標活動已過期（open 但 event_datetime < now）。 */
+export function formatEditEventEnded(): MessageDescriptor {
+  return text('活動已結束，無法編輯活動資訊。');
 }

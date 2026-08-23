@@ -51,11 +51,13 @@ export function buildHandler(): WebhookHandler {
   });
   // 開團 domain（D-006）：開團全開；close/cancel 授權 = canManageEvent（host_user_id ∪ super-admin）。
   // super-admin 集合以 config.adminUserIds（env ADMIN_USER_IDS）注入（跨群安全網、domain 不讀 env，G3）。
+  // D-015：`編輯` 走 FOR UPDATE 鎖內 read-modify-write → 注入既有 immediate runner（不新增 runner）。
   const eventService = new EventService({
     events,
     users,
     conversations,
     runInTransaction,
+    runImmediate,
     superAdminUserIds: config.adminUserIds,
   });
   // D-011：分組 domain（唯讀名單 + 純函式分組；策略B session 僅暫存 conversation_states）。

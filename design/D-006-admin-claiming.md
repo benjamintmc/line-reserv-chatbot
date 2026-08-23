@@ -47,14 +47,7 @@ canManageEvent(event, executorLineUserId)
 - **建立者判定**：以 `UserRepository.getByLineUserId(executorLineUserId)`（**唯讀**，已存在原語）解析 executor 的 `user.id`，再與 `event.host_user_id` 比對。
   - **為何唯讀（不 upsert）**：建立者於 `確認` 時必已 `users.upsert` 建列（D-004 §4 step 4），故建立者恆有 `users` 列；super-admin 走 env 比對不需列。對**非建立者、非 super-admin** 的執行者，唯讀查詢**不寫任何列** → 滿足「非授權者無 DB 變更」（G2、AC-4/5）。若改用 `upsert` 會為未授權者新增一列 users，違反該 AC，故一律採唯讀 `getByLineUserId`（見 §四 OP-1，對任務「upsert」措辭之收斂）。
 - **授權時機（必在交易外/去重前）**：`canManageEvent` 判定於**進交易前**（`markProcessed` 之前）完成；未通過即 early-return `not_authorized`，**不 mark、不寫任何 DB**（沿用 D-004 非授權者 early-return 慣例）。授權需先 `findActiveByGroup` 讀出 event 以取 `host_user_id`，故 `no_active`（無活動可管）亦於進交易前判定（見 §2 流程）。
-
-#### 1.3 `host_user_id` 生命週期與授權分工（不變 + 收斂）
-
-- **`host_user_id` 來源與時機不變**（D-004 G8、D-005 §3）：`確認` 建立 open event 時 `host_user_id = 建立者 user.id`；主辦自動登記為第 1 正取（seat 1）不受影響。差別僅在「建立者」現可為任一群成員（開團全開），而非 env 白名單成員。
-- **授權分工收斂**：
-  - **生命週期（close/cancel）授權** = `host_user_id` ∪ super-admin（本文件）。
-  - **報名 override（`-N 名字` 代取消他人代報名額）授權** = `event.host_user_id`（D-003 既有，僅建立者）。
-  - 兩者現同以 `host_user_id` 為主體（super-admin 為 close/cancel 額外安全網），較 D-004「生命週期＝env 白名單、override＝host_user_id」的雙來源更一致、更好守（單一擁有權概念）。
+  - > **errata（2026-08-23，D-015／T-026）：本條「授權時機／不 mark」的適用範圍限 `closeEvent`／`cancelEvent`。** 詳見 §二 G2 的 errata；`canManageEvent` 謂詞本身（`src/domain/authz.ts`）由 D-015 原樣複用、語意不變，改變的只有「非授權時是否消費 `message.id`」這一點，且只在編輯路徑。
 
 ### 2. 對 D-004 `event-service` 的具體改法（APPROVED errata）
 
@@ -87,6 +80,7 @@ closeEvent(input):                      // cancelEvent 同型
 ```
 
 - **行為差異註記**：`no_active` 現於**進交易前** early-return（不消費 messageId），因授權需先讀 active。此較 D-004 原「no_active 於交易內 mark 之後判定」更早退、無副作用（更契合「拒絕不留痕」）；對使用者可觀察行為（回 (J)）不變，僅 messageId 去重覆蓋面略縮（重送同一 `無活動` 拒絕會再回一次，與 D-004 §9「交易前 early-return 不 mark」政策一致，低度洗版可接受）。
+- > **errata（2026-08-23，D-015／T-026）：上述「拒絕不留痕（不 mark）」流程只描述 `closeEvent`／`cancelEvent`，不是全域慣例。** D-015「編輯活動資訊」的 `editEvent()` 採**相反**做法：`markProcessed` 是交易內第一步、置於所有拒絕 early-return 之前，連 `not_authorized`／`no_active`／格式錯都會消費 `message.id`。**為什麼不同**：CLAUDE.md §4 去重政策要求「凡本次會送出回覆的訊息（含純拒絕文案）一律消費 `message.id`」；本文件的 close/cancel 拒絕路徑寫於該政策成文之前，屬 §4.5 既有豁免，維持原狀不回溯。兩者**各有適用範圍**，reviewer 勿判為矛盾。
 - **`LifecycleInput` 不變**：`canManageEvent` 走唯讀 `getByLineUserId`，**不需** executor displayName，故 `LifecycleInput`（groupId/executorLineUserId/messageId）維持原狀，handler 呼叫點不需傳新欄位。
 - `confirm` / `abort` / `continueFlow` / `startCreation`（除刪授權外）**流程主體零改動**；D-005 §3 主辦自動登記、§4 split 結算**零改動**。
 
@@ -173,6 +167,7 @@ closeEvent(input):                      // cancelEvent 同型
 
 - **G1（開團全開，不設授權）**：`create_event_oneline`/`create_event_start`/`create_event`（invalid）**不得**含任何授權 gate（不得檢查 `superAdminUserIds`、`host_user_id` 或任何白名單）；任一群成員的開團**不得**因授權被拒。唯一守門為同群單場（`findActiveByGroup` + `ux_events_active_group`，不得移除）。
 - **G2（close/cancel 授權正確 + 非授權無副作用）**：`close_event`/`cancel_event` 授權**只得**依 `canManageEvent = superAdminUserIds.has(lineUserId) ∨ (getByLineUserId(lineUserId).id === event.host_user_id)`；非授權者（非 super-admin 且非建立者）**不得**改 event 狀態（不 `updateStatus`）、**不得**消費 messageId（不 `markProcessed`）、**不得**新增任何 DB 列（executor 解析須唯讀 `getByLineUserId`，**不得** `upsert`），且**不得**繞過授權（不得先讀他表或以其他來源判定）。
+  - > **errata（2026-08-23，D-015／T-026）：G2「非授權者無 DB 變更／不得 markProcessed」的適用範圍限 `close_event`／`cancel_event`。** 原文字面讀起來像全域禁令；**收斂為只約束本文件的這兩條生命週期指令**。D-015「編輯活動資訊」（`編輯 日期／時間／場地／費用`，T-026 已上線）為**明文例外**：依 CLAUDE.md §4 去重政策，凡會送出回覆的分支——**含 `not_authorized`**——一律 `markProcessed`，故非授權者的編輯嘗試**會**在 `processed_events` 留一列。**唯一放寬的是這一列**；G2 其餘半條在編輯路徑仍完全成立：非授權者**不得**改 event 任何欄位、**不得** upsert `users`（`canManageEvent` 仍走唯讀 `getByLineUserId`，D-015 §二 G4 明文複用同一謂詞，不另寫一份）。**為什麼**：拒絕文案若不消費 `message.id`，LINE 重送同一則事件時會重複洗版；close/cancel 的拒絕路徑成文於該政策之前，依 CLAUDE.md §4.5 不回溯，故兩種做法並存且各有範圍。
 - **G3（super-admin 注入、domain 不讀 env）**：super-admin 集合**只得**由 DI 注入（`superAdminUserIds`，來源 env `ADMIN_USER_IDS`）；domain（`event-service`）**不得** `process.env`。super-admin 判定**不得**依賴任何 DB 查詢（純 `line_user_id` 比對，跨群恆真）。
 - **G4（domain 不下 SQL、不觸 LINE、禁 any）**：`event-service.ts`/`event-formatter.ts` **不得**出現 SQL 字串或直接存取 `db`（一律經 repository），**不得** import `@line/bot-sdk`；LINE 型別只在 `handler.ts`。改寫程式**不得**使用 `any`；`canManageEvent`、各 `*Result` 皆具名定型。
 - **G5（零 schema / 零指令改動）**：本文件**不得**新增/修改任何 migration、`schema.ts` 列型別、資料表或索引；**不得**新增 `ParsedCommand` 成員或 parser 規則；**不得**新增 `group_admins`/`group_settings` 等資料表。
@@ -197,6 +192,8 @@ closeEvent(input):                      // cancelEvent 同型
 - [ ] **[D-006 AC-13]（零 schema / 零 migration / 零新指令）**：無新增 migration 檔（`migrations/` 僅 0001/0002）、`schema.ts` 無新列型別、`ParsedCommand` 無新成員、無 `group_admins`/`group_settings` 表。（驗證：靜態審查/grep / G5）
 - [ ] **[D-006 AC-14]（domain 不下 SQL、不觸 LINE、禁 any）**：`src/domain/{event-service,event-formatter}.ts` 內無 SQL 字串、無 `db.prepare`/`db.transaction` 直接呼叫、無 `@line/bot-sdk` import、無 `any`。（驗證：靜態審查/grep + 型別檢查 / G4）
 - [ ] **[D-006 AC-15]（super-admin 注入、domain 不讀 env）**：`event-service.ts` 內無 `process.env`；super-admin 集合經 `superAdminUserIds` 注入。（驗證：grep / G3）
+
+> **errata（2026-08-23，D-015／T-026）：AC-13「`ParsedCommand` 無新成員」是 D-006 當時的零改動宣告，不是永久凍結。** D-015 已依其自身設計新增 `edit_event`／`edit_help` 兩個成員（見 D-002 errata）；本條 AC 的驗證語意收斂為「**D-006 這次變更**不新增成員」，勿在後續任務以字面否決 parser 擴充。AC 編號與既有文字一律不動。
 
 ---
 
@@ -239,6 +236,7 @@ closeEvent(input):                      // cancelEvent 同型
 | 2026-07-31 | 作廢「群內管理人認領」方案，改採模型 B（開團人擁有 + super-admin 安全網） | 決策 #7 定案（使用者裁決）；D-006 整份改寫為授權簡化 |
 | 2026-07-31 | D-006（模型 B）DRAFT 提交（backend） | 待 design-reviewer + architect-reviewer 雙審（R2）；OP-1~OP-4 待裁決；§五 D-004 授權 errata 待 Orchestrator 處置 |
 | 2026-07-31 | OP-1~OP-4（技術/文案性質，orchestrator 採納 backend 建議） | OP-1 唯讀 `getByLineUserId`（不 upsert，避免為未授權者寫列）；OP-2 (H′) 文案採建議；OP-3 `我的ID` 群回不遮罩；OP-4 `formatMyId` 併入 event-formatter。皆為技術/文案預設，無需使用者裁決。 |
+| 2026-08-23 | D-015／T-026 errata（架構 reviewer 要求界定） | §1.2／§2／G2「非授權者不 mark、無 DB 變更」範圍限 `closeEvent`／`cancelEvent`；編輯路徑依 CLAUDE.md §4 一律 mark（僅 `processed_events` 一列，`users` 仍不得 upsert）。AC-13「無新 `ParsedCommand` 成員」收斂為「D-006 這次不新增」。 |
 
 > **OP 全採建議、設計正文與模型 B 一致。** 送 R2 雙審（design-reviewer + architect-reviewer）；architect 需追認 D-004 授權 errata 清單（§五-1）。雙審通過即待使用者最終 APPROVED。
 

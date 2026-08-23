@@ -204,6 +204,9 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     expect(await t.registrations.listWaitlist(event.id)).toHaveLength(0);
   });
 
+  // 單測逾時放寬（僅此條）：本例需以 insertSlot 逐列撐 999 位正取，
+  // 999 列 × 約 2000 次 DB 來回，實測 4.5–5.5s，貼近 vitest 預設 5s 上限而會隨機假紅。
+  // 刻意**不**改全域 testTimeout——全域放寬會讓任何真正掛住的測試都要等滿才失敗，降低診斷力。
   it('[D-010 AC-7] 加開使 newCapacity>MAX_CAPACITY → over_limit、capacity 不變、無遞補', async () => {
     const { event } = await seedEvent(t, { capacity: 999, groupId: 'G' });
     const svc = makeService(t);
@@ -215,7 +218,7 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     expect(r.kind).toBe('over_limit'); // 999+2=1001 > MAX_CAPACITY(1000)
     expect((await t.events.getById(event.id))!.capacity).toBe(999);
     expect(await t.registrations.listWaitlist(event.id)).toHaveLength(1); // 未遞補
-  });
+  }, 20_000);
 
   it('[D-010 AC-8] 同 message_id 的 加開 2 連續兩次 → 第二次 markProcessed=false 中止 → capacity 只增一次', async () => {
     const { event } = await seedEvent(t, { capacity: 8, groupId: 'G' });
