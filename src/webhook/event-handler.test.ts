@@ -59,6 +59,7 @@ function makeHandler(t: TestDb, superAdminUserIds: string[] = [HOST]): WebhookHa
     logError: () => {},
   });
   return createWebhookHandler({
+    groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
     service,
     eventService,

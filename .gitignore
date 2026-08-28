@@ -30,3 +30,6 @@ npm-debug.log*
 
 # 外部素材暫存區（如 harness kit 解壓內容）——吸收完即刪，不進版控
 temp/
+
+# 本機指標報表（含營運數字，不進版控；npm run metrics 產生）
+metrics-report.html

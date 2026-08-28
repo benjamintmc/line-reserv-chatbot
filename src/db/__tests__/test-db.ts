@@ -12,6 +12,7 @@ import { EventRepository } from '../repositories/event-repository';
 import { RegistrationRepository } from '../repositories/registration-repository';
 import { ConversationRepository } from '../repositories/conversation-repository';
 import { ProcessedEventRepository } from '../repositories/processed-event-repository';
+import { GroupRepository } from '../repositories/group-repository';
 
 /**
  * 測試用 Postgres 連線字串（D-007 OP-5，PG-only）。走 env（DATABASE_URL_TEST），
@@ -40,6 +41,8 @@ export interface TestDb {
   registrations: RegistrationRepository;
   conversations: ConversationRepository;
   processed: ProcessedEventRepository;
+  /** D-018 觸及觀測（純觀測、不進任何交易）。 */
+  groups: GroupRepository;
   /** 防超賣交易 runner（FOR UPDATE）；work 收 client-bound TxRepos。 */
   runImmediate: ImmediateRunner;
   /** DEFERRED 交易 runner（開團/生命週期）；work 收 client-bound TxRepos。 */
@@ -68,7 +71,7 @@ export async function createTestDb(): Promise<TestDb> {
   }
 
   await pool.query(
-    'TRUNCATE users, events, registrations, conversation_states, processed_events RESTART IDENTITY CASCADE',
+    'TRUNCATE users, events, registrations, conversation_states, processed_events, groups RESTART IDENTITY CASCADE',
   );
 
   return {
@@ -78,6 +81,7 @@ export async function createTestDb(): Promise<TestDb> {
     registrations: new RegistrationRepository(pool),
     conversations: new ConversationRepository(pool),
     processed: new ProcessedEventRepository(pool),
+    groups: new GroupRepository(pool),
     runImmediate: createImmediateRunner(pool),
     runInTransaction: createTransactionRunner(pool),
     async cleanup(): Promise<void> {

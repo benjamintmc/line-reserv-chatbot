@@ -37,11 +37,13 @@ describe('migrate runner + schema 約束（PG）', () => {
       expect(result.skipped).toContain('0003_merge_event_datetime');
       // D-013 T-022：0004（conversation_states 改複合 PK）。
       expect(result.skipped).toContain('0004_conversation_scope_pk');
+      // D-018 T-029：0005（groups 觸及觀測表 + 自 events 的 backfill）。
+      expect(result.skipped).toContain('0005_groups');
     } finally {
       client.release();
     }
     const count = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM schema_migrations');
-    expect(Number(count.rows[0]!.n)).toBe(4);
+    expect(Number(count.rows[0]!.n)).toBe(5);
   });
 
   it('[D-007 AC-5] 建表等義：5 表 + schema_migrations 齊備、partial unique index 存在', async () => {

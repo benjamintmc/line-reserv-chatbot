@@ -104,6 +104,29 @@ export interface ProcessedEventRow {
   created_at: string;
 }
 
+/**
+ * groups.discovered_via：本列是怎麼被發現的（D-018 §1）。
+ * - `join`：收到 LINE 加入群組事件 → `joined_at` 精確。
+ * - `message`：功能上線前機器人已在該群（不會再收到 join 事件），由群組訊息首見補登。
+ * - `backfill`：migration 0005 自 events 回填 → **`joined_at` 僅為上限估計**，算「加入到首次
+ *   開團的間隔」這類指標時必須排除或另行標註。
+ */
+export type GroupDiscoverySource = 'join' | 'message' | 'backfill';
+
+/** groups 表列（觸及與擴散觀測；D-018）。 */
+export interface GroupRow {
+  group_id: string;
+  /** 群組名稱快照（best-effort）；取不到或未接線時為 null，純供人辨識、不參與任何邏輯。 */
+  group_name: string | null;
+  /** 機器人加入該群的時間；語意精度依 {@link GroupRow.discovered_via} 而異。 */
+  joined_at: string;
+  discovered_via: GroupDiscoverySource;
+  /** 被移出該群的時間；null = 仍在群。重新加入時清回 null（joined_at 保留首次值）。 */
+  left_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** schema_migrations 表列（migration 追蹤）。 */
 export interface SchemaMigrationRow {
   version: string;

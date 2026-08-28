@@ -14,13 +14,14 @@ const SRC = join(__dirname, '..');
 describe('D-006 靜態審查（G3 / G4 / G5）', () => {
   it('[D-006 AC-13] 零 migration：D-006 本身未新增 migration（清單僅隨他案增長）', () => {
     // 本 AC 驗的是「D-006 沒有帶 migration」。清單隨後續已 APPROVED 的他案增長：
-    // 0003 = D-008 T-014、0004 = D-013 T-022（conversation 複合 PK）。
+    // 0003 = D-008 T-014、0004 = D-013 T-022（conversation 複合 PK）、0005 = D-018 T-029（groups 觀測表）。
     const files = readdirSync(join(SRC, 'db', 'migrations')).filter((f) => f.endsWith('.sql')).sort();
     expect(files).toEqual([
       '0001_init.sql',
       '0002_billing_modes.sql',
       '0003_merge_event_datetime.sql',
       '0004_conversation_scope_pk.sql',
+      '0005_groups.sql',
     ]);
   });
 

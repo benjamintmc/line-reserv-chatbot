@@ -59,6 +59,7 @@ function makeHandler(
 ): WebhookHandler {
   const service = opts.service ?? makeService(t);
   return createWebhookHandler({
+    groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
     service,
     eventService: makeEventService(t, opts.superAdminUserIds ?? []),
@@ -128,6 +129,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
       getGroupMemberProfile: vi.fn().mockRejectedValue(new Error('404 not friend')),
     };
     const handler = createWebhookHandler({
+    groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
       service,
       eventService: makeEventService(t),
