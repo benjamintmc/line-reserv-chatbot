@@ -8,6 +8,7 @@ import { EventRepository } from './db/repositories/event-repository';
 import { RegistrationRepository } from './db/repositories/registration-repository';
 import { ConversationRepository } from './db/repositories/conversation-repository';
 import { ProcessedEventRepository } from './db/repositories/processed-event-repository';
+import { GroupRepository } from './db/repositories/group-repository';
 import { RegistrationService } from './domain/registration-service';
 import { EventService } from './domain/event-service';
 import { GroupingService } from './domain/grouping-service';
@@ -77,6 +78,10 @@ export function buildHandler(): WebhookHandler {
     users,
     conversations,
     profile: lineClient,
+    // D-018：觸及與擴散觀測。groupSummary 走同一個 lineClient（結構相容 getGroupSummary），
+    // 每群一生最多呼叫一次，不在熱路徑上。
+    groups: new GroupRepository(pool),
+    groupSummary: lineClient,
   });
 }
 

@@ -114,6 +114,7 @@ import {
   formatGroupFormatHelp,
 } from '../domain/grouping-formatter';
 import { redactId } from '../log-redact';
+import type { GroupRepository } from '../db/repositories/group-repository';
 
 /**
  * D-012 §2.4：多行批次一次可執行的 +/-（signup/cancel）行數上限。
@@ -129,6 +130,14 @@ export interface GroupProfileClient {
   getGroupMemberProfile(groupId: string, userId: string): Promise<{ displayName: string }>;
 }
 
+/**
+ * 取群組名稱摘要的最小介面（結構相容 `messagingApi.MessagingApiClient.getGroupSummary`）。
+ * 純供人辨識 `groupId`（32 位十六進位，肉眼無法對應到實際群組），不參與任何邏輯。
+ */
+export interface GroupSummaryClient {
+  getGroupSummary(groupId: string): Promise<{ groupName: string }>;
+}
+
 export interface WebhookHandlerDeps {
   service: RegistrationService;
   eventService: EventService;
@@ -136,6 +145,16 @@ export interface WebhookHandlerDeps {
   users: UserRepository;
   conversations: ConversationReader;
   profile: GroupProfileClient;
+  /**
+   * D-018：觸及與擴散觀測。**必填**——若做成選填，忘了接線時指標會靜默歸零，
+   * 而「指標無聲少計」正是本案要消滅的問題（既有盲點見 D-018 §一）。
+   */
+  groups: GroupRepository;
+  /**
+   * D-018 §1.4：群組名稱快照來源。**選填**——名稱本就是 best-effort（取不到即 NULL，G1），
+   * 「未接線」與「API 失敗」在資料上同義，故不強制注入；未提供時 `group_name` 一律留白。
+   */
+  groupSummary?: GroupSummaryClient;
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -190,6 +209,66 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     ((msg, meta): void => {
       console.error(msg, meta ?? {});
     });
+
+  /**
+   * D-018 §1.4：取一次群組名稱寫回 `groups.group_name`。
+   *
+   * **只在該群的列剛被新增時呼叫**（呼叫端以 recordSeen/recordJoin 的回傳值把關，G4）⇒
+   * 每群一生最多一次 LINE API，不會落在每則訊息的熱路徑上。
+   * 失敗即維持 NULL——名稱純供人辨識，取不到不影響任何指標（G1）。
+   */
+  async function fillGroupName(groupId: string): Promise<void> {
+    if (deps.groupSummary === undefined) return;
+    try {
+      const summary = await deps.groupSummary.getGroupSummary(groupId);
+      if (summary.groupName.length > 0) await deps.groups.setName(groupId, summary.groupName);
+    } catch (err) {
+      logError('getGroupSummary 失敗，group_name 留白（D-018 G1）', {
+        group: redactId(groupId),
+        err: String(err),
+      });
+    }
+  }
+
+  /**
+   * D-018 §1.2：機器人被加入／被移出群組。
+   *
+   * **本函式永不拋出**（G1）——這是對 CLAUDE.md §4「不吞例外」的顯式申報偏離：觀測資料寫入
+   * 失敗不得使報名／開團失效。既有 `resolveDisplayName` 的 best-effort 取名為同型先例。
+   */
+  async function recordGroupLifecycle(kind: 'join' | 'leave', groupId: string): Promise<void> {
+    try {
+      if (kind === 'leave') {
+        await deps.groups.recordLeave(groupId);
+        return;
+      }
+      if (await deps.groups.recordJoin(groupId)) await fillGroupName(groupId);
+    } catch (err) {
+      logError('groups 生命週期寫入失敗，已略過（D-018 G1）', {
+        group: redactId(groupId),
+        kind,
+        err: String(err),
+      });
+    }
+  }
+
+  /**
+   * D-018 §1.3：群組訊息路徑的首見補登。功能上線前既已在群的機器人不會再收到 join 事件，
+   * 這是「加了機器人卻從未開團」的唯一觀測來源。
+   *
+   * 熱路徑成本為 **1 次 `INSERT … ON CONFLICT DO NOTHING`**（該路徑原已有 conversations.get，
+   * 由 1 次往返增為 2 次）；名稱查詢只在真的新增列時觸發（G4）。同樣永不拋出（G1）。
+   */
+  async function recordGroupSeen(groupId: string): Promise<void> {
+    try {
+      if (await deps.groups.recordSeen(groupId, 'message')) await fillGroupName(groupId);
+    } catch (err) {
+      logError('groups 首見補登失敗，已略過（D-018 G1）', {
+        group: redactId(groupId),
+        err: String(err),
+      });
+    }
+  }
 
   /** 取顯示名快照（AC-19、§7 fallback：getGroupMemberProfile → users.display_name → 「使用者」）。 */
   async function resolveDisplayName(groupId: string, userId: string): Promise<string> {
@@ -918,6 +997,13 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   }
 
   async function handleEvent(event: WebhookEvent): Promise<messagingApi.Message[]> {
+    // D-018 §1.2：join/leave 只寫觀測資料，**一律不回覆、不 markProcessed**（G2）——屬 CLAUDE.md
+    // §4 去重政策中「本來就不回覆」的例外路徑。非群組來源（1:1／room）一律不記（G7）。
+    // D-003 §5 errata：原規格「非 text 事件一律忽略」自此僅適用於 message 類事件。
+    if (event.type === 'join' || event.type === 'leave') {
+      if (event.source.type === 'group') await recordGroupLifecycle(event.type, event.source.groupId);
+      return [];
+    }
     // 僅處理群組來源的文字訊息事件；其餘一律忽略（不回覆、不 mark；沿用骨架）。
     if (event.type !== 'message' || event.message.type !== 'text') return [];
     if (event.source.type !== 'group') return [];
@@ -926,6 +1012,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     if (userId === undefined) return [];
     const messageId = event.message.id;
     const text = event.message.text;
+
+    // D-018 §1.3：首見補登。置於指令分派**之前**——雜訊訊息同樣代表「機器人在這個群裡」，
+    // 是「加了不用」的唯一訊號；若移到可識別指令之後，該類群組將永遠觀測不到。
+    await recordGroupSeen(groupId);
 
     // D-004 §3.3：先查 conversation_states 攔截進行中開團流程（per-user PK 隔離）。
     // 只有正在開團的 host 自己的訊息被攔截為流程答案；同群其他成員完全不受影響（AC-15）。

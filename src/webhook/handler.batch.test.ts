@@ -39,6 +39,7 @@ function makeHandler(
 ): WebhookHandler {
   const service = opts.service ?? makeService(t);
   return createWebhookHandler({
+    groups: t.groups, // D-018：觀測依賴（必填）
     grouping: new GroupingService({
       events: t.events,
       users: t.users,

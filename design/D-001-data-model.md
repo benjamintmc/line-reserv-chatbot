@@ -10,7 +10,9 @@
 > (2) §9 目錄歸屬措辭修正（command parser 屬 `src/commands/`；來源：D-002 nit-4）；
 > (3) **§2 events schema 三欄擴充**（`price_mode`/`venue_fee`/`settled_per_person`；來源：D-005 §1，見 §2「澄清註記（errata 2026-07-31，來源 D-005）」標示處）；
 > (4) **G2 carve-out**（write-first 交易內盲插首列主辦名額為 IMMEDIATE 要求的合理例外；來源：architect-reviewer D-005 裁定點 3 與條件 A-B1，見 §二 G2 下澄清註記）。
-> (3)(4) 為本次（errata 2026-07-31，來源 D-005）新增，詳見文末討論紀錄。
+> (5) **新增第 6 張表 `groups`**（觸及與擴散觀測；migration 0005；來源：D-018 §1，見 §5 後「澄清註記
+>     （errata 2026-08-28，來源 D-018）」標示處）。
+> (3)(4) 為 errata 2026-07-31（來源 D-005）新增；(5) 為 errata 2026-08-28（來源 D-018）新增，詳見文末討論紀錄。
 
 ## 一、設計內容
 
@@ -250,6 +252,14 @@ webhook 冪等（NFR-2）、同 group 單一進行中活動（定案 #3）、**�
   event 的去重鍵處理（屬 webhook 層，非本表範圍）。
 
 ---
+
+- **澄清註記（errata 2026-08-28，來源 D-018 §1）：新增第 6 張表 `groups`**——本文件原定 5 表，
+  D-018（APPROVED）經 migration `0005_groups.sql` 新增 `groups`（`group_id` PK、`group_name`、
+  `joined_at`、`discovered_via`、`left_at`、`created_at`、`updated_at`），記錄機器人觸及了哪些 LINE
+  群組。**刻意不對 `events.group_id` 建 FK**：groups 可先於任何 event 存在（「加了機器人但沒開團」
+  正是要觀測的情境），加 FK 會讓 backfill 與首見寫入順序互相耦合。本表**不參與任何使用者可見邏輯**
+  （D-018 G1：寫入失敗只記 log、不中斷報名／開團），故不進 §7 狀態機、不受 G2 交易語意約束。
+  欄位語意與 backfill 的時間精度限制見 `design/D-018-adoption-metrics.md` §1 與 `docs/metrics.md`。
 
 ### 6. 實體關聯圖（ERD）
 
