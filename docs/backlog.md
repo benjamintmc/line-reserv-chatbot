@@ -63,7 +63,6 @@
 - **（後續優化，使用者裁決 2026-08-02／T-015 衍生）整批原子遞補**：`pickWaitlistForPromotion` 以**列**為單位 `LIMIT`，當剩餘名額 < 候補隊首批次人數時會**拆散整批**（剩 1 位、隊首 `+2 陳先生` → 1 列轉正取、1 列留候補），與 G1 進場「整批不部分接受」的原子性不對稱。使用者已裁決**本次先允許拆批**。實作需求：`registrations` 新增 `batch_id` 欄位（同批共用；`0001_init.sql` 現無此欄，`seq` 無法可靠推斷批次）→ 屬 **migration ⇒ R2**（需 D-003 或新設計文件 + 雙 reviewer）。另需決策：額度塞不下隊首批次時採「跳過該批、遞補得下的後批」（不留空位但可能插隊）或「整批卡住等待」（嚴格 FIFO 但留空位）。回歸測試已釘住現行拆批行為：`[D-003 AC-21]` 第 2 案。
 - **（e2e 待辦，整合階段或發布前）** ①代報名（`+1 名字`）與候補遞補案例補入 e2e-tester 清單；②architect-reviewer nit-1：D-003 雖標 R1，因含授權（主辦 override）+ 刪除類（soft-delete），e2e 至少需涵蓋 AC-17（主辦跨 owner 代取消觸發 FIFO 遞補）。未阻擋任何已完成任務。
 
-- **D-018 遺留：backfill 群組的 `group_name` 為 NULL**（2026-08-28）。migration `0005` 直接以 SQL 建列，
-  未經過應用層的 `getGroupSummary` 取名路徑，故 5 個既有群組在 dashboard 上沒有名稱、只剩 `group_id`。
-  補法：一次性腳本對 `group_name IS NULL AND left_at IS NULL` 的列各打一次 LINE API。
-  不阻塞任何指標（名稱不參與計算），純屬可讀性。
+- ~~**D-018 遺留：backfill 群組的 `group_name` 為 NULL**~~ → **已解（2026-08-28，T-031）**。
+  新增 `npm run db:backfill-names`（`scripts/backfill-group-names.ts`，附 `--dry-run`），
+  對 PROD 5 列補名全數成功、零失敗，現存群組已無缺名。腳本保留供日後再有 backfill 列時重跑。
