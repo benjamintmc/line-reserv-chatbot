@@ -26,6 +26,7 @@
 ## 設計文件狀態
 | 設計 ID | 功能 | 撰寫者 | 狀態（DRAFT/IN_DISCUSSION/APPROVED） |
 |---|---|---|---|
+| D-019 | `編輯 費用` 支援切換計費模式（反轉 D-015 決議⑥；G2 封閉集納入 `price_mode`） | architect | **DRAFT——R2 雙審已 PASS（零 blocker，4 nit 已回填），待使用者最終核可**。派工（T-032）已移入 `docs/backlog.md`（使用者要求先自行通讀全文再核可） |
 | D-018 | 觸及與擴散觀測（`groups` 表、join/leave 接線、訊息首見補登、指標 SQL） | **orchestrator 代筆** | **APPROVED（2026-08-28，使用者核可動工）**。R1。7 Guardrails / 9 AC。**未經設計階段 reviewer**（orchestrator 代筆＋R1，同 D-014 前例）——改以實作階段四關全綠 + AC 逐條實測補強，偏離明載於此。**G1 為 CLAUDE.md §4「不吞例外」的顯式申報偏離**（觀測失敗不得使產品失效），已獲使用者裁決。解鎖 T-029 |
 | D-015 | 編輯活動資訊（`編輯 日期/時間/場地/費用`；host/admin、open 且未過期、單欄 read-modify-write 鎖內重讀、成功後 @ 正取者） | architect | **APPROVED（2026-08-22，使用者核可）**。**R2**。117 行／9 Guardrails／15 AC。**三輪雙審**：首輪雙 BLOCK 合計 5 blocker（architect：D-006 §2/G2 去重政策衝突未開 errata、G2 無專屬 AC；design：格式錯文案借用開團問答語氣製造新靜默死角、顯示標籤「場地」≠ 指令關鍵字「地點」致使用者迴圈、help 全文未釘死使 AC-10 不可執行）；複審雙 BLOCK 殘留 2（F1 兩位獨立指出 help 標籤與範例仍不對齊；**F2 事實錯誤——文件自列合法的 `編輯 費用 場地費 4000` 實際會被拒**，因 `validateVenueFee`/`validatePrice` 不吸收空白，orchestrator 已親自核對 `validators.ts` 確認）。末輪修訂 F1/F2 + 8 nit 全數落地，**orchestrator 逐條抽查確認封閉**（兩位 reviewer 均明示「改完即 PASS、不需第三輪」，故不再跑第三輪以節省最貴的一關）。architect 八點架構結論全 PASS。解鎖 T-026 |
 | D-014 | DB 連線 TLS 驗證顯式化（移除不可達的 `rejectUnauthorized:false`、連線字串收斂為 `sslmode=verify-full`、升級金絲雀測試） | orchestrator | **APPROVED（2026-08-22，使用者核可動工）**。R1。4 Guardrails / 7 AC（含 2 條真機 AC）。**未經設計階段 reviewer**（orchestrator 代筆＋R1）——改以「實作階段單一 reviewer（R1 常規）＋實作者須先重跑 §一 實測」補強，此偏離已明載於此。解鎖 T-024 |
@@ -41,6 +42,7 @@
 | D-010 | 開團後加開名額（只加不減、鎖內改 capacity + 立即遞補候補、`加開 N`、單則公告+遞補通知） | backend-engineer | **APPROVED（2026-08-17）** — R2 雙審 PASS + 使用者核可。nits 待 T-019：抽共享 authz helper、`promoteWithinLock` 共用。解鎖 T-019 |
 | D-012 | 多行批次報名（一則多行、每行 `+N`/`-N` 逐行執行、`message.id#行號` 去重、一次 reply≤5則合併回覆） | backend-engineer | **APPROVED（2026-08-17）** — R1；design-reviewer PASS + 使用者核可。3 決策回填、字串釘死。解鎖 T-020。＋2026-08-19 errata（§一.3）：取消行同報名行聚合 |
 | D-013 | conversation_states PK 改 `(group_id, line_user_id)`（跨群流程並行；migration 0004、repo 簽名、(N2) 收斂） | **orchestrator 代筆**（architect 連 4 次 API 529） | **APPROVED（2026-08-19）** — R2 雙審通過（architect 2 輪 PASS／design 3 輪 PASS，**合計 10 條 blocker 全封閉**，其中 2 條為 orchestrator 修補時自行引入）+ 使用者核可。8 Guardrails / 10 AC。約束名 `conversation_states_pkey` 已對真 PG 實測查證。解鎖 T-022 |
+| D-014 | 同群組多場並行活動（解除 `ux_events_active_group` 限制、引言/`@selector` 對象消歧義、開團查重、`message_event_map`） | architect | **DRAFTING（2026-08-31 派工）**——需求已與使用者逐項裁決完畢，見 `docs/00-project-brief.md` 決策 #9 / FR-8。R2（`event-service.ts`/migration/授權判定入口皆屬預設高風險模組），需 ≥3 Guardrails，動工前須雙審 |
 
 ## 阻塞清單
 
