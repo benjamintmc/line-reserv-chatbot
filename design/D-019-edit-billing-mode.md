@@ -1,6 +1,6 @@
 # D-019: 編輯費用支援切換計費模式（per_person ↔ split_venue）
 
-- 狀態：DRAFT（R2 雙審 PASS，無 blocker；4 nit 已回填，待使用者最終核可）
+- 狀態：**APPROVED（2026-09-01，使用者核可）**——R2 雙審 PASS，無 blocker；4 nit 已回填。解鎖 T-032
 - 撰寫者：architect
 - 關聯：任務 T-032／errata D-015（`design/D-015-edit-event.md`，APPROVED、已上線 T-026）／相依 D-005 §2、§6（`billing.ts`、`validateFee`）
 - 風險等級：**R2（高）**——動 `src/domain/event-service.ts`（CLAUDE.md §4.5 預設高風險模組），涉及計費三欄一致性與金額正確性。依 §5：雙 reviewer + e2e，Guardrails ≥3（本文件 6 條）。

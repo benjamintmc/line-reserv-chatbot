@@ -1,6 +1,6 @@
 # 02 — 指令契約（LINE Command Contract）
 
-> 擁有者：api-contract-designer。**版本：v0.3（由既有實作反向產生，尚未凍結）**
+> 擁有者：api-contract-designer。**版本：v0.4（由既有實作反向產生，尚未凍結）**
 >
 > **本專案沒有前後端分離**：對外介面是 **LINE 群組對話**，不是 REST。真正需要凍結的「介面」
 > 是指令語法與回覆範本——使用者記得的是 `+1`，不是 endpoint。REST 面只有 LINE 平台呼叫的
@@ -38,7 +38,7 @@
 | `編輯 日期 <YYYY/MM/DD 或 YYYY-MM-DD>` | `edit_event{field:'date'}` | 值經既有 `validateDate` 正規化為 `YYYY-MM-DD`；格式錯 → `invalid{command:'edit_event', reason:'create_bad_date'}` |
 | `編輯 時間 <H:MM 或 HH:MM>` | `edit_event{field:'time'}` | 值經既有 `validateTime` 正規化為 `HH:MM`（24h 零填充）；格式錯 → `invalid{command:'edit_event', reason:'create_bad_time'}` |
 | `編輯 場地 <名稱>` | `edit_event{field:'location'}` | **`地點` 為 parser 收但對外不示範的隱藏別名**（D-015 F1：所有文案一律用「場地」）；值 > 40 字（`MAX_LOCATION_LEN`，UTF-16 code unit）→ `invalid/bad_location`，**不截斷** |
-| `編輯 費用 <金額>` | `edit_event{field:'fee'}` | 依活動計費模式解讀：`per_person` → 每人金額（`編輯 費用 2500`）；`split_venue` → 場地費總額（`編輯 費用 場地費4000`）。**不支援切換計費模式**；模式與金額格式不符 → 由 domain 回 `bad_fee`（parser 不判） |
+| `編輯 費用 <金額>` | `edit_event{field:'fee'}` | 語法不變，沿用 `validateFee`（依前綴判斷，同開團一行式／D-005 §6.1）：裸 `N` → `per_person`；`場地費N`/`均攤N` → `split_venue`。**任何時候皆可切換計費模式**（含已有人報名後；D-019 反轉 D-015 決議⑥，不再限制僅能同模式改金額）。純格式不合法（如 `abc`）→ domain 回 `bad_fee`（parser 不判、與現有計費模式無關），固定文案：「費用格式不正確。每人固定請輸入金額（例：編輯 費用 2500）；場地費均攤請輸入「場地費」+總額（例：編輯 費用 場地費4000）。」 |
 | `編輯 人數 <N>` / `編輯 人數`（缺值） | `edit_event{field:'capacity'}` | **不執行任何異動**，一律回導向文案：增加名額請用 `加開 N`，縮減名額不支援（D-015 G2） |
 | 其餘（含 `+0`、`+abc`、`+ 1`、閒聊） | `unknown` | **不回覆** |
 
@@ -52,7 +52,7 @@ parser 對 `編輯 <欄位> <新值>` 的「新值」取法**依欄位而異**�
 
 | 欄位 | 取值 | 為什麼 |
 |---|---|---|
-| `fee` | **compact**：`tokens.slice(2).join('').replace(/\s+/g,'')` | `validateVenueFee` / `validatePrice` **不吸收空白**（會 compact 的 `validateFee` 已被 D-015 G6 禁用，因它依前綴自動切換 `price_mode`）。不先壓掉空白，`編輯 費用 場地費 4000`、`編輯 費用 2500 元` 會被誤拒 |
+| `fee` | **compact**：`tokens.slice(2).join('').replace(/\s+/g,'')` | domain 端呼叫 `validateFee`（D-019 起取代 `validateVenueFee`/`validatePrice`，依前綴判斷計費模式並允許切換）；`validateFee` 內部本身也會 compact，但 parser 端維持既有 compact 行為不變（`parse.ts` 不需改動）。不先壓掉空白，`編輯 費用 場地費 4000`、`編輯 費用 2500 元` 仍會被誤拒 |
 | `location` | **保留空格**：`tokens.slice(2).join(' ')` 後 trim | 場地名本身含空格（例：`東方 A 場`）；壓掉會改壞名稱 |
 | `date` / `time` | `tokens.slice(2).join('')` 後送 `validateDate` / `validateTime` | 日期時間不含空格，黏合可容忍使用者誤打空白 |
 
@@ -101,7 +101,7 @@ parser 對 `編輯 <欄位> <新值>` 的「新值」取法**依欄位而異**�
 | 關閉報名 / 取消活動 / 放棄流程 | `formatClosed` / `formatCancelled` / `formatAborted` | `event-formatter.ts` |
 | 未授權 / 已有活動 / 無 active | `formatNotAuthorized` / `formatAlreadyActiveEntry` / `formatNoActiveEvent` | `event-formatter.ts` |
 | 一行式格式說明 | `formatOnelineFormatHelp` | `event-formatter.ts` |
-| 編輯成功（改前 → 改後）＋ @ 正取者 / 導引 / 各類拒絕 | 編輯專用 formatter（**不得沿用 `formatFieldError`** 的開團問答字串——那會叫使用者裸打日期，落入 `unknown` 靜默死角） | D-015 §3 逐字釘死 |
+| 編輯成功（改前 → 改後）＋ @ 正取者 / 導引 / 各類拒絕 | 編輯專用 formatter（**不得沿用 `formatFieldError`** 的開團問答字串——那會叫使用者裸打日期，落入 `unknown` 靜默死角） | D-015 §3 逐字釘死；`fee` 欄位切換計費模式時的成功句型與 `bad_fee` 文案改依 D-019 §5 |
 
 > 【技術債】`formatAlreadyClosed`、`formatRaceLost` 於 D-008 把 `closed` 移出 active 集合後
 > 已成不可達的防禦死碼。
@@ -166,3 +166,4 @@ CLAUDE.md §4 記載的統一錯誤格式 `{ code, message, details }` 目前**�
 | v0.1 | 2026-08-05 | 由既有實作反向產生；重定位為指令契約（原 REST 模板全為佔位符，從未填寫） | 待審 |
 | v0.2 | 2026-08-23 | D-015／T-026 回填：指令一覽新增 `編輯` 6 列；新增〈`編輯` 的取值規則〉〈`編輯` 的回覆政策〉〈型別〉三節（`edit_event`／`edit_help`、`InvalidCommandKind:'edit_event'`、`InvalidReason:'bad_location'`、選填 `invalid.detail{len}`）；去重政策表新增編輯路徑列與明文例外註；回覆範本索引新增編輯列。REST 面與 `openapi.yaml` 無異動（本功能不新增 HTTP endpoint） | architect-reviewer（T-026 PASS） |
 | v0.3 | 2026-08-31 | 新增〈尚未生效的預告：D-020〉一節，預先登記同群多場並行活動＋訊息消歧義（`@selector`／quote-reply）與同群 open 數上限（3 場，固定文案）若落地將牽動的契約面。**D-020 仍是 DRAFT，本次僅為 errata 預先登記，不代表現行行為已改變**；其餘章節未變動 | architect（D-020 errata） |
+| v0.4 | 2026-09-01 | **本次變更來源 D-019（2026-09-01，APPROVED）**：`編輯 費用` errata——反轉 D-015 決議⑥，改為**任何時候皆可切換計費模式**（含已有人報名後），語法不變、沿用 `validateFee` 依前綴判斷 `per_person`/`split_venue`；同步更新〈`編輯` 的取值規則〉表 `fee` 列說明（`validateFee` 取代 `validateVenueFee`/`validatePrice`，不再是「已被 D-015 G6 禁用」）；補上新 `bad_fee` 固定文案（純格式錯誤，不再依現有計費模式分岔）；回覆範本索引 `編輯` 列註記切換行為改依 D-019 §5。**REST 面與 `openapi.yaml` 無異動**（本功能不新增/變更 HTTP endpoint，`EditEventResult`/`EditOk` 等為 domain 內部型別，未列於本文件〈型別〉節，故無需同步） | 待 architect-reviewer 確認 |
