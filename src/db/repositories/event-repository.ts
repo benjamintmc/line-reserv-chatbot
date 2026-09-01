@@ -151,7 +151,7 @@ export class EventRepository implements EventReader {
     return res.rowCount ?? 0;
   }
 
-  // ── D-015 編輯活動資訊：四個單欄寫入原語（§2） ────────────────────────
+  // ── D-015 編輯活動資訊：單欄寫入原語（§2） ──────────────────────────────
   //
   // 一律 `UPDATE events SET <單欄>, updated_at WHERE id`：一次呼叫只動一欄，
   // 使「單次編輯只能 UPDATE 一個欄位」（G2 可寫欄位封閉集）由原語形狀保證，
@@ -178,22 +178,22 @@ export class EventRepository implements EventReader {
     return res.rowCount ?? 0;
   }
 
-  /** 改每人固定費用（per_person 模式；不動 price_mode，計費方式不可切換，G2）。 */
-  async updatePricePerPerson(id: number, pricePerPerson: number): Promise<number> {
+  /**
+   * D-019 §一.4：`編輯 費用` 三欄原子寫入（G2）——`price_mode`／`price_per_person`／`venue_fee`
+   * 於**單一** UPDATE 內同時定值，取代原兩個單欄原語 `updatePricePerPerson`/`updateVenueFee`
+   * （D-019 已確認除 fee 路徑外無其他呼叫點，予以移除）。不論是否切換模式皆走此原語：
+   * 同模式改價＝三欄中兩欄值不變、一欄變，仍是同一 UPDATE，呼叫端不必分支。
+   * 維持 D-005 §1.3 不變式由呼叫端（`event-service.ts` case 'fee'）保證：
+   * split → `price_per_person=0`∧`venue_fee>0`；per_person → `venue_fee=NULL`。
+   */
+  async updateBilling(
+    id: number,
+    billing: { priceMode: PriceMode; pricePerPerson: number; venueFee: number | null },
+  ): Promise<number> {
     const now = nowIso();
     const res = await this.q.query(
-      'UPDATE events SET price_per_person = $1, updated_at = $2 WHERE id = $3',
-      [pricePerPerson, now, id],
-    );
-    return res.rowCount ?? 0;
-  }
-
-  /** 改場地費總額（split_venue 模式；不動 price_mode／settled_per_person，G2）。 */
-  async updateVenueFee(id: number, venueFee: number): Promise<number> {
-    const now = nowIso();
-    const res = await this.q.query(
-      'UPDATE events SET venue_fee = $1, updated_at = $2 WHERE id = $3',
-      [venueFee, now, id],
+      'UPDATE events SET price_mode = $1, price_per_person = $2, venue_fee = $3, updated_at = $4 WHERE id = $5',
+      [billing.priceMode, billing.pricePerPerson, billing.venueFee, now, id],
     );
     return res.rowCount ?? 0;
   }

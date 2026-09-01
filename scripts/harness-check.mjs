@@ -9,7 +9,9 @@
  *
  * 用法：
  *   npm run harness:check              預設（doc_budget 只警告不擋）
- *   npm run harness:check -- --strict   doc_budget 超標即失敗（CI 用）
+ *   npm run harness:check              doc_budget 超標即失敗（--strict 已寫進 package.json
+ *                                      的 script，本機與 CI 同一標準；先前本機不帶此旗標，
+ *                                      造成「本機全綠、CI 紅」的假綠，2026-09-02 對齊）
  */
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';

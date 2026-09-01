@@ -40,10 +40,11 @@ import type { UserRepository } from '../db/repositories/user-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
 import type { ImmediateRunner, TransactionRunner } from '../db/tx';
 import { nowIso, taipeiToUtcIso, utcIsoToTaipei } from '../db/time';
-import { validatePrice, validateVenueFee } from '../commands/validators';
+import { validateFee } from '../commands/validators';
 import type { EditEventField } from '../commands/types';
 import { isExpired } from './event-status';
 import { perPersonAmount } from './billing';
+import { feeLabel } from './event-formatter';
 import { canManageEvent as canManageEventAuthz } from './authz';
 import {
   applyAnswer,
@@ -172,7 +173,7 @@ export type EditEventResult =
   | {
       kind: 'ok';
       field: EditField;
-      /** 改前值（date/time 為合併後完整時刻 `YYYY-MM-DD HH:MM`）。 */
+      /** 改前值（date/time 為合併後完整時刻 `YYYY-MM-DD HH:MM`；D-019：費用切換模式時為帶標籤全稱）。 */
       before: string;
       /** 改後值（同上格式）。 */
       after: string;
@@ -184,11 +185,16 @@ export type EditEventResult =
       tagOwnerIds: number[];
       /** 超過單則 mention 上限 → 整則退化為無 @ 提醒句（G9）。 */
       overflow: boolean;
+      /**
+       * D-019 §一.3/§6：`field==='fee'` 且本次編輯切換了 `price_mode`（per_person↔split_venue）
+       * 時為 `true`；其餘欄位或費用未切換模式時省略（等同 `false`）。
+       */
+      feeModeSwitched?: boolean;
     }
   | { kind: 'help'; event: EventRow; confirmedCount: number; now: string }
   | { kind: 'capacity' }
   | { kind: 'format_error'; field: 'date' | 'time' | 'location'; detail?: { len: number } }
-  | { kind: 'bad_fee'; priceMode: PriceMode }
+  | { kind: 'bad_fee' }
   | { kind: 'past_datetime'; now: string }
   | { kind: 'not_authorized' }
   | { kind: 'no_active' }
@@ -700,6 +706,7 @@ export class EventService {
       let before: string;
       let after: string;
       let perPerson: number | undefined;
+      let feeModeSwitched: boolean | undefined;
 
       switch (req.field) {
         case 'date':
@@ -726,23 +733,27 @@ export class EventService {
           break;
         }
         case 'fee': {
-          // G6：**不得**呼叫 validateFee（會依前綴自動判模式＝靜默切換 price_mode）。
-          // 一律以 fresh.price_mode 決定驗證器與寫入原語 → 計費方式不可變更（G2）。
-          if (fresh.price_mode === 'split_venue') {
-            const r = validateVenueFee(req.value);
-            if (!r.ok) return { kind: 'bad_fee', priceMode: 'split_venue' };
-            await repos.events.updateVenueFee(fresh.id, r.value);
-            before = String(fresh.venue_fee ?? 0);
-            after = String(r.value);
+          // D-019 §一.3：G3（複用 validateFee，不得另寫驗證）——費用值解析與模式判定一律呼叫
+          // validateFee（同開團一行式）；bad_fee 純粹由 validateFee 回傳 ok:false 決定，
+          // 不得讀取 fresh.price_mode（G4，與現有模式解耦）。
+          const r = validateFee(req.value);
+          if (!r.ok) return { kind: 'bad_fee' };
+          const { mode, amount } = r.value;
+          const pricePerPerson = mode === 'split_venue' ? 0 : amount;
+          const venueFee = mode === 'split_venue' ? amount : null;
+          // G2：三欄（price_mode/price_per_person/venue_fee）單一 UPDATE 原子寫入，
+          // 不論是否切換模式皆用此原語（同模式改價＝兩欄不變、一欄變，仍走同一 UPDATE）。
+          await repos.events.updateBilling(fresh.id, { priceMode: mode, pricePerPerson, venueFee });
+          const switched = mode !== fresh.price_mode;
+          const oldAmount = fresh.price_mode === 'split_venue' ? fresh.venue_fee ?? 0 : fresh.price_per_person;
+          // 未切換：維持 D-015 原樣裸數字（回歸零風險）；切換：改用帶標籤全稱，左右標籤對稱。
+          before = switched ? feeLabel(fresh.price_mode, oldAmount) : String(oldAmount);
+          after = switched ? feeLabel(mode, amount) : String(amount);
+          if (mode === 'split_venue') {
             // N6：新攤額必須以**改後**值算（不得用 fresh.venue_fee）。
-            perPerson = perPersonAmount({ ...fresh, venue_fee: r.value }, confirmedCount);
-          } else {
-            const r = validatePrice(req.value);
-            if (!r.ok) return { kind: 'bad_fee', priceMode: 'per_person' };
-            await repos.events.updatePricePerPerson(fresh.id, r.value);
-            before = String(fresh.price_per_person);
-            after = String(r.value);
+            perPerson = perPersonAmount({ ...fresh, price_mode: mode, venue_fee: amount }, confirmedCount);
           }
+          feeModeSwitched = switched;
           break;
         }
         default: {
@@ -762,6 +773,7 @@ export class EventService {
         confirmedCount,
         tagOwnerIds,
         overflow,
+        ...(feeModeSwitched !== undefined ? { feeModeSwitched } : {}),
       };
     });
   }

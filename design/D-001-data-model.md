@@ -14,6 +14,32 @@
 >     （errata 2026-08-28，來源 D-018）」標示處）。
 > (3)(4) 為 errata 2026-07-31（來源 D-005）新增；(5) 為 errata 2026-08-28（來源 D-018）新增，詳見文末討論紀錄。
 
+---
+
+## errata（2026-09-01，來源 D-020／同群多場並行活動；**DRAFT，尚未核可/未實作**，本節僅供追溯，不改本文件 APPROVED 狀態；不代表現行系統行為已改變）
+
+> D-020（`design/D-020-multi-event-per-group.md`）若通過雙審與使用者核可，將對本文件下列處產生影響（**目前均未生效**，本文件現行 schema／Guardrails／AC 仍是現行系統的權威行為）：
+>
+> 1. **§2「同一 `group_id` 同時最多一場 active 活動」**（partial unique index 段落）：D-020 移除
+>    `ux_events_active_group`，改以兩道獨立機制取代原「同群至多一場」角色——(a) 新索引
+>    `ux_events_active_group_venue_time`（`group_id, location, event_datetime` 唯一，場地+時間查重的
+>    DB 層安全網）；(b) 同群 open 數上限 3 場（應用層計數判斷，非 DB 約束，D-020 §3.5）。
+> 2. **G3**（「不得允許同一 `group_id` 同時存在多於一場 active…必須以 partial unique index
+>    （`ux_events_active_group`）於 DB 層強制」）：同上，已由 D-020 上述兩道機制取代。
+> 3. **§7 狀態機**：「active 集合 = {draft, open, closed}，受 §2 partial unique index 約束（同 group
+>    至多一場）」一句中「同 group 至多一場」已由 D-020 取代（`{draft, open, closed}` 本身另受
+>    2026-08-02 D-008 註記影響、實務為 {draft, open}，與本項為不同議題，不重述）。
+> 4. **AC-9**：「同一 `group_id` 已有一場 active 活動時，插入/轉入第二場 active → 因
+>    `ux_events_active_group` 拋出唯一約束錯誤（被拒）」——其前提索引已由 D-020 移除；D-020 落地後
+>    改由其自身 AC-2（多場並存）、AC-3~AC-5（查重）、AC-25~AC-27（上限）取代此驗收條件。
+>
+> **上述變更目前均未生效**：本文件 §2／G3／§7／AC-9 在 D-020 落地前仍是現行系統的權威行為，不得提前
+> 依本節改動。
+>
+> 權威來源：`design/D-020-multi-event-per-group.md` §1、§3.5。
+
+---
+
 ## 一、設計內容
 
 本文件把 Brief 資料模型草案落地為可實作的正式 schema，涵蓋 5 張表：
@@ -504,3 +530,4 @@ draft ──► open ──► closed
 | 2026-07-31 | errata 澄清：§2 events schema 三欄擴充 | 補澄清註記（**不改本文件 schema DDL/約束、不改 APPROVED 狀態**）：指向 D-005（APPROVED）migration 0002 為 events 增 `price_mode`（`per_person`/`split_venue`，DEFAULT `per_person`）、`venue_fee`（split>0、per_person NULL）、`settled_per_person`（關閉報名(split)最終攤額，否則 NULL）三欄；說明用途、backfill 既有列一律 per_person/NULL 零回歸、不觸碰任何既有 index 與約束。D-005 §1 為此擴充之權威來源、本文件 §2 為對應收尾。來源：D-005 §1。 |
 | 2026-07-31 | errata 澄清：G2 carve-out（主辦自動登記首列） | 於 G2 下補澄清註記（**不改 G2 值域/schema/狀態機、不改 APPROVED 狀態**）：event 建立當下、在 write-first 交易內盲插首列主辦名額（D-005 §3，經 insertSlot 產 seq=1 self confirmed）為 G2 IMMEDIATE 要求的合理例外——因無 read-decide-write 容量判定、event 提交前不存在故無並行 signup，DEFERRED 已等效序列化、無超賣風險；例外不放寬一般報名/取消仍須 IMMEDIATE 的要求，僅避免誤判 DEFERRED 內 insertSlot 首列違規。來源：architect-reviewer D-005 裁定點 3 與條件 A-B1。 |
 | 2026-08-02 | **註記（D-008 T-014 套用、原文不動邏輯、待 architect 追認）**：events schema／active 集合演進 | `event_date`/`event_time`（顯示文字兩欄）→ 單一 `event_datetime`（UTC ISO TEXT，migration 0003 合併）；§0 型別對映新增 `event_datetime`、移除舊兩欄；`ux_events_active_group` 的 WHERE／active 集合 {draft,open,closed}→{draft,open}、`ACTIVE_EVENT_STATUSES` 移除 closed、新增 `DISPLAYABLE_EVENT_STATUSES`={draft,open,closed}；`done` 增訂過期 open 惰性 flip 物化路徑（僅內部釋放槽、不顯示）；§0 Q2（date/time 維持文字）被 Brief 決策 #8 取代（改存 UTC 供過期判定）；AC-9 前提改 {draft,open}+closed 不擋。權威來源 D-008（APPROVED），本列為 D-001 收尾註記，**待 architect 追認**。 |
+| 2026-09-01 | D-020 預告 errata（architect 執行，回應 D-020 §四表格所列 §2/G3/§7/AC-9 遺漏項） | 新增頂部 errata 區塊：D-020（同群多場並行活動）若落地，§2/G3「同群至多一場 active」partial unique index 將被移除，改由 `ux_events_active_group_venue_time`（場地+時間查重）+ 應用層 open 數上限 3 場兩道機制取代；§7「同 group 至多一場」措辭與 AC-9 前提同步過時。**D-020 仍 DRAFT，本次僅預先登記，未生效**，本文件既有 schema/Guardrails/AC 仍是現行權威行為。 |

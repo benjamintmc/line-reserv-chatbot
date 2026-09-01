@@ -5,6 +5,16 @@
 - 風險等級：**R2（高）**——直接改 `events.capacity`，觸碰 `registration-service` 超賣防護（CLAUDE.md §4.5 預設高風險模組）；capacity 變更須於 `FOR UPDATE` 鎖內。依 §5：雙 reviewer（design + architect）+ e2e + Guardrails ≥3。
 - 關聯：Backlog H1（使用者 2026-08-05 裁決）／任務 T-019（實作，待 orchestrator 於 task-board 編號）／相依 **D-001**（events schema、狀態機、repo 原語）、**D-003**（FIFO 遞補、`promotionQuota` 語意、複用 T-015 鎖內重算路徑）、**D-004**（`canManageEvent`、event 狀態機）。
 
+## errata（2026-08-31，來源 D-020／同群多場並行活動；**DRAFT，尚未核可/未實作**，本節僅供追溯，不改本文件 APPROVED 狀態；不代表現行系統行為已改變）
+
+> D-020 若落地，§0/§2 呼叫的 `findActiveByGroup(groupId)`（用以取得唯一 active 活動）將改為：
+> handler 層先以 D-020 §4 消歧義流程解出 `eventId`（多場並行時可能需要 `@selector`／quote-reply），
+> 再以 `eventId` 呼叫 `getById` 鎖內權威重讀；`AddCapacityInput` 新增 `eventId?: number` 欄位。
+> `addCapacity` 本身的授權（`canManageEvent`）、鎖內 read-modify-write、遞補邏輯**皆不變**，只是
+> 「決定要對哪一場活動加開」從「群組唯一 active」改為「消歧義解出的那一場」。**目前均未生效**。
+>
+> 權威來源：`design/D-020-multi-event-per-group.md` §5.1、§5.2。
+
 ## 一、設計內容
 
 ### 0. 定位與範圍
@@ -75,3 +85,4 @@
 | 2 | 加開公告與遞補通知：同一則 vs 兩則 | 兩則 | **裁決：單一則**（加開公告 + 遞補 @ 同一則）。 |
 | 3 | capacity 上限值 | 沿用 `MAX_CAPACITY=1000`，套用於新總量 | **裁決：採建議**（MAX_CAPACITY=1000 套新總量；如需調整再議）。 |
 | 4 | 僅 open 可加開之確認 + 各拒絕狀態文案 | 見 §3 拒絕文案 | **裁決：採建議**（僅 open 可加開 + §3 拒絕文案）。 |
+| 5（2026-08-31） | D-020 預告 errata（architect 執行，使用者已核可採納） | — | `findActiveByGroup` 呼叫將改為消歧義解出 `eventId` 後 `getById`；`AddCapacityInput` 新增 `eventId?`。**D-020 仍 DRAFT，未生效**。 |

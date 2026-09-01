@@ -303,6 +303,23 @@ export function parseCommand(text: string): ParsedCommand;
 
 ---
 
+## 五、D-020 預告 errata（2026-08-31，來源 `design/D-020-multi-event-per-group.md`；**DRAFT，尚未核可/未實作**，本節僅供追溯，不代表 parser 現行行為已改變）
+
+> D-020（同群多場並行活動 + 訊息消歧義）若通過雙審與使用者核可，將對本文件產生以下影響
+> （**目前尚未發生**，`parseCommand` 本身不變）：
+> - 新增獨立檔案 `src/commands/selector.ts`，匯出 `splitSelector(text): { selectorRaw, rest }`
+>   ——與 `parseCommand` **同層、前置**於它的獨立純函式（先切 `@selector` 前綴，再把 `rest` 交給
+>   `parseCommand`），**不修改 `parseCommand` 本身、不新增 `ParsedCommand` 成員**。
+> - §5 白名單正規化對照表新增一項：全形 `＠`(U+FF20) → 半形 `@`，與既有 `＋`/`－`/`：` 同一風格
+>   併入 `normalizeWhitelist`，非新開一條規則、不擴大 NFKC 範圍（不違反 G6）。
+> - `splitSelector` 的停止 token 關鍵字集合須與本文件 §3 dispatch 表的指令頭關鍵字保持同步
+>   （D-020 G-selector-sync）；日後在本文件新增任何指令首字關鍵字時，須同步檢查
+>   `src/commands/selector.ts` 是否也要更新。
+>
+> 權威來源：`design/D-020-multi-event-per-group.md` §4.2。
+
+---
+
 ## 討論紀錄（Orchestrator 維護）
 
 | 日期 | 議題 | 使用者裁決 |
@@ -315,3 +332,4 @@ export function parseCommand(text: string): ParsedCommand;
 | 2026-07-23 | architect-reviewer errata | nit-1 正規化措辭精確化（白名單字元對全串生效、含 location/proxyName）；nit-2 補 AC-21~25 覆蓋 time/capacity/price/多欄順序/arity；nit-3 維持寬鬆 proxyName 規則並加 AC-26（記為 O-6）；nit-5 §3 表註淡化為「完全相等比對，順序不影響」 |
 | 2026-07-23 | 最終核可 | 使用者 APPROVED，解鎖 T-005 實作 |
 | 2026-08-23 | D-015／T-026 errata（架構 reviewer 要求補登） | 新增 `編輯` 家族：`edit_event`／`edit_help`、`InvalidCommandKind` 增 `'edit_event'`、`InvalidReason` 增 `'bad_location'`、`invalid` 增 `detail?:{len}`；首 token `編輯` 一律回覆不落 `unknown`（G3 射程界定）；fee compact／location 保留空格；解析 AC 以 D-015 AC-9 為準，本文件 AC 編號不動 |
+| 2026-08-31 | D-020 預告 errata（architect 執行，使用者已核可採納） | 新增 `src/commands/selector.ts`／`splitSelector`（前置於 `parseCommand` 的獨立純函式）、白名單新增 `＠→@`；`parseCommand` 本身不變。**D-020 仍 DRAFT，本次僅預先登記，未生效** |

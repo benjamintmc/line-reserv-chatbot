@@ -65,6 +65,19 @@
 > 3. **§9 分派表 / 去重政策**：`dispatchSingle` 新增 `edit_event`／`edit_help` 兩分支（新增 union 成員會使 exhaustive `never` 編譯失敗，必補）；且 `invalid{command:'edit_event'}` **不得**沿用「非 create/group 的 invalid 一律回 `[]`」——須送進 `eventService.editEvent()`。**去重政策**：編輯路徑依 CLAUDE.md §4，**所有會回覆的分支（含 `not_authorized`）一律於交易內 `markProcessed`**，與本文件 §9 散文所述 close/cancel「拒絕於交易外 early-return 不 mark」**刻意不同**（該做法成文於 §4 政策之前，依 §4.5 不回溯）。兩者各有適用範圍，勿判為矛盾。
 > 4. **權威來源**：`design/D-015-edit-event.md`（APPROVED，R2 三輪雙審封閉）。**插入者**：orchestrator 代筆——撰稿為 architect，因其 subagent 僅有 Read/Write、整檔重寫 594 行會被截斷而毀檔，故改由 orchestrator 精準插入；內容未經改動。
 
+## errata（2026-08-31，來源 D-020／同群多場並行活動；**DRAFT，尚未核可/未實作**，本節僅供追溯，不改本文件 APPROVED 狀態；不代表現行系統行為已改變）
+
+> D-020（`design/D-020-multi-event-per-group.md`）若通過雙審與使用者核可，將對本文件產生以下影響：
+>
+> 1. **§6「同群一場 active 約束」整段語意改變**：不再是「同群至多一場 active 就擋」，改為「開團查重」——只擋「場地+時間皆相同」的重複活動，允許同群多場並行。`ux_events_active_group` 改名為 `ux_events_active_group_venue_time`（欄位亦改為 `group_id, location, event_datetime`）。
+> 2. **`CreateEntryResult`／`ConfirmResult` 的 `already_active` 成員更名為 `duplicate_event`**（§4 step 3、step 5 catch 分支同步更名）；訊息 (I)「已有進行中活動」文案改為「已有相同時間地點的球敘」；(L) race-lost 文案沿用、僅改判定依據的約束名。
+> 3. **`startCreation` 的入口早退檢查**：原「已有 active 就拒絕」整段**移除**（查重需要齊備欄位才能比對，逐步問答一開始欄位皆空，查重延後到 `確認`）；但**新增**另一個獨立的入口早退——同群 open 數上限檢查（見下）。兩者判斷內容不同，勿混淆。
+> 4. **新增獨立的同群 open 數上限（3 場）與 `group_open_limit`**（D-020 §3.5，與查重/`duplicate_event` 正交、不共用 result kind）：`handleOneline`／`startCreation` 入口皆先查 `listActiveByGroup(groupId).length >= 3`；`確認` 交易內權威重讀再查一次。三型別 `CreateEntryResult`／`ConfirmResult`／`ContinueFlowResult` 均新增 `{ kind:'group_open_limit' }` 成員。固定文案「此群組已有 3 場進行中的球敘，請等其中一場結束後再開新團」，**不帶**任何活動明細，**不設 DB 唯一索引/CHECK**（應用層計數，D-020 §3.5 已評估後判定不需要）。
+>
+> **上述變更目前均未生效**：本文件所有既有正文、Guardrails（含 G3「同群一場 active 不可違反」）、AC（含 AC-11「重複開團拒絕」）在 D-020 落地前**仍是現行系統的權威行為**，不得提前依本節改動。
+>
+> 權威來源：`design/D-020-multi-event-per-group.md` §3、§3.5、§4。
+
 ---
 
 ## 一、設計內容
@@ -600,3 +613,4 @@ close/cancel 無 active → 目前沒有進行中的活動。
 > **兩 blocker（B1/B2）已於設計正文補齊，architect 零 blocker。** 待使用者最終 APPROVED 即可派 T-008 實作。
 > **後續動作（orchestrator 分派，不阻擋 D-004）**：①派 architect 回寫 D-001 §7/§4「draft 不物化」註記（順帶修 backlog 記的 D-001 §9 command parser 誤歸措辭）②LESSONS 登記「拒絕回覆的 mark/不 mark 去重政策不對稱」（D-003 nit-3 + D-004 §9 同型，第 2 次出現＝回寫候選）。
 | 2026-08-02 | **errata（D-008 T-014 套用）**：confirm flip + closed 釋放 + formatClosed 用詞 | §4 confirm 交易內、insert 前：未過期 active → `already_active`（清 conversation，nit-1）、過期 open → `updateStatus('done')` flip 後同交易建立（原子，G1）；`CreateEventInput` `eventDate`/`eventTime` → `eventDatetime`（`taipeiToUtcIso` 合併）。§5 close/cancel：closed 不再由 `findActiveByGroup` 返回 → `already_closed` 不可達（保留防禦）、二次關閉→`no_active`、過期 open→`no_active`（OP-7 不 flip）。§8 (E) `formatClosed` 用詞「已關閉報名」→「報名已截止」（B1，與名單 closed 標籤收斂）；(I)/(D) 日期改衍生 `event_datetime`。來源：D-008 §五 D-004（APPROVED）。 |
+| 2026-08-31 | D-020 預告 errata（architect 執行，使用者已核可採納） | 新增頂部 errata 區塊：D-020（同群多場並行活動＋訊息消歧義＋同群 open 數上限）若落地，§6 同群 active 約束改寫為「開團查重」、`already_active`→`duplicate_event`、`startCreation` 早退檢查重新設計（移除查重早退、新增上限早退）、三型別新增 `group_open_limit`。**D-020 仍 DRAFT，本次僅預先登記，未生效**，本文件既有正文/Guardrails/AC 仍是現行權威行為。 |

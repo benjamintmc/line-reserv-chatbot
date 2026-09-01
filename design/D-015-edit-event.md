@@ -6,6 +6,42 @@
 - 風險等級：**R2（高）**——動 `src/domain/event-service.ts`（CLAUDE.md §4.5 預設高風險模組）＋鎖內 read-modify-write ＋授權。依 §5：雙 reviewer + e2e，Guardrails ≥3（本文件 9 條）。
 - 修訂：R2 雙審 5 blocker（A1–A5）已封閉；複審殘留 2 blocker 亦已回填——**F1**（顯示一律用「場地」，`地點` 降為隱藏別名）、**F2**（fee 取值改 compact，`validateVenueFee`／`validatePrice` 不吸收空白）。
 
+## errata（2026-08-31，來源 D-020／同群多場並行活動；**DRAFT，尚未核可/未實作**，本節僅供追溯，不改本文件 APPROVED 狀態；不代表現行系統行為已改變）
+
+> D-020 若落地：`EditEventInput` 新增 `eventId?: number`（消歧義解出的目標活動，多場並行時
+> handler 層先跑 D-020 §4 消歧義取得）；`EditEventResult.ok` 新增 `eventId` 欄位（供 D-020 機制 A
+> 的 `message_event_map` 寫入，讓「已更新場地：… → …」這則訊息之後可被 quote 用以指定活動）。
+> §2 交易外唯讀 `events.findActiveByGroup(groupId)` 改為 `listActiveByGroup` + `eventId`（0 候選時
+> 沿用既有 `findLatestDisplayable` 回退，本文件既有「編輯不受名單 0-候選 bug 影響」的結論不變，
+> 見 D-020 §5.4 附註）。授權（`canManageEvent`）、鎖內 read-modify-write、四欄可寫封閉集（G2）
+> **皆不變**。**目前均未生效**。
+>
+> 權威來源：`design/D-020-multi-event-per-group.md` §5.1、§5.3。
+
+## errata（2026-09-01，來源 D-019／編輯費用支援切換計費模式；**D-019 已 APPROVED，本節生效**）
+
+> D-019 **反轉**本文件原決議「`編輯 費用` 不支援切換計費模式（per_person ↔ split_venue）」——
+> 使用者主動要求開放切換，任何時候皆可切換（含已有人報名後），僅需 `open` 且未過期。以下逐點更正：
+>
+> 1. §一.3「本活動的計費方式無法變更。」（per_person／split 兩句尾）**廢止**；`bad_fee` 現只代表
+>    輸入格式本身不合法（如 `abc`），與目前 `price_mode` 無關。新文案見 D-019 §5：
+>    `費用格式不正確。每人固定請輸入金額（例：編輯 費用 2500）；場地費均攤請輸入「場地費」+總額
+>    （例：編輯 費用 場地費4000）。`
+> 2. **G2（可寫欄位封閉集）**由「單次編輯只能 UPDATE 一欄」**擴大為**：費用路徑可**同時**原子寫入
+>    `price_mode`／`price_per_person`／`venue_fee` 三欄（經 D-019 新原語 `updateBilling` 單一
+>    UPDATE）；其餘欄位（`capacity`／`status`／`settled_per_person`／`group_id`／`host_user_id`）
+>    仍不得寫入，此限制不變。
+> 3. **G6**「費用路徑不得呼叫 `validateFee`（依前綴自動判模式＝靜默切換 `price_mode`）」此限制
+>    **廢止**——切換模式現為刻意允許的行為，改為 D-019 G3「費用值解析與模式判定一律呼叫
+>    `validateFee`，不得另寫驗證」。
+> 4. **AC-6** 原斷言「per_person 收到 `場地費4000` 應回 `bad_fee`」**已失效**，改為「應成功切換為
+>    `split_venue`」，指向 D-019 AC-1。
+> 5. `EditEventResult.bad_fee` 型別的 `priceMode` 欄位**移除**（`{kind:'bad_fee'}`，不再帶欄位）；
+>    所有呼叫 `formatEditBadFee(priceMode)` 的地方需同步移除該引數（`formatEditBadFee()` 改為零
+>    參數）。
+>
+> 權威來源：`design/D-019-edit-billing-mode.md`（APPROVED 2026-09-01）。
+
 ## 一、設計內容
 **定位**：對 `open` 且未過期的活動，以單行指令改四項欄位之一（日期／時間／場地／費用），只用 reply 回群組，顯示「改前 → 改後」並 @ 提醒正取者。**不新增欄位／migration**（日期與時間共用 `event_datetime`），**不改** `capacity`／`price_mode`／`status`／`settled_per_person`。
 ### 1. 指令與 parser 契約（`ParsedCommand` 新增 `edit_event`／`edit_help`；`InvalidCommandKind` 新增 `'edit_event'`、`InvalidReason` 新增 `'bad_location'`）
@@ -118,3 +154,5 @@
 | 2026-08-22 | §4 成功後 @ 全體正取者是否採用（使用者稍早曾裁決「標記正取者不做」，理由為需付費推播） | **採用**。兩者情境不同：`關閉報名` 無人下指令故只能 push（計費）；`編輯` 由使用者主動下指令，@ 夾在既有 reply 內（不計費）。使用者確認「多一則 TAG 大家沒問題」 |
 | 2026-08-22 | 跨任務衝突（orchestrator 登記） | 與「移除 `關閉報名`」相撞三處（split 文案「關閉報名後結算」、`closed_not_editable` 語意、`findLatestDisplayable` 判 closed）。**不影響本設計正確性**（`closed` 現仍存在）；已登記 `docs/backlog.md`，要求該案設計文件把 D-015 列入預列 errata。 |
 | 2026-08-23 | help 費用列重複標籤（實作暴露）＋文案整潔化（T-028／D-017） | errata 之一：去掉外層 `費用：` 前綴，改為直接嵌入 `feeLine` 自帶標籤（§3 help block 第 5 列 → `{費用列}`；§3 敘述句與 AC-10 同步）。errata 之二：§3 釘死句「…已報名的各位請確認。」**正取 0 人時不再輸出**（`overflow` 仍輸出，兩者 targets 皆空、只有旗標能分辨）；`MAX_LOCATION_LEN` 改為開團／編輯三路徑共用。詳見 `design/D-017-copy-and-validation-consistency.md` (D)(A) |
+| 2026-08-31 | D-020 預告 errata（architect 執行，使用者已核可採納） | `EditEventInput` 新增 `eventId?`；`EditEventResult.ok` 新增 `eventId`（供 `message_event_map` 寫入）；交易外唯讀改用 `listActiveByGroup` + `eventId`。**D-020 仍 DRAFT，本次僅預先登記，未生效**。 |
+| 2026-09-01 | D-019 APPROVED，反轉決議⑥（費用不支援切換計費模式） | 開放 `編輯 費用` 隨時切換 per_person↔split_venue；G2 可寫欄位封閉集擴大為三欄（原子寫入）；G6 廢止「不得呼叫 validateFee」改為「必須呼叫」；`bad_fee` 文案與型別同步更正。詳見上方 errata 區塊，權威來源 `design/D-019-edit-billing-mode.md`。 |

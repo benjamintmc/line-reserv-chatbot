@@ -601,7 +601,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         // 時鐘於邊界層注入（formatter 不得自取，G7）；沿用既有 formatOnelineFormatHelp(nowIso()) 的作法。
         return [toLineMessage(formatEditFormatError(result.field, nowIso(), result.detail))];
       case 'bad_fee':
-        return [toLineMessage(formatEditBadFee(result.priceMode))];
+        return [toLineMessage(formatEditBadFee())];
       case 'past_datetime':
         return [toLineMessage(formatEditPastDatetime(result.now))];
       case 'not_authorized':

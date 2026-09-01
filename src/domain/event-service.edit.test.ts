@@ -3,6 +3,7 @@ import { createTestDb, type TestDb } from '../db/__tests__/test-db';
 import { taipeiToUtcIso } from '../db/time';
 import type { EventRow, PriceMode } from '../db/schema';
 import { UserRepository } from '../db/repositories/user-repository';
+import { EventRepository } from '../db/repositories/event-repository';
 import { EventService, type EditEventRequest, type EditEventResult } from './event-service';
 import { RegistrationService } from './registration-service';
 
@@ -255,8 +256,8 @@ describe('EventService.editEvent（D-015）', () => {
     expect((await edit(svc, 'G-none', setField('location', 'X'))).kind).toBe('no_active');
   });
 
-  // ── AC-6 費用兩模式且不切換 ─────────────────────────────────────────
-  it('[D-015 AC-6] per_person：`2500` 與 `2500元` 皆成功；price_mode 不變；逐欄斷言', async () => {
+  // ── AC-3（D-019 版）費用同模式只改金額，零回歸 ───────────────────────
+  it('[D-019 AC-3] per_person：`2500` 與 `2500元` 皆成功；同模式不切換；逐欄斷言', async () => {
     const ev = await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30', price: 2000 });
     const svc = makeService(t);
 
@@ -266,6 +267,7 @@ describe('EventService.editEvent（D-015）', () => {
       expect(r1.before).toBe('2000');
       expect(r1.after).toBe('2500');
       expect(r1.perPerson).toBeUndefined(); // per_person 不帶攤額
+      expect(r1.feeModeSwitched).toBe(false); // D-019 §一.3：恆賦值 switched；未切換即 false
     }
     const a1 = await t.events.getById(ev.id);
     expect(a1?.price_per_person).toBe(2500);
@@ -280,7 +282,7 @@ describe('EventService.editEvent（D-015）', () => {
     expectOnlyChanged(a1!, a2!, 'price_per_person');
   });
 
-  it('[D-015 AC-6] split：`場地費 4000`（含空格）成功、攤額以**改後值**算、settled_per_person 仍 NULL', async () => {
+  it('[D-019 AC-3] split：`場地費 4000`（含空格）同模式成功、攤額以**改後值**算、settled_per_person 仍 NULL', async () => {
     const ev = await seed(t, {
       groupId: 'G',
       date: '2999-08-15',
@@ -308,6 +310,7 @@ describe('EventService.editEvent（D-015）', () => {
       expect(r.after).toBe('4000');
       expect(r.confirmedCount).toBe(3);
       expect(r.perPerson).toBe(Math.ceil(4000 / 3)); // 以改後 venue_fee 算，非 3000
+      expect(r.feeModeSwitched).toBe(false); // 同上：同模式改金額 → false，非省略
     }
     const after = await t.events.getById(ev.id);
     expect(after?.venue_fee).toBe(4000);
@@ -316,16 +319,25 @@ describe('EventService.editEvent（D-015）', () => {
     expectOnlyChanged(ev, after!, 'venue_fee');
   });
 
-  it('[D-015 AC-6] per_person 收到 `場地費4000` → bad_fee、無 UPDATE（不得靜默切換 price_mode）', async () => {
-    const ev = await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30', price: 2000 });
-    const svc = makeService(t);
-    const r = await edit(svc, 'G', setField('fee', '場地費4000'));
-    expect(r.kind).toBe('bad_fee');
-    if (r.kind === 'bad_fee') expect(r.priceMode).toBe('per_person');
-    expect(changedColumns(ev, (await t.events.getById(ev.id))!)).toEqual([]);
+  // ── AC-4（D-019 版）真 bad_fee：純格式不合法，兩模式皆同一文案／無 UPDATE ──────
+  it('[D-019 AC-4] per_person 與 split 皆對 `abc` 回 bad_fee（純格式錯，與模式無關）；無 UPDATE', async () => {
+    for (const priceMode of ['per_person', 'split_venue'] as const) {
+      const ev = await seed(t, {
+        groupId: `G-${priceMode}`,
+        date: '2999-08-15',
+        time: '07:30',
+        priceMode,
+        venueFee: 3000,
+        price: 2000,
+      });
+      const svc = makeService(t);
+      const r = await edit(svc, `G-${priceMode}`, setField('fee', 'abc'));
+      expect(r.kind).toBe('bad_fee');
+      expect(changedColumns(ev, (await t.events.getById(ev.id))!)).toEqual([]);
+    }
   });
 
-  it('[D-015 AC-6] split 收到非正整數（`abc` / `0`）→ bad_fee、無 UPDATE', async () => {
+  it('[D-019 AC-4] split 收到非正整數（`場地費0`）→ bad_fee、無 UPDATE', async () => {
     const ev = await seed(t, {
       groupId: 'G',
       date: '2999-08-15',
@@ -334,11 +346,8 @@ describe('EventService.editEvent（D-015）', () => {
       venueFee: 3000,
     });
     const svc = makeService(t);
-    for (const v of ['abc', '場地費0']) {
-      const r = await edit(svc, 'G', setField('fee', v));
-      expect(r.kind).toBe('bad_fee');
-      if (r.kind === 'bad_fee') expect(r.priceMode).toBe('split_venue');
-    }
+    const r = await edit(svc, 'G', setField('fee', '場地費0'));
+    expect(r.kind).toBe('bad_fee');
     expect(changedColumns(ev, (await t.events.getById(ev.id))!)).toEqual([]);
   });
 
@@ -399,7 +408,7 @@ describe('EventService.editEvent（D-015）', () => {
     cases.push({ name: 'past_datetime', groupId: 'G-past', request: setField('date', '2000-01-01'), expect: 'past_datetime' });
 
     await seed(t, { groupId: 'G-fee', date: '2999-08-15', time: '07:30', price: 2000 });
-    cases.push({ name: 'bad_fee', groupId: 'G-fee', request: setField('fee', '場地費4000'), expect: 'bad_fee' });
+    cases.push({ name: 'bad_fee', groupId: 'G-fee', request: setField('fee', 'abc'), expect: 'bad_fee' });
 
     // format_error 兩條經 handler 新分支的路徑（invalid(edit_event)）。
     await seed(t, { groupId: 'G-fmt', date: '2999-08-15', time: '07:30' });
@@ -540,5 +549,157 @@ describe('EventService.editEvent（D-015）', () => {
     expect(after?.group_id).toBe(ev.group_id);
     expect(after?.host_user_id).toBe(ev.host_user_id);
     expect(after?.price_per_person).toBe(ev.price_per_person); // split 模式恆為 0，不因改場地費而動
+  });
+});
+
+// ── D-019：`編輯 費用` 支援切換計費模式（per_person ↔ split_venue） ──────────────
+describe('EventService.editEvent（D-019 費用切換計費模式）', () => {
+  let t: TestDb;
+  beforeEach(async () => {
+    mid = 0;
+    t = await createTestDb();
+  });
+  afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await t.cleanup();
+  });
+
+  // ── AC-1：per_person → split_venue 切換成功 ─────────────────────────
+  it('[D-019 AC-1] per_person→split_venue：三欄同動、回覆帶標籤全稱＋攤額子句', async () => {
+    const ev = await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30', capacity: 16, price: 2200 });
+    const svc = makeService(t);
+    const reg = makeRegService(t);
+    // 撐 4 位正取（K=4，含主辦自動報名不算——seed 直接建列非走確認流程，故僅這 4 位）。
+    await reg.signup({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'a', messageId: nextMid(), count: 4 });
+
+    const r = await edit(svc, 'G', setField('fee', '場地費4000'));
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') {
+      expect(r.feeModeSwitched).toBe(true);
+      expect(r.before).toBe('每人費用 2200 元');
+      expect(r.after).toBe('場地費 4000 元');
+      expect(r.confirmedCount).toBe(4);
+      expect(r.perPerson).toBe(Math.ceil(4000 / 4));
+    }
+    const after = await t.events.getById(ev.id);
+    expect(after?.price_mode).toBe('split_venue');
+    expect(after?.price_per_person).toBe(0);
+    expect(after?.venue_fee).toBe(4000);
+    // 整列 diff：除三欄與 updated_at 外逐欄相等。
+    const changed = changedColumns(ev, after!).filter((c) => c !== 'updated_at').sort();
+    expect(changed).toEqual(['price_mode', 'price_per_person', 'venue_fee']);
+  });
+
+  // ── AC-2：split_venue → per_person 切換成功 ─────────────────────────
+  it('[D-019 AC-2] split_venue→per_person：三欄同動、回覆不附攤額子句', async () => {
+    const ev = await seed(t, {
+      groupId: 'G',
+      date: '2999-08-15',
+      time: '07:30',
+      priceMode: 'split_venue',
+      venueFee: 3000,
+    });
+    const svc = makeService(t);
+
+    const r = await edit(svc, 'G', setField('fee', '2500'));
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') {
+      expect(r.feeModeSwitched).toBe(true);
+      expect(r.before).toBe('場地費 3000 元');
+      expect(r.after).toBe('每人費用 2500 元');
+      expect(r.perPerson).toBeUndefined();
+    }
+    const after = await t.events.getById(ev.id);
+    expect(after?.price_mode).toBe('per_person');
+    expect(after?.price_per_person).toBe(2500);
+    expect(after?.venue_fee).toBeNull();
+    const changed = changedColumns(ev, after!).filter((c) => c !== 'updated_at').sort();
+    expect(changed).toEqual(['price_mode', 'price_per_person', 'venue_fee']);
+  });
+
+  // ── AC-5：mention 行為不變 ───────────────────────────────────────────
+  it('[D-019 AC-5] 切換模式成功後 tagOwnerIds／overflow 規則同 D-015 AC-12（去重、只含 confirmed）', async () => {
+    await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30', capacity: 5, price: 2000 });
+    const svc = makeService(t);
+    const reg = makeRegService(t);
+    await reg.signup({ groupId: 'G', executorLineUserId: 'U-A', executorDisplayName: 'A', messageId: nextMid(), count: 2 });
+    await reg.signup({ groupId: 'G', executorLineUserId: 'U-B', executorDisplayName: 'B', messageId: nextMid(), count: 1, proxyName: '陳大哥' });
+
+    const r = await edit(svc, 'G', setField('fee', '場地費4000'));
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') return;
+    const a = await t.users.getByLineUserId('U-A');
+    const b = await t.users.getByLineUserId('U-B');
+    expect(r.tagOwnerIds).toEqual([a!.id, b!.id]); // 依 owner 去重、代報列歸代報者本人
+    expect(r.overflow).toBe(false);
+  });
+
+  // ── AC-6：其餘欄位／併發不受影響 ────────────────────────────────────
+  it('[D-019 AC-6] 切換模式不動 capacity／status／settled_per_person／event_datetime／location／host_user_id／group_id；registrations 不變', async () => {
+    const ev = await seed(t, {
+      groupId: 'G',
+      date: '2999-08-15',
+      time: '07:30',
+      priceMode: 'split_venue',
+      venueFee: 3000,
+      capacity: 10,
+    });
+    const svc = makeService(t);
+    const reg = makeRegService(t);
+    await reg.signup({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'a', messageId: nextMid(), count: 2 });
+    const regsBefore = await t.pool.query<{ id: number; event_id: number; owner_user_id: number; status: string }>(
+      'SELECT id, event_id, owner_user_id, status FROM registrations ORDER BY id',
+    );
+
+    const r = await edit(svc, 'G', setField('fee', '2500'));
+    expect(r.kind).toBe('ok');
+
+    const after = await t.events.getById(ev.id);
+    expect(after?.capacity).toBe(ev.capacity);
+    expect(after?.status).toBe(ev.status);
+    expect(after?.settled_per_person).toBeNull();
+    expect(after?.event_datetime).toBe(ev.event_datetime);
+    expect(after?.location).toBe(ev.location);
+    expect(after?.host_user_id).toBe(ev.host_user_id);
+    expect(after?.group_id).toBe(ev.group_id);
+
+    const regsAfter = await t.pool.query<{ id: number; event_id: number; owner_user_id: number; status: string }>(
+      'SELECT id, event_id, owner_user_id, status FROM registrations ORDER BY id',
+    );
+    expect(regsAfter.rows).toEqual(regsBefore.rows);
+  });
+
+  it('[D-019 AC-6] 兩則並行編輯（一則切模式、一則改日期）序列化後皆生效、互不覆蓋', async () => {
+    const ev = await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30', price: 2200 });
+    const svc = makeService(t);
+
+    const [r1, r2] = await Promise.all([
+      edit(svc, 'G', setField('fee', '場地費4000'), { messageId: nextMid() }),
+      edit(svc, 'G', setField('date', '2999-09-01'), { messageId: nextMid() }),
+    ]);
+    expect([r1.kind, r2.kind]).toEqual(['ok', 'ok']);
+
+    const after = await t.events.getById(ev.id);
+    expect(after?.price_mode).toBe('split_venue');
+    expect(after?.venue_fee).toBe(4000);
+    expect(after?.price_per_person).toBe(0);
+    expect(after?.event_datetime).toBe(taipeiToUtcIso('2999-09-01', '07:30'));
+  });
+
+  // ── AC-7：G2 原子寫入名實相符（spy 呼叫次數） ───────────────────────
+  it('[D-019 AC-7] `編輯 費用`（含切換與不切換）恰呼叫 updateBilling 一次', async () => {
+    await seed(t, { groupId: 'G-switch', date: '2999-08-15', time: '07:30', price: 2200 });
+    await seed(t, { groupId: 'G-same', date: '2999-08-15', time: '07:30', price: 2200 });
+    const svc = makeService(t);
+    const spy = vi.spyOn(EventRepository.prototype, 'updateBilling');
+
+    const r1 = await edit(svc, 'G-switch', setField('fee', '場地費4000'));
+    expect(r1.kind).toBe('ok');
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    const r2 = await edit(svc, 'G-same', setField('fee', '3000'));
+    expect(r2.kind).toBe('ok');
+    expect(spy).toHaveBeenCalledTimes(2); // 累計：同模式改價同樣走 updateBilling，不另開分支
   });
 });

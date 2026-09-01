@@ -312,6 +312,17 @@ function isoDisplay(iso: string): string {
   return `${date} ${time}`;
 }
 
+/**
+ * D-019 §一.3/§5：費用帶標籤全稱（`編輯 費用` 切換計費模式時的 before/after 用）。
+ * per_person → `每人費用 {amount} 元`（與 D-015 原句「已更新每人費用：…」、
+ * `list-formatter.feeLine` 標籤「每人費用：2500 元」用詞一致）；
+ * split_venue → `場地費 {amount} 元`。**由 domain（`event-service.ts` case 'fee'）直接呼叫**
+ * 組出 `EditEventResult.ok.before`/`after`（D-019 §一.3 pseudocode），故此處匯出供跨檔呼叫。
+ */
+export function feeLabel(mode: PriceMode, amount: number): string {
+  return mode === 'split_venue' ? `場地費 ${amount} 元` : `每人費用 ${amount} 元`;
+}
+
 /** 成功句（改前 → 改後）。日期/時間**恆顯示合併後完整時刻**，讓使用者確認另一半沒被動到。 */
 function editSuccessLine(r: EditOk): string {
   switch (r.field) {
@@ -320,12 +331,21 @@ function editSuccessLine(r: EditOk): string {
       return `已更新活動時間：${r.before} → ${r.after}`;
     case 'location':
       return `已更新場地：${r.before} → ${r.after}`;
-    case 'fee':
+    case 'fee': {
+      // D-019 §5：feeModeSwitched 為真 → 已更新計費方式（before/after 已是 feeLabel 帶標籤全稱，
+      // 不再外加「元」；split 追加攤額子句）；為假 → 沿用 D-015 原兩句型（零回歸）。
+      if (r.feeModeSwitched === true) {
+        const base = `已更新計費方式：${r.before} → ${r.after}`;
+        return r.perPerson === undefined
+          ? base
+          : `${base}（目前正取 ${r.confirmedCount} 人，平均每人約 ${r.perPerson} 元；暫估，關閉報名後結算）`;
+      }
       // perPerson 有值 ⟺ split_venue（per_person 不帶；見 EditEventResult）。
       return r.perPerson === undefined
         ? `已更新每人費用：${r.before} 元 → ${r.after} 元`
         : `已更新場地費：${r.before} 元 → ${r.after} 元（目前正取 ${r.confirmedCount} 人，` +
             `平均每人約 ${r.perPerson} 元；暫估，關閉報名後結算）`;
+    }
     default: {
       const _exhaustive: never = r.field;
       return _exhaustive;
@@ -446,11 +466,15 @@ export function formatEditPastDatetime(now: string): MessageDescriptor {
   );
 }
 
-/** 費用值與本活動計費模式不合（計費方式不可變更，G2/G6）。 */
-export function formatEditBadFee(priceMode: PriceMode): MessageDescriptor {
-  return priceMode === 'split_venue'
-    ? text('本活動是場地費均攤，請輸入場地費總額（例：編輯 費用 場地費4000）。本活動的計費方式無法變更。')
-    : text('本活動是每人固定費用，請輸入金額（例：編輯 費用 2500）。本活動的計費方式無法變更。');
+/**
+ * D-019 §5：費用格式不合法（純格式錯，與目前 price_mode 無關——現在任何時候皆可切換計費模式，
+ * G4）。零參數：不再依模式分岔文案。
+ */
+export function formatEditBadFee(): MessageDescriptor {
+  return text(
+    '費用格式不正確。每人固定請輸入金額（例：編輯 費用 2500）；' +
+      '場地費均攤請輸入「場地費」+總額（例：編輯 費用 場地費4000）。',
+  );
 }
 
 /** 非開團者、非 super-admin 試 `編輯`（既有 (H′) 字串不動，本文案另立）。 */

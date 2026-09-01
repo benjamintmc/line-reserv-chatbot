@@ -17,6 +17,26 @@
 
 ---
 
+## errata（2026-08-31，來源 D-020／同群多場並行活動；**DRAFT，尚未核可/未實作**，本節僅供追溯，不改本文件 APPROVED 狀態；不代表現行系統行為已改變）
+
+> D-020（`design/D-020-multi-event-per-group.md`）若落地，本文件下列處會受影響（**目前均未生效**，
+> 三取用語意判定式本身不變，只換底層查詢原語）：
+> - §2 三取用語意表的 `EventReader.findActiveByGroup` 呼叫，全部改為 `listActiveByGroup(groupId)`
+>   取候選集合 → 經 D-020 §4 消歧義解出 `eventId` → `getById(eventId)` 鎖內權威重讀；
+>   `isExpired`／`isOpenForSignup` 等純函式判定式不變，只是輸入來源從「唯一 active 列」變成
+>   「消歧義解出的那一列」。
+> - 全文「同群僅一場 active」（如 §1 判定式脈絡、§6 併發分析標題）等相關措辭，**已由 D-020 取代**
+>   為「同群可多場並行，僅場地+時間相同時查重擋、同群 open 數另設 3 場上限」；`ux_events_active_group`
+>   （partial unique index）由 D-020 migration 0006 drop 並改為 `ux_events_active_group_venue_time`
+>   （語意變窄，不再是「同群唯一」而是「同群場地+時間唯一」）。
+> - `findLatestDisplayable`（顯示用查詢）語意不變，D-020 §5.4 另有「候選數>=1 一律走消歧義解出的
+>   eventId、只有 0 候選才退回 findLatestDisplayable」的補充規則（防較新 closed 活動蓋掉仍 open
+>   的較舊活動）。
+>
+> 權威來源：`design/D-020-multi-event-per-group.md` §2、§5.1、§5.4。
+
+---
+
 ## 一、設計內容
 
 ### 0. 定位與判定式（權威）
@@ -316,7 +336,7 @@ CREATE UNIQUE INDEX ux_events_active_group ON events (group_id)
   - §5.1 轉移表：`closed → cancelled`（cancel_event）、`closed → open`(reopen) 及 `close_event` 的 `already_closed` 路徑——因 `findActiveByGroup` 不再回 closed → **不可達**；`關閉報名` 二次 → `no_active`（原 `already_closed`）。
   - §5.2 close/cancel：closed 事件不再由 `findActiveByGroup` 返回之影響；過期 open 處置＝`no_active`（OP-7）。
   - §6 同群 active：active `{open,closed}` → `{draft,open}`；**closed 釋放**（原「closed 仍擋、需 `取消活動` 才釋放」反轉）。
-  - §8 訊息：**(E) `formatClosed` 即時回覆用詞由「已關閉報名」→「報名已截止」，pin：「「○○」球敘報名已截止，不再接受新報名。」**（與 D-008 名單 `closed` 標籤收斂單一用語，消除同狀態雙詞，B1；split 追加 D-005 最終攤額列不變）；(I) `formatAlreadyActiveEntry` 的 N2 註「`關閉報名` 不釋放名額，故不必先關閉」**反轉**（closed 現會釋放擋團）；(I)/(D) event 日期顯示改衍生 `event_datetime`；(J) `formatAlreadyClosed` 於 close 路徑不可達（保留供防禦）。
+  - §8 訊息：**(E) `formatClosed` 即時回覆用詞由「已關閉報名」→「報名已截止」，pin：「「○○」球敘報名已截止，不再接受新報名。」**（與 D-008 名單 `closed` 標籤收斂單一用語，消除同狀態雙詞，B1；split 追加 D-005 最終攤額列不變）；(I)/(D) event 日期顯示改衍生 `event_datetime`；(J) `formatAlreadyClosed` 於 close 路徑不可達（保留供防禦）。
   - `CreateEventInput` `eventDate`/`eventTime` → `eventDatetime`；相關 AC（already_closed / closed 生命週期 / 日期顯示斷言欄位來源 / formatClosed 措辭）。
 - **D-005（計費）**：金額計算邏輯不變；但**顯示層 phase 化**——(a) `feeLine` 於名單 `closed` 取 `settled_per_person`（凍結快照）、`ended` 取 `perPersonAmount(event,K)`，二者**去「暫估…關閉報名後結算」字樣**；`live` 不變；(b) `estimatedTotal` 顯示於名單 `closed`/`ended` 標「總金額」（去「預估/暫估」）；(c) `formatClosed` 即時回覆首句用詞改「報名已截止」（B1，與 D-004 (E) 一致），split 追加攤額列不變。event 日期顯示改由 `event_datetime` 衍生（顯示字面台灣本地一致 → 訊息斷言值多不變，僅欄位存取改動）。
 - **D-003（報名核心）**：`findOpenEvent` **拆分**為 `findOpenEventForSignup`（+過期排除，供 `+N`/`-N`）與 `findEventForDisplay`（用新 repo 原語 `findLatestDisplayable`，顯示集 `{draft,open,closed}`、含 closed 與過期 open，回 `phase`，供 `名單`）；signup/cancel 新增 `event_ended` 結果 + `runImmediate` **鎖內以 `getById(event.id)` 重讀最新列** re-check status/過期（**不得用 stale 快照**，nit-2）；`getListView` 帶 `phase`；`list-formatter`：`eventHeader` 日期改衍生 `event_datetime`、`feeLine` phase 化、`bodyRoster` 於 ended/closed 略「剩餘名額」、總金額列去「預估/暫估」、新增 `closed`/`ended` 標題。既有 AC 於 `live`（未過期 open）下仍成立。
@@ -340,3 +360,4 @@ CREATE UNIQUE INDEX ux_events_active_group ON events (group_id)
 | 2026-08-01 | OP-1~7 使用者裁決 | OP-1 獨立 0003；OP-2 拒絕文案「這場活動已結束，無法再報名／取消」；OP-3 過期/done 措辭「活動已結束」；**OP-4 closed 名單顯示最終名單標「報名已截止」（實質變更：`findEventForDisplay` 納入 closed、formatter 兩種 `phase`）**；OP-5 draft 無需特別處理；OP-6 固定 UTC+8；OP-7 close/cancel 遇過期 open 回 `no_active` 不 flip。設計正文（§2/§4/§5/§8、Guardrails G2、AC-5/AC-11/AC-12）已依定案更新自洽。 |
 | 2026-08-02 | R2 雙審回饋修訂 | architect-reviewer 零 blocker（併發/正確性/0003/errata PASS）；design-reviewer **B1**（closed 用詞漂移）→ 收斂「報名已截止」（`formatClosed` 即時回覆 + 名單標籤同詞，pin §8(2)/AC-13、errata D-004(E)/D-005）、**B2**（closed/ended 名單列組成）→ 明訂列組成：ended/closed 移除「剩餘名額」列、split 費用列 closed 取 `settled_per_person`/ended 取 `perPersonAmount` 去「暫估」、總金額去「預估」（pin §8(3)/AC-5/AC-11）。採 architect nit-1（§1b already_active 補 `conversations.delete`）、nit-2（§6b/AC-9/errata：鎖內 `getById` 重讀，非 stale）、nit-3（§7 backfill 未來日期無歷史 DST）、nit-4（§2 被取代場名單轉歷史 v2）、nit-6（§六 backlog：確認驗未來時間）；nit-5 §六 設計註記。Guardrails 5 條、AC 13 條。待 design-reviewer 複審封閉 B1/B2。 |
 | 2026-08-23 | D-015／T-026 errata（架構 reviewer 要求補登） | §2 三取用語意表新增第四列「編輯用」＝複用 `findActiveByGroup`+`isExpired`（不新增 accessor；closed 判別用 `findLatestDisplayable`），並界定 G2 末句射程；§六 nit-6「不得改到過去」**只在編輯路徑落地、建立路徑仍未清償**（維持開啟）；nit-5 一致化首個落地案例為 `編輯` 的 closed 專屬文案（`+N`/`-N` 未改，維持開啟）。 |
+| 2026-08-31 | D-020 預告 errata（architect 執行，使用者已核可採納） | 新增頂部 errata 區塊：`findActiveByGroup` 呼叫將改為 `listActiveByGroup` + D-020 消歧義後 `getById`；「同群僅一場」措辭已由 D-020 取代為「同群可多場並行、場地+時間查重 + 3 場上限」。**D-020 仍 DRAFT，本次僅預先登記，未生效**，本文件三取用語意判定式與正文仍是現行權威行為。 |

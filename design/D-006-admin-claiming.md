@@ -12,6 +12,30 @@
 
 ---
 
+## errata（2026-09-01，來源 D-020／同群多場並行活動；**DRAFT，尚未核可/未實作**，本節僅供追溯，不改本文件 APPROVED 狀態；不代表現行系統行為已改變）
+
+> D-020（`design/D-020-multi-event-per-group.md`）若通過雙審與使用者核可，將對本文件下列處產生影響
+> （**目前均未生效**，本文件現行授權模型與判定流程仍是現行系統的權威行為）：
+>
+> 1. **§1.1（開團：無授權）**：「唯一守門仍是同群單場（`findActiveByGroup` 入口拒絕 + `確認` 撞
+>    `ux_events_active_group` 安全網，D-004 §6，不變）」一句已由 D-020 取代——`findActiveByGroup`
+>    整個移除（改為 `listActiveByGroup` + 消歧義），「同群單場」不再是開團的唯一守門，改為兩道獨立
+>    機制：D-020 §3 場地+時間查重（`duplicate_event`）與 §3.5 同群 open 數上限 3 場
+>    （`group_open_limit`）。開團仍全開、無授權檢查，本點不變。
+> 2. **§1.2（close/cancel：`canManageEvent`）**：「授權需先 `findActiveByGroup` 讀出 event 以取
+>    `host_user_id`」已由 D-020 取代——`findActiveByGroup` 移除後，改由 handler 層先以 D-020 §4
+>    消歧義解出 `eventId`，`canManageEvent` 判定改讀 `events.getById(eventId)` 取得該場 event 再比對
+>    `host_user_id`/super-admin。`canManageEvent` 謂詞本身（比對 `host_user_id`/super-admin 集合）
+>    語意不變，僅資料讀取來源改變；「授權於進交易前完成、`no_active` 亦於進交易前判定」的時機/
+>    不 mark 慣例不變。
+>
+> **上述變更目前均未生效**：本文件 §1.1／§1.2 在 D-020 落地前仍是現行系統的權威行為，不得提前依本節
+> 改動。
+>
+> 權威來源：`design/D-020-multi-event-per-group.md` §2、§5.1、§5.2。
+
+---
+
 ## 一、設計內容
 
 ### 0. 定位與前提（作廢管理人認領）
@@ -237,6 +261,7 @@ closeEvent(input):                      // cancelEvent 同型
 | 2026-07-31 | D-006（模型 B）DRAFT 提交（backend） | 待 design-reviewer + architect-reviewer 雙審（R2）；OP-1~OP-4 待裁決；§五 D-004 授權 errata 待 Orchestrator 處置 |
 | 2026-07-31 | OP-1~OP-4（技術/文案性質，orchestrator 採納 backend 建議） | OP-1 唯讀 `getByLineUserId`（不 upsert，避免為未授權者寫列）；OP-2 (H′) 文案採建議；OP-3 `我的ID` 群回不遮罩；OP-4 `formatMyId` 併入 event-formatter。皆為技術/文案預設，無需使用者裁決。 |
 | 2026-08-23 | D-015／T-026 errata（架構 reviewer 要求界定） | §1.2／§2／G2「非授權者不 mark、無 DB 變更」範圍限 `closeEvent`／`cancelEvent`；編輯路徑依 CLAUDE.md §4 一律 mark（僅 `processed_events` 一列，`users` 仍不得 upsert）。AC-13「無新 `ParsedCommand` 成員」收斂為「D-006 這次不新增」。 |
+| 2026-09-01 | D-020 預告 errata（architect 執行，回應 D-020 §四表格所列 §1.1/§1.2 遺漏項） | 新增頂部 errata 區塊：D-020（同群多場並行活動）若落地，§1.1「唯一守門仍是同群單場（`findActiveByGroup`+`ux_events_active_group`）」與 §1.2「授權需先 `findActiveByGroup` 讀出 event」兩處措辭已由 D-020 取代——`findActiveByGroup` 移除、守門改為 D-020 §3 查重 + §3.5 open 數上限；`canManageEvent` 改讀消歧義解出的 `eventId` 之 `getById`。`canManageEvent` 謂詞本身與授權時機/不 mark 慣例不變。**D-020 仍 DRAFT，本次僅預先登記，未生效**，本文件既有正文/Guardrails/AC 仍是現行權威行為。 |
 
 > **OP 全採建議、設計正文與模型 B 一致。** 送 R2 雙審（design-reviewer + architect-reviewer）；architect 需追認 D-004 授權 errata 清單（§五-1）。雙審通過即待使用者最終 APPROVED。
 
