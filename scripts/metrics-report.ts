@@ -33,7 +33,11 @@ function metricQueries(): string[] {
   const out: string[] = [];
   const re = /```sql\r?\n([\s\S]*?)```/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(md)) !== null) out.push(m[1].trim());
+  // capture group 1 於本 regex 必然存在；noUncheckedIndexedAccess 下顯式收窄，不用非空斷言。
+  while ((m = re.exec(md)) !== null) {
+    const body = m[1];
+    if (body !== undefined) out.push(body.trim());
+  }
   return out;
 }
 

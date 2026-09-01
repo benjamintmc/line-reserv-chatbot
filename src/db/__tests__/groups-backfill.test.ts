@@ -21,6 +21,16 @@ function backfillSql(): string {
   return sql.slice(idx);
 }
 
+/**
+ * noUncheckedIndexedAccess 下取第 i 列：不存在就當場失敗。
+ * 刻意不用 `?.`／`!`——前者會讓「兩邊都 undefined」的假通過溜過去，後者等於關掉檢查。
+ */
+function nthRow<T>(rows: readonly T[], i: number): T {
+  const r = rows[i];
+  if (r === undefined) throw new Error(`預期存在第 ${i} 列，實際只有 ${rows.length} 列`);
+  return r;
+}
+
 describe('D-018 migration 0005 backfill', () => {
   let t: TestDb;
   beforeEach(async () => {
@@ -50,12 +60,12 @@ describe('D-018 migration 0005 backfill', () => {
     const earliest = await t.pool.query<{ m: string }>(
       "SELECT MIN(created_at) AS m FROM events WHERE group_id = 'G-a'",
     );
-    expect(rows.rows[0].joined_at).toBe(earliest.rows[0].m);
+    expect(nthRow(rows.rows, 0).joined_at).toBe(nthRow(earliest.rows, 0).m);
 
     // 冪等：ON CONFLICT DO NOTHING ⇒ 重跑不報錯、不長列數。
     await t.pool.query(sql);
     const again = await t.pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM groups');
-    expect(again.rows[0].n).toBe(2);
+    expect(nthRow(again.rows, 0).n).toBe(2);
   });
 
   it('[D-018 AC-7] backfill 不覆蓋已由 join/message 建立的列', async () => {
