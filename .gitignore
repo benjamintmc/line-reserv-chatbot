@@ -33,3 +33,7 @@ temp/
 
 # 本機指標報表（含營運數字，不進版控；npm run metrics 產生）
 metrics-report.html
+
+# Python 快取（harness/checks/*.py 被 import 時產生；2026-09-02 誤入版控一次）
+__pycache__/
+*.pyc
