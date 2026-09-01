@@ -4,6 +4,8 @@
 用法: python3 harness/checks/check_ac_coverage.py [--test-dirs dir1 dir2 ...]
 預設測試目錄: tests, test, src, app, e2e (存在者才掃)
 測試標記格式: [D-001 AC-1]（大小寫不拘，允許 D-001/AC-1、D-001-AC-1）
+AC 來源: 只認 `## 三、Acceptance Checks` 區段內、位於清單項開頭的 `- [ ] **AC-n`
+        （或 `- [ ] **[D-0xx AC-n]`）；內文對其他設計文件 AC 編號的交叉引用不算數。
 """
 import re, sys, pathlib
 
@@ -20,6 +22,24 @@ EXEMPT: list = []  # 待動工豁免；於輸出中列名，刻意不靜默
 DEFAULT_DIRS = ["tests", "test", "src", "app", "e2e"]
 TEST_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".cs"}
 
+# 只認「Acceptance Checks 區段內、作為清單項標題出現」的 AC 編號。掃全文會把內文對其他設計
+# 文件 AC 的交叉引用（如 D-019 AC-5 內文「沿用 D-015 AC-12/AC-13」）誤算成本文件自己的 AC，
+# 產生永遠補不上測試標記的幻影 AC ⇒ 關卡永久紅 ⇒ 等同沒有關卡（同 2026-08-22
+# check_commit_trace squash 誤判的教訓，見 LESSONS）。
+AC_SECTION = re.compile(r"^## +三、Acceptance", re.M)
+AC_ITEM = re.compile(r"^\s*[-*]\s*\[[ xX]\]\s*\*{0,2}\s*(?:\[\s*D-\d+\s+)?AC-(\d+)", re.M)
+
+
+def ac_ids(text, fname):
+    parts = AC_SECTION.split(text, maxsplit=1)
+    if len(parts) < 2:
+        # 找不到區段標題就退回掃全文，但**不得靜默**——寧可吵也不要漏檢（同 D-004 假綠前例）。
+        print(f"  ⚠ {fname}: 找不到「## 三、Acceptance」區段標題，退回掃全文（可能含交叉引用）")
+        return re.findall(r"\bAC-(\d+)", text)
+    body = re.split(r"^## ", parts[1], maxsplit=1, flags=re.M)[0]
+    return AC_ITEM.findall(body)
+
+
 def approved_docs():
     for p in sorted(DESIGN.glob("D-*.md")):
         if "TEMPLATE" in p.name or "examples" in str(p.parent):
@@ -30,7 +50,7 @@ def approved_docs():
         m = re.search(r"狀態[:：]\s*\*{0,2}(\w+)", text)
         if m and m.group(1).upper() == "APPROVED":
             did = re.match(r"(D-\d+)", p.name).group(1)
-            acs = sorted(set(re.findall(r"\bAC-(\d+)", text)), key=int)
+            acs = sorted(set(ac_ids(text, p.name)), key=int)
             # 「核可但尚未動工」：本檢查原假設 APPROVED ⇒ 立刻實作，一標核可其 AC 就被要求
             # 要有測試 ⇒ 尚未動工的設計會讓關卡永久紅。永久紅的關卡等同沒有關卡（同 2026-08-22
             # check_commit_trace 的 squash 誤判，見 LESSONS）。允許顯式宣告豁免，但**必須列名**。
