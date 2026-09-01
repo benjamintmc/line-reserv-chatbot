@@ -34,6 +34,14 @@
 > - session 以 **`(來源群, 主辦 line_user_id)`** 為鍵；`NextRoundInput.groupId` 由「守衛用」升級為**查詢鍵**，別群 `下一輪` 結構上撈不到他群 session（2026-08-18 errata 的 B1 比對依 D-013 G3 保留為縱深防禦）。
 > - 上句「已知取捨：主辦不能同時處於開團問答與分組 session」**範圍縮小為同群內**——同一主辦在不同群可各有一段流程並行。
 
+> **errata（2026-08-31，來源 D-020／同群多場並行活動；DRAFT，尚未核可/未實作，僅供追溯，不改本文件
+> APPROVED 狀態、不代表現行系統行為已改變）**：`分組` 沿用的 `findActiveByGroup` 將改為
+> `listActiveByGroup` + D-020 §4 消歧義解出 `eventId`（多場並行、候選數>1 時可能需要 `@selector`／
+> quote-reply）；`BalancedInput`／`StartRoundsInput` 新增 `eventId?: number`。**`下一輪` 不受影響、
+> 不跑消歧義**（D-020 G11：目標活動完全由既有 grouping session 決定，非本設計射程）；`GroupingState`
+> 新增 `eventId: number`（session 綁定的活動，供 `分組`/`下一輪` 訊息被 quote 時映射到正確活動，
+> D-020 §5.5）。權威來源：`design/D-020-multi-event-per-group.md` §5.1、§5.5。
+
 ### 2. 演算法A：均分 partition（純函式 `partitionBalanced(labels, rng)`）
 把 N 人拆成只有 3/4 的組、最大化 4 人組（組數最少）。以 `r = N % 4`：
 - `r=0` → 全 4；`r=3` → 一組 3 + 其餘 4；`r=2`（N≥6）→ 兩組 3 + 其餘 4；`r=1`（N≥9）→ 三組 3 + 其餘 4。
@@ -118,3 +126,4 @@
 | #4 | `分組` 觸發權限是否放寬給所有人 | **裁決：不放寬**，沿用 `canManageEvent`（同關閉報名）。 |
 | 2026-08-17 errata | 場名 A-Z；`分組`/`下一輪` host-only | 場名 甲乙→A、B、C…Z（≥26 用「第 M 場」）；授權由 canManageEvent 改 **host_user_id only、排除 super-admin**（取代裁決 #4）。 |
 | 2026-08-18 errata | T-018 review B1/B2 | **B1**：§一.1「host-only 天然成立」只保證同一人、**不保證同一群**（session PK 為 `line_user_id`，跨群唯一）→ `NextRoundInput` 增 `groupId`，`conv.group_id !== groupId` → `no_session`（否則主辦在別群 `下一輪` 會外洩他群凍結名單人名）。**B2**：策略A 吃 rng 且未去重，webhook 重送會重算出不同分組並二次回覆 → 於 `groupBalanced` 首步交易外 `markProcessed`，重送回 `duplicate`。皆零 migration。 |
+| 2026-08-31 | D-020 預告 errata（architect 執行，使用者已核可採納） | `分組` 沿用之 `findActiveByGroup` 改為消歧義解出 `eventId`；`GroupingState` 新增 `eventId`；`下一輪` 不受影響、不跑消歧義（G11）。**D-020 仍 DRAFT，本次僅預先登記，未生效**。 |

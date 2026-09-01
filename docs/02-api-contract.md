@@ -1,6 +1,6 @@
 # 02 — 指令契約（LINE Command Contract）
 
-> 擁有者：api-contract-designer。**版本：v0.2（由既有實作反向產生，尚未凍結）**
+> 擁有者：api-contract-designer。**版本：v0.3（由既有實作反向產生，尚未凍結）**
 >
 > **本專案沒有前後端分離**：對外介面是 **LINE 群組對話**，不是 REST。真正需要凍結的「介面」
 > 是指令語法與回覆範本——使用者記得的是 `+1`，不是 endpoint。REST 面只有 LINE 平台呼叫的
@@ -127,6 +127,27 @@ parser 對 `編輯 <欄位> <新值>` 的「新值」取法**依欄位而異**�
 > `closeEvent`／`cancelEvent`，D-010 G4 的範圍限 `addCapacity`。非授權者在編輯路徑
 > **會** mark `processed_events`，但仍**不得** upsert `users`。
 
+## 尚未生效的預告：D-020（同群多場並行活動，DRAFT）
+
+> **本節純供追溯／預告，不代表目前系統行為**。`design/D-020-multi-event-per-group.md` 仍是
+> **DRAFT**（待 design-reviewer + architect-reviewer 雙審 + 使用者核可才會實作）。在其落地前，
+> 系統仍維持本文件其餘章節所述的「同群同時只有一場 active 活動」限制；以下僅預先登記其**若**
+> 落地會牽動的契約面，供 reviewer／未來實作者追溯，**不得誤讀為現行行為**。
+
+- **解除單場限制**：同群可同時有多場 `open` 活動；`+N`/`-N`/`名單`/`加開`/`分組`/`下一輪`/
+  `關閉報名`/`取消活動`/`編輯` 於候選數 > 1 時需**消歧義**才能決定目標活動。
+- **消歧義機制 A（quote-reply）**：使用者引用 bot 先前的一則訊息並回覆，即以該訊息對應的活動
+  為目標。
+- **消歧義機制 B（`@selector` 前綴）**：訊息以 `@<場地/日期/時間片段>` 開頭可指定目標活動，
+  如 `@旭陽 8/15 +1`；語法細節見 D-020 §4.2。
+- **消歧義失敗的四種新拒絕**：候選 >1 且無 quote/selector（`ambiguous`）、quote 與 selector
+  指向不同活動（`conflict`）、selector 命中 0 場（`not_found`）、selector 命中 >1 場
+  （`too_many`），各自固定中文提示，見 D-020 §5.2。
+- **開團新增同群上限**：同群同時最多 **3 場** `open` 活動；達上限時 `開團`（一行式與逐步問答
+  皆同）回固定文案「此群組已有 3 場進行中的球敘，請等其中一場結束後再開新團」（不帶任何活動
+  明細），與既有的「場地+時間查重」（`duplicate_event`）為**兩種獨立拒絕**，訊息與判斷邏輯
+  不共用（D-020 §3.5）。此上限為**應用層計數**判斷，非 DB 約束。
+
 ## REST 面（僅供平台呼叫）
 
 | Method | Path | 說明 |
@@ -144,3 +165,4 @@ CLAUDE.md §4 記載的統一錯誤格式 `{ code, message, details }` 目前**�
 |---|---|---|---|
 | v0.1 | 2026-08-05 | 由既有實作反向產生；重定位為指令契約（原 REST 模板全為佔位符，從未填寫） | 待審 |
 | v0.2 | 2026-08-23 | D-015／T-026 回填：指令一覽新增 `編輯` 6 列；新增〈`編輯` 的取值規則〉〈`編輯` 的回覆政策〉〈型別〉三節（`edit_event`／`edit_help`、`InvalidCommandKind:'edit_event'`、`InvalidReason:'bad_location'`、選填 `invalid.detail{len}`）；去重政策表新增編輯路徑列與明文例外註；回覆範本索引新增編輯列。REST 面與 `openapi.yaml` 無異動（本功能不新增 HTTP endpoint） | architect-reviewer（T-026 PASS） |
+| v0.3 | 2026-08-31 | 新增〈尚未生效的預告：D-020〉一節，預先登記同群多場並行活動＋訊息消歧義（`@selector`／quote-reply）與同群 open 數上限（3 場，固定文案）若落地將牽動的契約面。**D-020 仍是 DRAFT，本次僅為 errata 預先登記，不代表現行行為已改變**；其餘章節未變動 | architect（D-020 errata） |

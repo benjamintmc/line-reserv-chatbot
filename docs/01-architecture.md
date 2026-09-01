@@ -58,6 +58,16 @@ repository 不做決策。指令解析在 `src/commands/`，**不在** `src/doma
 - 金額一律整數新台幣元。`price_mode ∈ {per_person, split_venue}`；均攤採無條件進位，
   關閉報名時把最終攤額快照進 `settled_per_person`（D-005）。
 
+> **errata（2026-08-31，來源 D-020，`design/D-020-multi-event-per-group.md`；DRAFT，尚未核可/
+> 未實作——本節僅供追溯與 reviewer 預告，不代表目前系統行為已改變）**：D-020 若通過雙審與使用者
+> 核可，`ux_events_active_group`（同群同時只一場 active）將由 migration 0006 取代為兩層語意：
+> ① **`ux_events_active_group_venue_time`**（`group_id, location, event_datetime` 唯一，僅擋
+> 「同群場地+時間皆相同」的重複活動，不再擋「同群多場並行」）；② 新增 **`message_event_map`**
+> 表（bot 訊息 id → 活動 id 映射，供多場並行時 quote-reply 消歧義）。另外，**同群同時最多 3 場
+> `open` 活動**的上限（D-020 §3.5）是**應用層計數判斷**（`listActiveByGroup(groupId).length>=3`），
+> **不是 DB 約束**——經評估後認為 race window 後果輕微（最多超出 1 場、不影響任何資料完整性
+> 不變式），不值得為此加 DB 層安全網。上表在 D-020 落地前**仍是現行系統的權威描述**。
+
 ## 併發與正確性（本專案最關鍵的一節）
 
 超賣防護是這個系統唯一真正困難的部分，經歷過兩次真實缺陷：
@@ -73,6 +83,11 @@ repository 不做決策。指令解析在 `src/commands/`，**不在** `src/doma
 
 > 這兩條通則已在 `harness/LESSONS.md` 登記為回寫候選（各達 2 次），尚未落成 Guardrail 模板——
 > 見 task-board 的 `T-016 LESSONS 回寫清償`。
+
+> **errata（2026-08-31，來源 D-020；DRAFT，尚未核可/未實作，僅供追溯）**：若 D-020 落地，多場
+> 並行後鎖定粒度**仍是單一 event**（`FOR UPDATE` 鎖該 event 列不變）——group 層級不再有隱含互斥，
+> 跨場操作互不阻塞；決定「操作哪一場」的消歧義判斷（quote-reply / `@selector`）發生於進交易**之前**
+> （純函式、不觸 DB），交易內鎖定與重讀邏輯本身不變。此點**目前尚未生效**。
 
 ## 技術選型
 
@@ -147,3 +162,4 @@ repository 不做決策。指令解析在 `src/commands/`，**不在** `src/doma
 | 日期 | 變更 | 來源 |
 |---|---|---|
 | 2026-08-05 | 由既有實作反向產生初版（現況快照，含技術債標記） | harness 1.4.0 導入 |
+| 2026-08-31 | 預先登記 D-020（同群多場並行活動 + 訊息消歧義，**DRAFT，尚未核可/未實作**）將牽動之處：`events` 索引語意由「同群唯一」變為「同群場地+時間唯一」、新增 `message_event_map`、新增同群 open 數上限（3 場，應用層計數、非 DB 約束）、鎖定粒度說明補充。詳見資料模型與併發章節內 errata 區塊 | D-020 errata（`design/D-020-multi-event-per-group.md`） |
