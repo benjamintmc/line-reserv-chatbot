@@ -63,6 +63,8 @@
 | 2026-09-02 (T-034) | **文件預算把 errata 當成設計內容計數** → D-011／D-015 在 main 上恰好都是 120 行（貼著上限），任何一條 errata 都使其超標；而補 errata 是 CLAUDE.md §2 明文**要求**的行為 ⇒ 規則與規則互相打架，實務結果是「補一條註記就得先砍掉別的內容」。改為 errata 與「討論紀錄」不計入，預算只管三段式本體（設計內容→Guardrails→AC）。同 2026-08-22 把 Backlog 自 task-board 切出的理由：成長曲線不同的東西不共用一個預算。 | `harness/checks/check_doc_budget.py` `content_lines()` | 1.4.0（在地回寫） |
 | 2026-09-02 (T-034) | **check_ac_coverage 掃全文產生幻影 AC** → 內文對其他設計文件 AC 編號的交叉引用（如 D-019 AC-5 提到「沿用 D-015 AC-12/AC-13」）被誤算成本文件自己的 AC，永遠補不上測試標記 ⇒ 關卡永久紅＝等同沒有關卡。改為只認 Acceptance Checks 區段內的清單項標題；20 份文件逐份對照，3 處變動皆為幻影。 | `harness/checks/check_ac_coverage.py` `ac_ids()` | 1.4.0（在地回寫） |
 
+| 2026-09-02 (T-034) | **合併 commit 給自訂標題 → commit trace 永久紅** → 合併 PR #18 時 orchestrator 給了不符 `type(D-xxx/T-xxx):` 格式的自訂標題，該 commit 進 main 後 CI 每跑必紅。原本只有兩條路能過（結尾 `(#N)` 的 squash、`^Merge ` 開頭的預設訊息），自訂標題的合併兩條都不符。改以 **parent 數**判定合併，同樣只放寬「位置」不放寬「追溯性」（標題須含 T-xxx/D-xxx）。此為 2026-08-22 squash 誤判的**同類復發**，第 2 次。 | `harness/checks/check_commit_trace.sh`（`%p` parent 判定） | 1.4.0（在地回寫） |
+
 > **2026-08-22（T-017）：9 項達門檻項目全數清償**，回寫機制自此有實質運轉紀錄（此前僅 2026-08-05 的 3 筆）。
 > **仍為「規則已立、碼未收斂」的兩處**（已登記 task-board Backlog，皆碰 R2 模組故不夾帶）：
 > ①拒絕回覆去重的現行不對稱實作 ②D-007 §3「cancel candidates 唯讀讀安全」的 errata。
