@@ -10,6 +10,7 @@ import {
   formatEditNotAuthorized,
   formatEditClosedNotEditable,
   formatEditEventEnded,
+  feeLabel,
   type EditMentionTarget,
 } from './event-formatter';
 import { MAX_MENTIONS_PER_MESSAGE, type EditEventResult } from './event-service';
@@ -139,13 +140,16 @@ describe('D-015 §3 拒絕與導向文案（釘死）', () => {
     );
   });
 
-  it('[D-015 AC-6] bad_fee 兩種模式文案（明示計費方式不可變更）', () => {
-    expect(formatEditBadFee('per_person').text).toBe(
-      '本活動是每人固定費用，請輸入金額（例：編輯 費用 2500）。本活動的計費方式無法變更。',
+  it('[D-019 AC-4] bad_fee 為零參數、純格式錯通用文案（與 price_mode 無關）', () => {
+    expect(formatEditBadFee().text).toBe(
+      '費用格式不正確。每人固定請輸入金額（例：編輯 費用 2500）；' +
+        '場地費均攤請輸入「場地費」+總額（例：編輯 費用 場地費4000）。',
     );
-    expect(formatEditBadFee('split_venue').text).toBe(
-      '本活動是場地費均攤，請輸入場地費總額（例：編輯 費用 場地費4000）。本活動的計費方式無法變更。',
-    );
+  });
+
+  it('[D-019] feeLabel：per_person 與 split_venue 各自標籤', () => {
+    expect(feeLabel('per_person', 2200)).toBe('每人費用 2200 元');
+    expect(feeLabel('split_venue', 4000)).toBe('場地費 4000 元');
   });
 
   it('[D-015 AC-9] 格式錯為編輯專用文案（A3：不得沿用開團問答字串、不叫使用者裸打值）', () => {
@@ -185,7 +189,7 @@ describe('D-015 §3/§4 成功句 + mention 行', () => {
     expect(t.text.split('\n')[0]).toBe('已更新活動時間：2026-09-01 07:30 → 2026-09-01 06:00');
   });
 
-  it('[D-015 AC-6] 費用成功句：per_person 與 split（含 K 與攤額）', () => {
+  it('[D-015 AC-6] 費用成功句：per_person 與 split（含 K 與攤額）；同模式（feeModeSwitched 省略）零回歸', () => {
     const pp = formatEditOk(ok({ field: 'fee', before: '2000', after: '2500' }), []);
     expect(pp.text.split('\n')[0]).toBe('已更新每人費用：2000 元 → 2500 元');
 
@@ -196,6 +200,36 @@ describe('D-015 §3/§4 成功句 + mention 行', () => {
     expect(sp.text.split('\n')[0]).toBe(
       '已更新場地費：3000 元 → 4000 元（目前正取 4 人，平均每人約 1000 元；暫估，關閉報名後結算）',
     );
+  });
+
+  it('[D-019 AC-1] 費用切換成功句（per_person→split_venue）：帶標籤全稱＋攤額子句', () => {
+    const d = formatEditOk(
+      ok({
+        field: 'fee',
+        before: feeLabel('per_person', 2200),
+        after: feeLabel('split_venue', 4000),
+        perPerson: 1000,
+        confirmedCount: 4,
+        feeModeSwitched: true,
+      }),
+      [],
+    );
+    expect(d.text.split('\n')[0]).toBe(
+      '已更新計費方式：每人費用 2200 元 → 場地費 4000 元（目前正取 4 人，平均每人約 1000 元；暫估，關閉報名後結算）',
+    );
+  });
+
+  it('[D-019 AC-2] 費用切換成功句（split_venue→per_person）：帶標籤全稱、不附攤額子句', () => {
+    const d = formatEditOk(
+      ok({
+        field: 'fee',
+        before: feeLabel('split_venue', 3000),
+        after: feeLabel('per_person', 2500),
+        feeModeSwitched: true,
+      }),
+      [],
+    );
+    expect(d.text.split('\n')[0]).toBe('已更新計費方式：場地費 3000 元 → 每人費用 2500 元');
   });
 
   it('[D-015 AC-12] mention 行：依序 @、index/length 對齊、無 lineUserId 者退化純文字', () => {
@@ -255,8 +289,7 @@ describe('D-015 §3/§4 成功句 + mention 行', () => {
       formatEditOk(ok(), [{ displayName: '阿明', lineUserId: 'U1' }]).text,
       formatEditCapacityRedirect().text,
       formatEditPastDatetime(NOW_A).text,
-      formatEditBadFee('per_person').text,
-      formatEditBadFee('split_venue').text,
+      formatEditBadFee().text,
       formatEditFormatError('date', NOW_A).text,
       formatEditFormatError('time', NOW_A).text,
       formatEditFormatError('location', NOW_A, { len: 41 }).text,

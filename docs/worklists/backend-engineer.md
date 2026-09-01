@@ -11,6 +11,7 @@
 | T-023 | 開團範例日期動態產生（4 處寫死 `2026/08/15` 已過期 → 今日（台灣）＋7 天；時鐘注入保純函式） | R0 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-023.md`；未 commit（變更留工作區，後由 Orchestrator 以 `84b0a13` 收攏） |
 | T-022 | D-013 實作（根治跨群）：migration 0004 複合 PK、repo 簽名 `(groupId, lineUserId)`、(N2) 收斂、D-004/D-011 errata、runbook 0004 段落 | **R2** | 實作完成，待裁定 | 分支 `feat/D-011-grouping`；未 commit、未 push，變更留工作區。審查包 `docs/reviews/RP-T-022.md` |
 | T-025 | M7 容器強化：新增 `.dockerignore`＋runtime 階段 `USER node`（來源：`docs/security-review-2026-08-22.md` M7） | R0 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-025.md`；AC-1/AC-2 為**手動實跑 docker** 之輸出（非 unit test）；未 commit，變更留工作區 |
+| T-034 | D-019：`編輯 費用` 支援切換計費模式（per_person↔split_venue），反轉 D-015 決議⑥ | **R2** | 實作完成，**機器關卡未跑**（環境無 node/npm，亦無 docker） | 分支 `feat/t-032-edit-billing-mode`；未 commit，變更留工作區。詳見下方筆記 |
 
 ## 狀態提議（等待 Orchestrator 裁定）
 | 任務 ID | 提議轉換 | 證據（審查包/測試結果/產出路徑） |
@@ -109,9 +110,41 @@
     `event_datetime`，不新增欄位）。**未加回 AC 豁免、未改 check 腳本、未動 `EXEMPT` 清單。**
   - 未 commit、未 push；變更留在 `feat/t-026-edit-event` 工作區待 Orchestrator 驗收。
 
+- **T-034 筆記**：
+  - **環境限制比派工單描述的更嚴重**：派工單只提到「沒有 docker」，但這台機器**連 node/npm 都沒裝**
+    （`which node npm` 找不到、全機找不到任何 node 執行檔，`dangerouslyDisableSandbox` 重試仍然一樣）。
+    因此 `npm run lint`／`npm run build`／`npm run harness:check`／`npm test` **全部**沒能實際執行，
+    不只是任務單預期會擋掉的 `npm test`。只做了逐檔手動閱讀＋型別走查（import 是否還用得到、
+    `TxRepos.events` 是否曝露新原語、`switch`/`default: never` 窮舉是否仍成立等），**未經編譯器驗證**。
+  - **`feeLabel` 依設計文件字面放在 `event-formatter.ts`（非 `event-service.ts`）**：D-019 §一.3 的
+    pseudocode 直接在 domain 的 `case 'fee'` 內呼叫 `feeLabel(...)`，§一.5 又註明它是「formatter 內部
+    helper」。這造成 domain（`event-service.ts`）新增一條指向 `event-formatter.ts` 的 value import；
+    反向 `event-formatter.ts` 對 `event-service.ts` 原本就只有 `import type`（型別會被完全擦除），
+    故不構成執行期循環依賴——但**這是本次唯一偏離「domain 不依賴 formatter」慣例的地方**，且是設計文件
+    明文指定的做法，未自行擴權，僅回報供 reviewer 留意。
+  - **`updatePricePerPerson`/`updateVenueFee` 已移除**（非僅新增 `updateBilling` 並存）：grep 全 repo
+    確認呼叫點只有 `event-service.ts` case 'fee' 這一處（測試檔亦無直接呼叫），依 D-019 §一.4「除 fee
+    路徑外無其他呼叫點後裁定」自行裁定移除，理由是留著兩個死方法會讓 reviewer 誤以為還有呼叫路徑。
+  - **AC-7 的「未呼叫 updatePricePerPerson/updateVenueFee」**：因兩方法已整個從類別移除，呼叫端在型別
+    層面已不可能呼叫到（改回去會編譯失敗），故測試只保留「`updateBilling` 恰呼叫一次（含切換與不切換
+    兩案例、逐次累計 spy 次數）」的斷言；「未呼叫舊方法」這半句由方法不存在這件事本身保證，未另寫
+    `expect(...).not.toHaveBeenCalled()`（該方法已不存在，寫了也無意義）。AC-7 另要求 reviewer 人工
+    grep `updateBilling` 本體確認只有一條 `UPDATE` 陳述句——已在 repo 方法內以單一 `this.q.query(...)`
+    呼叫實作（`src/db/repositories/event-repository.ts` 新 `updateBilling`），供審查時核對。
+  - **`bad_fee` 兩則舊測試語意整條反轉**（非新增，是修正）：`event-service.edit.test.ts` 原「per_person
+    收到 `場地費4000` → bad_fee」與 formatter 的「bad_fee 兩種模式文案」兩條測試，依 D-019 AC-1/AC-4
+    直接**改寫**（非在旁新增一條並存），因為舊行為本身已被 errata 廢止，留著會與新行為互相矛盾。
+  - 凍結區零改動：`src/db/tx.ts`、`src/db/migrations/*` 皆不在 diff；**未新增 migration**（三欄本已存在，
+    D-005 建立時就有）。`docs/02-api-contract.md`／`docs/api/openapi.yaml` 依 D-019 §四交 api-contract-designer，
+    本次未動。
+  - 未 commit、未 push；變更留在 `feat/t-032-edit-billing-mode` 工作區待 Orchestrator 驗收。**未提議
+    PROPOSE → DONE**：機器關卡（lint/build/harness:check/test）一項都沒能實際跑過，依 CLAUDE.md §6
+    第 0 條「未全綠不得送模型審查」，這關必須先由具備 node 環境的人/機器補驗證。
+
 ## 我要回報給 Orchestrator 的事項
 | 類型（阻塞/契約疑義/重複問題/建議） | 內容 |
 |---|---|
 | 建議（編號） | F1 是使用者實測回報的既有 bug（D-004 跨群語意），目前掛在 T-018 分支上但**不屬於 T-018 範圍**，建議另編任務 ID 以利追溯與 commit 訊息 `fix(D-004/T-xxx)` |
 | 重複問題（LESSONS 候選） | 「conversation state 三件套」再犯一次：`conversation_states` 的**讀取端**未比對 `group_id`，且 `AbortInput` 當初就沒帶 `groupId`。建議把「凡以 `line_user_id` 為 PK 的狀態表，讀取端必須連同 scope 欄位一起比對」寫成 reviewer checklist 條目（現已累計：D-004 攔截、D-011 session 兩處同型） |
 | 建議（既有取捨，未動） | 一人同時只能有一段進行中流程：在 A 群開團中又於 B 群 `開團` 仍會覆寫同一列（既有行為，本次未改，已記入 D-004 errata 第 5 條） |
+| **阻塞（環境）** | T-034 執行環境**沒有安裝 node/npm**（不只是缺 docker）；`npm run lint`／`build`／`harness:check`／`test` 全部無法執行，需另一台有 node 的環境或本機補跑後才能判定是否過關。詳見 T-034 筆記。 |
