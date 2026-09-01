@@ -14,6 +14,7 @@ import {
   type EditMentionTarget,
 } from './event-formatter';
 import { MAX_MENTIONS_PER_MESSAGE, type EditEventResult } from './event-service';
+import { perPersonAmount } from './billing';
 
 // D-015 §3 釘死文案 / §4 mention 的**純函式**驗收（不觸 DB、不讀時鐘）。
 // 時鐘一律以參數注入（G7）：本檔所有 now 皆為寫死的 UTC ISO 字串。
@@ -217,6 +218,38 @@ describe('D-015 §3/§4 成功句 + mention 行', () => {
     expect(d.text.split('\n')[0]).toBe(
       '已更新計費方式：每人費用 2200 元 → 場地費 4000 元（目前正取 4 人，平均每人約 1000 元；暫估，關閉報名後結算）',
     );
+  });
+
+  it('[D-019 AC-1] 切換成 split_venue 且正取 0 人：分母保底不爆數字，攤額＝完整場地費', () => {
+    // R2 雙審 design-reviewer B1：K=0 可達（主辦開團後自行 -1，見 D-017 AC-7 同一情境），
+    // 疑慮是除以 0 會輸出 Infinity/NaN。實際不會——billing.perPersonAmount 以
+    // `Math.ceil(fee / Math.max(K, 1))` 保底，K=0 時攤額即完整場地費。
+    // 使用者裁決（2026-09-02）：接受「正取 0 人，平均每人約 N 元」現行輸出，不改文案，
+    // 改以本測試釘死，避免日後有人「順手」改成別的說法而無人察覺。
+    const perPerson = perPersonAmount(
+      { price_mode: 'split_venue', venue_fee: 4000, price_per_person: 0 } as EventRow,
+      0,
+    );
+    expect(Number.isFinite(perPerson)).toBe(true); // 非 Infinity／非 NaN，B1 的實際疑慮到此為止
+    expect(perPerson).toBe(4000);
+
+    const d = formatEditOk(
+      ok({
+        field: 'fee',
+        before: feeLabel('per_person', 2200),
+        after: feeLabel('split_venue', 4000),
+        perPerson,
+        confirmedCount: 0,
+        feeModeSwitched: true,
+      }),
+      [],
+    );
+    expect(d.text).toBe(
+      '已更新計費方式：每人費用 2200 元 → 場地費 4000 元（目前正取 0 人，平均每人約 4000 元；暫估，關閉報名後結算）',
+    );
+    // D-017 AC-7：同一則訊息的後半段（「已報名的各位請確認」）在 K=0 時不輸出——
+    // 沒有「各位」可以喊。此處一併釘死，避免日後改動只動其中一半。
+    expect(d.text).not.toContain('已報名的各位請確認');
   });
 
   it('[D-019 AC-2] 費用切換成功句（split_venue→per_person）：帶標籤全稱、不附攤額子句', () => {

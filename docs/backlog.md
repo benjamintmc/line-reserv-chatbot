@@ -68,3 +68,12 @@
 - ~~**D-018 遺留：backfill 群組的 `group_name` 為 NULL**~~ → **已解（2026-08-28，T-031）**。
   新增 `npm run db:backfill-names`（`scripts/backfill-group-names.ts`，附 `--dry-run`），
   對 PROD 5 列補名全數成功、零失敗，現存群組已無缺名。腳本保留供日後再有 backfill 列時重跑。
+
+- **（T-034／D-019 R2 雙審衍生，2026-09-02，共 7 條 nit + 2 項待補 errata）** 全部不阻塞 T-034 結案，明細與出處見 `docs/reviews/RP-T-034.md` §7–§8。
+  ①**〔建議近期處理，R0〕`event-repository.ts` 的區塊註解與程式碼互相矛盾**：註解仍寫「一次呼叫只動一欄……由原語形狀保證（G2 可寫欄位封閉集）」，但其下方現在放的是三欄的 `updateBilling`。**為什麼現在不做**：純註解、零行為影響，且改它會動到剛通過雙審的檔案。**動工前必須先解掉**：無；一併把「單欄原語 + fee 三欄原語」兩類並述即可。
+  ②**〔R1〕`updateBilling` 的參數型別允許違反 D-005 不變式**（`split_venue` 配 `venueFee: null`），目前只靠唯一呼叫端維持。改判別聯集（`{priceMode:'per_person'; pricePerPerson:number} | {priceMode:'split_venue'; venueFee:number}`）可讓型別直接擋。**為什麼現在不做**：僅一個呼叫端，side project 尺度下投報比低。**動工前**：確認屆時呼叫端數量仍為 1，否則要一併改所有呼叫端。
+  ③**〔R0〕`feeModeSwitched` 的條件展開多餘**（fee 路徑恆有值、其餘恆無，等價於直接放欄位）。**這正是 RP-T-034 §6 那兩條錯誤斷言的來源**——實作者看到條件展開就以為未切換時欄位會消失。**為什麼現在不做**：行為正確且已被測試釘死。
+  ④**〔R0〕AC-7 的 spy 用累計次數（1→2）斷言**，改 `mockClear()` 後各自斷言 1 次更直白。
+  ⑤**〔文案一致性，需先改設計文件〕per_person 在使用者可見文案中有三種說法**：`每人費用`（`feeLabel`／`已更新每人費用`／`feeLine`）、`每人固定`（新 `bad_fee`）、`每人固定費用`（D-005 開團問答）。**為什麼現在不做**：三者皆為使用者已核可的釘死值，動它要先出 D-005／D-019 errata。**動工前**：決定統一用詞（建議「每人費用」）並盤點所有落點。
+  ⑥**〔產品面風險，待使用者裁決是否另開案〕split_venue 活動輸入裸數字會靜默切換模式**：主辦打 `編輯 費用 4000`（未寫「場地費」）會把場地費均攤改成每人 4000 元。屬 D-019 明文採納的語法決議，且回覆句明示「場地費 3000 元 → 每人費用 4000 元」可自我修正，故不阻塞。**為什麼現在不做**：要改就是改 D-019 已核可的語法決議，屬需求變更而非缺陷修復。
+  ⑦**〔R0〕D-019 補 errata ×2**（落點由 architect-reviewer 指定，**擁有者是 architect，orchestrator 不得代筆**）：**(a)** §一.3 `feeLabel` 後加註「export 自 `event-formatter`；domain→formatter 執行期單向依賴為刻意接受；`event-formatter` 對 `event-service` 必須維持 `import type`，一旦需要 value import 即須把 `feeLabel` 抽到共用模組」**(b)** AC-7 後半句改記實際做法（舊原語已整個移除，非以 `not.toHaveBeenCalled()` 斷言）。
