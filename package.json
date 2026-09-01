@@ -20,7 +20,7 @@
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.test.json",
     "metrics": "tsx scripts/metrics-report.ts",
-    "harness:check": "node scripts/harness-check.mjs"
+    "harness:check": "node scripts/harness-check.mjs --strict"
   },
   "dependencies": {
     "@line/bot-sdk": "^9.5.0",

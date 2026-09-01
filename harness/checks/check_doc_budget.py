@@ -35,6 +35,47 @@ def load_exempt():
     return {s.strip() for s in lines if s.strip() and not s.lstrip().startswith("#")}
 
 
+# errata 不計入行數上限。理由：上限管的是「設計內容的篇幅」——TOKEN-BUDGET 規則七寫得很白，
+# 「超出預算多半代表任務該再拆一層」，抓的是任務過大。errata 是**事後**追加的更正註記，是
+# CLAUDE.md §2 文件契約明文要求的行為（設計變更必須回填既有文件），與任務大小無關。
+# 兩者混在一起計數的後果：每補一條 errata 就得先砍掉別的內容才能過關 —— 這正是 2026-08-22
+# 把 Backlog 自 task-board 切出來的同一個理由（成長曲線不同的東西不該共用一個預算）。
+# 實例：D-011 與 D-015 在 main 上恰好都是 120 行（貼著上限），任何一條 errata 都會使其超標。
+#
+# 兩種既有寫法都要認（勿只認其一，否則規則對半數文件失效）：
+#   (a) `## errata（…）` 標題區段 —— 直到下一個 `## ` 標題為止（D-015）
+#   (b) `> **errata（…）**` 引用區塊 —— 該段連續的 `>` 行（D-011）
+# 「討論紀錄」表同理：每發生一次 errata 就多一列，是隨**時間**成長的決策日誌，
+# 不是隨**任務大小**成長的設計內容。兩者一併排除，預算才真的只在管 CLAUDE.md §5 所說的
+# 「設計內容 → Guardrails → Acceptance Checks」三段式本體。
+ERRATA_HEADING = re.compile(r"^##\s+(errata|討論紀錄)", re.I)
+ANY_H2 = re.compile(r"^##\s")
+
+
+def content_lines(text: str) -> int:
+    """回傳排除 errata 區段後的行數。"""
+    n, in_section, in_quote = 0, False, False
+    for line in text.splitlines():
+        if ERRATA_HEADING.match(line):
+            in_section, in_quote = True, False
+            continue
+        if in_section:
+            if ANY_H2.match(line):
+                in_section = False  # 落到下方一般計數
+            else:
+                continue
+        if line.startswith(">"):
+            # 引用區塊：只有「首行含 errata」的整段才排除；其餘引用照常計數。
+            if not in_quote:
+                in_quote = "errata" in line.lower()
+            if in_quote:
+                continue
+        else:
+            in_quote = False
+        n += 1
+    return n
+
+
 def main():
     strict = "--strict" in sys.argv
     exempt = load_exempt()
@@ -51,9 +92,12 @@ def main():
         if rel in exempt:
             skipped += 1
             continue
-        n = len(f.read_text(encoding="utf-8").splitlines())
+        text = f.read_text(encoding="utf-8")
+        raw = len(text.splitlines())
+        n = content_lines(text) if rel.startswith("design/D-") else raw
         if n > limit:
-            warns.append(f"  ! {rel}: {n} 行 > 上限 {limit} → 建議切檔或精簡")
+            extra = f"（不含 errata；全檔 {raw} 行）" if n != raw else ""
+            warns.append(f"  ! {rel}: {n} 行 > 上限 {limit}{extra} → 建議切檔或精簡")
     # task-board DONE 歸檔提醒（`\*{0,2}` 容許 `**DONE（2026-08-02）**` 這類粗體/附註寫法）
     tb = ROOT / "docs/task-board.md"
     if tb.exists():
