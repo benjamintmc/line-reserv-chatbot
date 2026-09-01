@@ -12,10 +12,12 @@
 | T-022 | D-013 實作（根治跨群）：migration 0004 複合 PK、repo 簽名 `(groupId, lineUserId)`、(N2) 收斂、D-004/D-011 errata、runbook 0004 段落 | **R2** | 實作完成，待裁定 | 分支 `feat/D-011-grouping`；未 commit、未 push，變更留工作區。審查包 `docs/reviews/RP-T-022.md` |
 | T-025 | M7 容器強化：新增 `.dockerignore`＋runtime 階段 `USER node`（來源：`docs/security-review-2026-08-22.md` M7） | R0 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-025.md`；AC-1/AC-2 為**手動實跑 docker** 之輸出（非 unit test）；未 commit，變更留工作區 |
 | T-034 | D-019：`編輯 費用` 支援切換計費模式（per_person↔split_venue），反轉 D-015 決議⑥ | **R2** | 實作完成，**機器關卡未跑**（環境無 node/npm，亦無 docker） | 分支 `feat/t-032-edit-billing-mode`；未 commit，變更留工作區。詳見下方筆記 |
+| T-032 | 測試檔假綠防護（`tsconfig.test.json` + `npm run typecheck` + CI 接線，修掉暴露的 17 個既有型別錯誤） | R1 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-032.md`；未 commit，變更留工作區 |
 
 ## 狀態提議（等待 Orchestrator 裁定）
 | 任務 ID | 提議轉換 | 證據（審查包/測試結果/產出路徑） |
 |---|---|---|
+| T-032 | PROPOSE → DONE | 審查包 **`docs/reviews/RP-T-032.md`**（G1–G5 自檢全 ✓、AC-1..5 全 PASS，含兩次反向驗證原始輸出）。交付：`tsconfig.test.json`（新增）、`package.json`（`typecheck` script）、`.github/workflows/ci.yml`（Lint 與 Build 之間插入 Typecheck 步驟）、修正 8 個測試/腳本檔。**`src/` 生產碼 diff 0 行**（`git diff --stat -- 'src/**' ':!src/**/*.test.ts' ':!src/**/__tests__/**'` 空輸出）。機器關卡：**lint 0／build 綠／477 tests 全綠（基線 477，零回歸）／`npm run typecheck` exit 0／harness AC 242/242 全過** |
 | T-018 | PROPOSE → DONE | B1/B2 已修：`src/domain/grouping-service.ts`（`NextRoundInput.groupId` + `conv.group_id` 比對 → `no_session`；`groupBalanced` 首步交易外 `markProcessed` → `duplicate`）、`src/webhook/handler.ts`（`group_next` 傳 groupId、`renderBalanced` 加 `duplicate` → `[]`）、`src/server.ts`（注入 `processed`）。測試：`src/domain/grouping-service.test.ts`（`[D-011 AC-23 errata 跨群]`、`[D-011 AC-24 errata 去重]`）＋`src/webhook/handler.test.ts` 兩條接線層測試。設計 errata：`design/D-011-grouping.md`（狀態行、AC-23/AC-24、討論紀錄）。機器關卡：lint 0／build 綠／**355 tests 全綠**（基線 343，新增 12，零回歸）／`harness:check --strict` 全過（AC 184/184） |
 | T-020 | PROPOSE → DONE | B1 已修：`src/domain/list-formatter.ts` `formatBatchSummary` 改依類別聚合（`已報名：${names.join('、')}`、落候補者各自標「（候補）」；取消同理）。測試：新增 `src/domain/list-formatter.batch.test.ts`（5 案）＋更新 `src/webhook/handler.batch.test.ts` :113/:179 斷言。D-012 **未改**（依使用者裁決）。機器關卡同上 |
 | T-022 | PROPOSE → DONE | 審查包 **`docs/reviews/RP-T-022.md`**（Guardrails G1–G8 自檢全 ✓、AC-1..9 對照全 PASS）。交付：`src/db/migrations/0004_conversation_scope_pk.sql`（新增；`lock_timeout` → `DELETE WHERE group_id IS NULL` → `SET NOT NULL` → `DROP CONSTRAINT conversation_states_pkey` → `ADD PRIMARY KEY (group_id, line_user_id)`）、`conversation-repository.ts`（`get`/`delete(groupId, lineUserId)`、`ON CONFLICT (group_id, line_user_id)`、`UpsertConversationInput.groupId: string`）、`event-service.ts`／`event-formatter.ts`（`AbandonedKind` 去 `'create'`、`detectAbandoned(prev)` 單行 body 去死參數、`withAbandonedNotice` 去參數、doc-comment 錯誤理由改正）、`grouping-service.ts`／`handler.ts`（查詢鍵改雙參數，五道守衛全留）；文件 `design/D-004`（errata 標註第 5/6 條被取代）、`design/D-011` §1 errata、`docs/deployment-runbook.md` §2.1（AC-8 四要素）。新增測試 3 檔＋改寫 3 處。機器關卡：**lint 0／build 綠／368 tests 全綠（基線 358＋10，零回歸）／`harness:check --strict` 全過（AC 覆蓋 193/193）** |
@@ -140,6 +142,28 @@
   - 未 commit、未 push；變更留在 `feat/t-032-edit-billing-mode` 工作區待 Orchestrator 驗收。**未提議
     PROPOSE → DONE**：機器關卡（lint/build/harness:check/test）一項都沒能實際跑過，依 CLAUDE.md §6
     第 0 條「未全綠不得送模型審查」，這關必須先由具備 node 環境的人/機器補驗證。
+- **T-032（測試檔假綠防護）筆記**
+  - **17 個錯誤的分類與處置**：真缺陷 3 類（fixture 缺欄位 / deps 塞不存在屬性 / seed 腳本用已改名欄位），
+    其餘 9 個 `noUncheckedIndexedAccess`、3 個 stale `@ts-expect-error`、1 個 `import.meta`（TS1343）。
+    全部就地修，零 `any`／零 `@ts-ignore`／零 exclude 迴避／零嚴格度放寬。
+  - **關於「測試自以為注入了 deps、其實沒有」的查核結果（派工單要求先確認斷言是否假通過）**：
+    逐一核對 `RegistrationService` 與 `EventService` 的 constructor，被移除的 `runInTransaction`／`registrations`／`processed`
+    **從未被這兩個 class 讀取**——`RegistrationService` 真正需要的是 `runImmediate`，測試本來就正確傳了。
+    因此屬「多傳了沒人要的東西」，不是「該注入卻沒注入」。**沒有守衛被靜默 noop、沒有斷言是假通過**，未改任何斷言。
+  - **`scripts/seed-open-event.ts` 原本就是壞的**：D-008 把 `events.event_date`/`event_time` 併為 UTC 的 `event_datetime` 後，
+    這支腳本沒跟著改，跑起來必炸（`event_datetime` NOT NULL）。已改用 `taipeiToUtcIso(date, time)`，與 `event-service.ts` 正式路徑同一函式。
+    這正是「scripts/ 不在任何關卡涵蓋範圍內」的代價——本次把 `scripts/` 一併納入 typecheck 就是為了不再發生。
+  - **`import.meta` 沒有用放寬 module 的方式解**：改用 `join(__dirname, ...)`，與同 repo `metrics-sql.test.ts:14` 既有寫法一致。
+    若改 test tsconfig 的 `module` 為 esnext，型別檢查的模組解析語意就會和 build（commonjs）分岔，等於再開一個假綠的口子。
+  - **`nthRow()` 而非 `?.`／`!`**：`?.` 會讓 `expect(a?.x).toBe(b?.y)` 在兩邊都 undefined 時假通過（正是本任務要消滅的東西），
+    `!` 等於局部關掉 `noUncheckedIndexedAccess`。改為取不到就 throw，斷言強度不降反升。
+    取名 `nthRow` 是因為 `groups-backfill.test.ts` / `handler.groups.test.ts` 兩檔都已有名為 `row` 的區域變數（第一版命名為 `row` 時撞名，tsc 當場抓到）。
+  - **反向驗證做了兩次**（G4）：測試檔一次（`list-formatter.test.ts` capacity 改字串 → TS2322 exit 2）、
+    `scripts/` 一次（`metrics-report.ts` 參數型別 → TS2345），證明新關卡對兩個新涵蓋範圍都真的會抓。原始輸出在審查包 §3。
+  - **本機環境**：Docker Desktop 未啟動，已自行啟動並 `docker compose up -d`（`golf-reserv-pg-test` 5433）後才跑 `npm test`。
+  - **`check_board_sync.py` 目前會報一行**：`T-032 提議 → DONE，但 task-board 尚未裁定`。這是該 check 的設計行為
+    （待裁定訊號），寫 PROPOSE 之前三個 check 全綠；orchestrator 於 task-board 裁定後即恢復全綠。未為此改 task-board。
+  - 未 commit、未 push；未動 `docs/task-board.md`（其工作區既有的 T-032 那一行是 orchestrator 派工時寫的，非我所改）。
 
 ## 我要回報給 Orchestrator 的事項
 | 類型（阻塞/契約疑義/重複問題/建議） | 內容 |

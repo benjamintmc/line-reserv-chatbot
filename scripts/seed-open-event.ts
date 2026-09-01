@@ -25,6 +25,7 @@ import { createPool } from '../src/db';
 import { runMigrations } from '../src/db/migrate';
 import { UserRepository } from '../src/db/repositories/user-repository';
 import { EventRepository } from '../src/db/repositories/event-repository';
+import { taipeiToUtcIso } from '../src/db/time';
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -80,8 +81,8 @@ async function main(): Promise<void> {
     const event = await events.create({
       groupId,
       hostUserId: host.id,
-      eventDate,
-      eventTime,
+      // D-008 §3：events.event_datetime 存 UTC ISO-8601，由台灣本地日期＋時間合併轉換。
+      eventDatetime: taipeiToUtcIso(eventDate, eventTime),
       location,
       capacity,
       pricePerPerson,

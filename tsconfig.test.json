@@ -1,0 +1,14 @@
+{
+  // 型別檢查專用設定（T-032）：主 tsconfig 的 include/exclude 只涵蓋生產碼，
+  // 因此 `npm run build` 綠證明不了「測試與 scripts 的呼叫端型別正確」。
+  // 本檔把 *.test.ts / __tests__/ / scripts/ / test/ 一併納入檢查，只做 noEmit。
+  // 嚴格度沿用主 tsconfig（strict / noUncheckedIndexedAccess），不得放寬。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // rootDir 放寬到 repo 根：檢查範圍跨出 src（scripts/、test/）。
+    "rootDir": "."
+  },
+  "include": ["src", "scripts", "test"],
+  "exclude": ["node_modules", "dist"]
+}

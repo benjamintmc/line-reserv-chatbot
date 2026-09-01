@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Client } from 'pg';
 import { createPool } from '../index';
 
@@ -51,7 +52,8 @@ describe('D-014 連線 TLS 設定', () => {
   });
 
   it('[D-014 AC-4] src/db/index.ts 不含 rejectUnauthorized', () => {
-    const src = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+    // 以 __dirname 定位（與其他測試一致）；import.meta 在 commonjs 型別設定下不可用（TS1343）。
+    const src = readFileSync(join(__dirname, '..', 'index.ts'), 'utf8');
     // 註解說明用語不算違規，只禁真正的設定值寫法。
     expect(src).not.toMatch(/rejectUnauthorized\s*:/);
   });

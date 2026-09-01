@@ -47,6 +47,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # 型別檢查涵蓋測試檔與 scripts/（T-032）：主 tsconfig 的 include 只有 src 且排除 *.test.ts，
+      # 因此 build 綠證明不了測試呼叫端的型別正確（介面加必填欄位時漏改的測試會靜默假通過）。
+      - name: Typecheck (含測試檔與 scripts)
+        run: npm run typecheck
+
       - name: Build
         run: npm run build
 
