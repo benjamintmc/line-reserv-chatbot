@@ -81,3 +81,14 @@ describe('D-014 / D-016 設定與文件落點', () => {
     expect(env).toMatch(/NODE_ENV=production/);
   });
 });
+
+describe('D-019 機器關卡落點', () => {
+  it('[D-019 AC-8] 四道機器關卡指令俱在（lint/build/test/harness:check）', () => {
+    // AC-8 的內容是「四關全綠」，本身無法由執行期行為斷言（同 D-014 AC-5 的既有做法）：
+    // 這裡只釘住四條指令不得被刪改，實際全綠的輸出以審查包（RP-T-034）為證據。
+    const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+    for (const s of ['lint', 'build', 'test', 'harness:check']) {
+      expect(pkg.scripts[s], `package.json 缺少 script: ${s}`).toBeTruthy();
+    }
+  });
+});

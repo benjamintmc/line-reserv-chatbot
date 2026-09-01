@@ -267,7 +267,7 @@ describe('EventService.editEvent（D-015）', () => {
       expect(r1.before).toBe('2000');
       expect(r1.after).toBe('2500');
       expect(r1.perPerson).toBeUndefined(); // per_person 不帶攤額
-      expect(r1.feeModeSwitched).toBeUndefined(); // 未切換，等同 false（省略欄位）
+      expect(r1.feeModeSwitched).toBe(false); // D-019 §一.3：恆賦值 switched；未切換即 false
     }
     const a1 = await t.events.getById(ev.id);
     expect(a1?.price_per_person).toBe(2500);
@@ -310,7 +310,7 @@ describe('EventService.editEvent（D-015）', () => {
       expect(r.after).toBe('4000');
       expect(r.confirmedCount).toBe(3);
       expect(r.perPerson).toBe(Math.ceil(4000 / 3)); // 以改後 venue_fee 算，非 3000
-      expect(r.feeModeSwitched).toBeUndefined();
+      expect(r.feeModeSwitched).toBe(false); // 同上：同模式改金額 → false，非省略
     }
     const after = await t.events.getById(ev.id);
     expect(after?.venue_fee).toBe(4000);
