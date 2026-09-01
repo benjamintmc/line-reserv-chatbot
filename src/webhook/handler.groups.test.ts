@@ -73,14 +73,11 @@ function makeHandler(
       processed: t.processed,
       runImmediate: t.runImmediate,
       logError: () => {},
-      runInTransaction: t.runInTransaction,
     }),
     eventService: new EventService({
       events: t.events,
       users: t.users,
-      registrations: t.registrations,
       conversations: t.conversations,
-      processed: t.processed,
       runInTransaction: t.runInTransaction,
       runImmediate: t.runImmediate,
       superAdminUserIds: [],
@@ -90,6 +87,16 @@ function makeHandler(
     profile: profileReturning('報名者'),
     logError: () => {},
   });
+}
+
+/**
+ * noUncheckedIndexedAccess 下取第 i 列：不存在就當場失敗。
+ * 刻意不用 `?.`／`!`——前者讓「兩邊都 undefined」的假通過溜過去，後者等於關掉檢查。
+ */
+function nthRow<T>(rows: readonly T[], i: number): T {
+  const r = rows[i];
+  if (r === undefined) throw new Error(`預期存在第 ${i} 列，實際只有 ${rows.length} 列`);
+  return r;
 }
 
 describe('D-018 觸及與擴散觀測', () => {
@@ -156,7 +163,7 @@ describe('D-018 觸及與擴散觀測', () => {
     expect(summary.getGroupSummary).toHaveBeenCalledTimes(1);
 
     const all = await t.pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM groups');
-    expect(all.rows[0].n).toBe(1);
+    expect(nthRow(all.rows, 0).n).toBe(1);
   });
 
   it('[D-018 AC-5] 名稱查詢拋錯：group_name 留白，且原有回覆逐字不受影響', async () => {
@@ -206,6 +213,6 @@ describe('D-018 觸及與擴散觀測', () => {
     } as unknown as WebhookEvent);
 
     const res = await t.pool.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM groups');
-    expect(res.rows[0].n).toBe(0);
+    expect(nthRow(res.rows, 0).n).toBe(0);
   });
 });

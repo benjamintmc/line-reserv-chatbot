@@ -16,6 +16,10 @@ const EVENT: EventRow = {
   location: '東方球場',
   capacity: 16,
   price_per_person: 2200,
+  // D-005 §1：per_person 模式（venue_fee/settled_per_person 恆為 NULL）。
+  price_mode: 'per_person',
+  venue_fee: null,
+  settled_per_person: null,
   status: 'open',
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',

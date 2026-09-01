@@ -151,11 +151,11 @@ describe('parseCommand (D-002 command parser)', () => {
       'x'.repeat(100000),
       ' ￿😀',
       '+'.repeat(5000),
-      // @ts-expect-error 防禦性：非字串輸入不得拋例外。
+      // 防禦性：非字串輸入不得拋例外（陣列型別為 unknown[]，故毋須 ts-expect-error）。
       null,
-      // @ts-expect-error 防禦性：非字串輸入不得拋例外。
+      // 防禦性：非字串輸入不得拋例外（陣列型別為 unknown[]，故毋須 ts-expect-error）。
       undefined,
-      // @ts-expect-error 防禦性：非字串輸入不得拋例外。
+      // 防禦性：非字串輸入不得拋例外（陣列型別為 unknown[]，故毋須 ts-expect-error）。
       12345,
     ];
     for (const w of weird) {
