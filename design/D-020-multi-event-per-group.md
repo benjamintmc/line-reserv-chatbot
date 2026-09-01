@@ -8,6 +8,7 @@
 > `D-014-db-tls-verification.md` 維持不動、不受影響。
 
 - 狀態：**APPROVED（2026-09-01）**——R2 雙審通過（design-reviewer 1 blocker 已依使用者裁決修正 + 3 nit 採納；architect-reviewer 1 blocker〔B1，跨群引言防禦缺口〕經 dispatch 層單點驗證修正並複審 PASS + 2 nit 採納）+ 使用者最終核可。解鎖 T-033
+- AC 覆蓋：**待動工豁免**（任務 T-033 尚未開始，30 條 AC 暫不計入 `check_ac_coverage`；**動工時必須移除本行**，否則 AC 將不受檢查＝假綠）
 - 撰寫者：architect
 - 風險等級：**R2（高）**——`src/db/migrations/`、`src/domain/event-service.ts`、
   `src/domain/registration-service.ts`、`src/domain/grouping-service.ts`（授權判定入口）皆屬
