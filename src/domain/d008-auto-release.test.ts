@@ -115,15 +115,25 @@ describe('D-008 單場名額自動釋放', () => {
     }
   });
 
+  // D-027（T-033c）後語意調整：「未過期 open 仍擋團」的依據由「已有任何 active」收斂為
+  // **場地+時間皆相同**（`duplicate_event`）。故 fixture 改以與 seedConfirmable 的 draft
+  // （東方球場 / 台灣 2999-08-15 07:30 → UTC 2999-08-14T23:30:00Z）相同的場地+時間構造，斷言力
+  // 不減（仍驗「不 flip、不建立、清 conversation」）；入口早退的驗證點改為 `handleOneline`
+  // ——`startCreation` 的查重早退已依 D-027 §3 移除（欄位全空無從比對場地+時間）。
   it('[D-008 AC-3] 未過期 open 仍擋團（不 flip、不建立；confirm 分支清 conversation）', async () => {
-    const active = await createEvent(t, { eventDatetime: FUTURE_ISO, status: 'open' });
+    const active = await createEvent(t, { eventDatetime: '2999-08-14T23:30:00Z', status: 'open' });
     const evt = makeEvt(t);
-    // 入口早退。
-    expect((await evt.startCreation({ groupId: G, executorLineUserId: HOST, messageId: nextMid() })).kind).toBe('already_active');
-    // confirm 分支：布置 awaiting_confirm，confirm → already_active + 清 conversation、不 flip、不建立。
+    // 入口早退（一行式：欄位齊備 → 應用層快速失敗）。
+    const entry = await evt.handleOneline({
+      groupId: G, executorLineUserId: HOST, messageId: nextMid(),
+      date: '2999-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person',
+    });
+    expect(entry.kind).toBe('duplicate_event');
+    expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 不寫 conversation_states
+    // confirm 分支：布置 awaiting_confirm，confirm → duplicate_event + 清 conversation、不 flip、不建立。
     await seedConfirmable(t, 'U-other');
     const r = await evt.confirm({ groupId: G, executorLineUserId: 'U-other', messageId: nextMid(), hostDisplayName: '別人' });
-    expect(r.kind).toBe('already_active');
+    expect(r.kind).toBe('duplicate_event');
     expect(await t.conversations.get(G, 'U-other')).toBeUndefined(); // nit-1 清 conversation
     expect((await t.events.getById(active.id))?.status).toBe('open'); // 未 flip
     const cnt = await t.pool.query<{ n: string }>("SELECT COUNT(*) AS n FROM events WHERE group_id = $1", [G]);
@@ -177,7 +187,7 @@ describe('D-008 單場名額自動釋放', () => {
     expect(ppText).not.toContain('預估');
   });
 
-  it('[D-008 AC-6] 兩並行開團僅一成功（同過期 open flip + insert；另撞 23505 → already_active）', async () => {
+  it('[D-008 AC-6] 兩並行開團僅一成功（同過期 open flip + insert；另撞 23505 → duplicate_event）', async () => {
     const old = await createEvent(t, { eventDatetime: PAST_ISO, status: 'open' });
     const evt = makeEvt(t);
     await seedConfirmable(t, 'U-1');
@@ -187,7 +197,7 @@ describe('D-008 單場名額自動釋放', () => {
       evt.confirm({ groupId: G, executorLineUserId: 'U-2', messageId: nextMid(), hostDisplayName: 'U2' }),
     ]);
     const kinds = [r1.kind, r2.kind].sort();
-    expect(kinds).toEqual(['already_active', 'created']);
+    expect(kinds).toEqual(['created', 'duplicate_event']); // .sort() 後的字典序（改名後 created 在前）
     // 舊過期 open 已 flip done；結束後仍只有一場 {draft,open}。
     // D-021 §1（0006）後此斷言的依據已改變：不再是「同群至多一場」的 DB 硬限制，而是兩個
     // confirm 的 draft 場地+時間完全相同 ⇒ 落敗者撞 ux_events_active_group_venue_time（23505）

@@ -50,11 +50,11 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     await t.cleanup();
   });
 
-  it('[D-004 AC-12] confirm 遇 23505 但命中其他 constraint（非 ux_events_active_group_venue_time）→ 必須 re-throw，不吞成 already_active', async () => {
+  it('[D-004 AC-12] confirm 遇 23505 但命中其他 constraint（非 ux_events_active_group_venue_time）→ 必須 re-throw，不吞成 duplicate_event', async () => {
     const svc = makeSvc(t);
     await seedAwaitingConfirm(t);
     // 關鍵：code 命中 23505，但 constraint 指向 ux_users_line_user_id（非 ux_events_active_group_venue_time）。
-    // 若窄捕捉退化為「只看 code」，此錯誤會被誤吞成 already_active。正確行為：向上拋。
+    // 若窄捕捉退化為「只看 code」，此錯誤會被誤吞成 duplicate_event。正確行為：向上拋。
     const boom = Object.assign(new Error('duplicate key value violates unique constraint "ux_users_line_user_id"'), {
       code: '23505',
       constraint: 'ux_users_line_user_id',
@@ -66,12 +66,12 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     ).rejects.toThrow('ux_users_line_user_id');
     spy.mockRestore();
 
-    // 交易回滾：未 mark、conversation 未被清（不得走 already_active 的清除路徑）。
+    // 交易回滾：未 mark、conversation 未被清（不得走 duplicate_event 的清除路徑）。
     expect(await t.processed.has('m')).toBe(false);
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
   });
 
-  it('[D-004 AC-12] confirm 撞 ux_events_active_group_venue_time（23505 + constraint）→ 仍窄捕捉為 already_active', async () => {
+  it('[D-004 AC-12] confirm 撞 ux_events_active_group_venue_time（23505 + constraint）→ 仍窄捕捉為 duplicate_event', async () => {
     const svc = makeSvc(t);
     await seedAwaitingConfirm(t);
     // D-021 G8：窄捕捉比對**新**索引名（0006 已 DROP 舊的 ux_events_active_group）。
@@ -82,7 +82,7 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     const spy = vi.spyOn(EventRepository.prototype, 'create').mockRejectedValue(dup);
 
     const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'm', hostDisplayName: '主辦人' });
-    expect(r.kind).toBe('already_active');
+    expect(r.kind).toBe('duplicate_event');
     spy.mockRestore();
     expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 清落敗者流程
   });

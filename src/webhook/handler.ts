@@ -96,6 +96,7 @@ import {
   formatNotAuthorized,
   formatMyId,
   formatAlreadyActiveEntry,
+  formatGroupCapacityReached,
   formatAlreadyClosed,
   formatNoActiveEvent,
   formatOnelineFormatHelp,
@@ -570,11 +571,14 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   function renderCreateEntry(result: CreateEntryResult): HandleEventResult {
     // D-006：開團全開 → CreateEntryResult 無 not_authorized 成員。
     switch (result.kind) {
-      case 'already_active':
-        // (I)。**刻意不附錨點**（相位，D-029 §5.3）：表列的是 T-033c 才存在的
-        // `duplicate_event`；`already_active` 是 T-033c 會整段移除的入口拒絕（開團查重上線後
-        // 由 `duplicate_event` 取代），此刻附上等於偷跑一個表上沒有的分支（G4）。
-        return plain(toLineMessage(formatAlreadyActiveEntry(result.event)));
+      case 'duplicate_event':
+        // (I)。D-029 §5.3 表列 `renderCreateEntry / duplicate_event` → `result.event.id`；
+        // T-033a~b 期間該位置是 `already_active`、依相位刻意不附錨點（errata E1），T-033c 改名
+        // 落地即**必須**補上，否則使用者引用該則訊息會失效。
+        return anchored(result.event.id, toLineMessage(formatAlreadyActiveEntry(result.event)));
+      case 'group_open_limit':
+        // (I2)。D-029 §5.3「明確不附」清單明列：純上限拒絕，無單一衝突列可指涉。
+        return plain(toLineMessage(formatGroupCapacityReached()));
       case 'duplicate':
         return NO_REPLY;
       case 'flow_started': {
@@ -617,8 +621,11 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'created':
         // (D)。D-029 §5.3：**新建活動的公告訊息，最重要的錨點**——群組後續的 quote 幾乎都指向它。
         return anchored(result.event.id, toLineMessage(formatOpenAnnouncement(result.event)));
-      case 'already_active':
-        return plain(toLineMessage(formatRaceLost())); // (L)
+      case 'duplicate_event':
+        // (L)。不帶 event 明細（DB race-lost catch 不易得知衝突列）→ 不附錨點（D-029 §5.3）。
+        return plain(toLineMessage(formatRaceLost()));
+      case 'group_open_limit':
+        return plain(toLineMessage(formatGroupCapacityReached())); // (I2)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -631,8 +638,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'noop':
       case 'duplicate':
         return NO_REPLY;
-      case 'already_active':
-        return plain(toLineMessage(formatRaceLost())); // (L)
+      case 'duplicate_event':
+        return plain(toLineMessage(formatRaceLost())); // (L)；不帶明細 → 不附錨點（D-029 §5.3）
+      case 'group_open_limit':
+        return plain(toLineMessage(formatGroupCapacityReached())); // (I2)
       case 'created':
         return anchored(result.event.id, toLineMessage(formatOpenAnnouncement(result.event))); // (D)
       default: {

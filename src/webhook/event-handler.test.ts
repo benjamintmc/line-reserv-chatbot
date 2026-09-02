@@ -102,6 +102,44 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(textOf(out)).toContain('格式：開團');
   });
 
+  // 端到端接線（domain 層另有 src/domain/event-duplicate-limit.test.ts 覆蓋判定本身）：
+  // 兩則拒絕文案必須各走各的 render 分支，不得互相替代（D-028 G13）。
+  it('[D-028 AC-25/AC-26 / D-027 AC-3] 端到端：3 場 open → 兩入口皆回上限文案（逐字）；降為 2 場後同場地+時間 → 回查重文案', async () => {
+    const handler = makeHandler(t);
+    const host = await t.users.upsert(HOST, '主辦人');
+    const mkOpen = (location: string, at: string): Promise<unknown> =>
+      t.events.create({
+        groupId: G, hostUserId: host.id, eventDatetime: at, location,
+        capacity: 16, pricePerPerson: 2200, priceMode: 'per_person', status: 'open',
+      });
+    await mkOpen('東方球場', '2999-08-14T23:30:00Z'); // 台灣 2999-08-15 07:30
+    await mkOpen('林口高球場', '2999-08-15T23:30:00Z');
+    await mkOpen('大屯高球場', '2999-08-16T23:30:00Z');
+    const LIMIT_TEXT = '此群組已有 3 場進行中的球敘，請等其中一場結束後再開新團';
+
+    // (b) 逐步問答入口 → 上限文案、不進入 awaiting_date。
+    const stepwise = await handleMessages(handler, groupTextEvent('開團', { messageId: 'lim-1' }));
+    expect(textOf(stepwise)).toBe(LIMIT_TEXT);
+    expect(await t.conversations.get(G, HOST)).toBeUndefined();
+
+    // (a) 一行式入口，**刻意與既有第一場同場地+時間** → 仍須回上限文案（先上限、後查重）。
+    const oneline = await handleMessages(handler,
+      groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { messageId: 'lim-2' }),
+    );
+    expect(textOf(oneline)).toBe(LIMIT_TEXT);
+    expect(await t.conversations.get(G, HOST)).toBeUndefined();
+
+    // 候選降為 2（closed ∉ {draft,open}）→ 同場地+時間改由查重擋下，回**另一則**文案。
+    const actives = await t.events.listActiveByGroup(G);
+    await t.events.updateStatus(actives.at(-1)!.id, 'closed');
+    const dup = await handleMessages(handler,
+      groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { messageId: 'lim-3' }),
+    );
+    expect(textOf(dup)).not.toBe(LIMIT_TEXT);
+    expect(textOf(dup)).toContain('目前已有進行中的活動');
+    expect(textOf(dup)).toContain('東方球場');
+  });
+
   it('[D-004 AC-15] mid-flow per-user 隔離：host 開團中，成員 +1 照走 D-003（不被當作答案）', async () => {
     const handler = makeHandler(t);
     // host 啟動逐步問答 → awaiting_date。

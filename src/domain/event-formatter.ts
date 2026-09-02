@@ -240,6 +240,21 @@ export function formatAlreadyActiveEntry(event: EventRow): MessageDescriptor {
   );
 }
 
+/**
+ * (I2) 同群 open 活動數已達上限（D-028 §3.5；`group_open_limit`）。
+ *
+ * **逐字釘死**（2026-08-31 使用者裁決，一字不可改），一行式入口／逐步問答入口／`確認` 的權威
+ * 拒絕三處共用同一句。**不帶任何活動明細**（純上限拒絕，無單一衝突列可指涉——與 (I)
+ * `formatAlreadyActiveEntry` 帶衝突活動摘要不同，兩則文案不得互相替代，G13）。
+ *
+ * 句中的「3」**刻意寫死不內插** `MAX_OPEN_EVENTS_PER_GROUP`：文案是逐字釘死的裁決結果（內插會讓
+ * 常數一改就悄悄改動已釘死的句子），且本檔為零耦合純函式（不 import domain service，避免循環）。
+ * 上限值若日後調整，屬需重新裁決文案的變更，兩處一併改。
+ */
+export function formatGroupCapacityReached(): MessageDescriptor {
+  return text('此群組已有 3 場進行中的球敘，請等其中一場結束後再開新團');
+}
+
 // (J) 生命週期指令但狀態不符：已關閉報名（D-008：closed 釋放後 close 路徑不可達，保留供防禦）。
 //
 // D-017 文案收斂：原為「活動已關閉報名。」，與同一狀態在別處的說法（本檔 §189/§444、
