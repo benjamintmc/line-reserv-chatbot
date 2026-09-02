@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createTestDb, seedEvent, type TestDb } from './test-db';
+import { createTestDb, seedEvent, type TestDb, activeEventId } from './test-db';
 import { nowIso } from '../time';
 import { RegistrationService } from '../../domain/registration-service';
 import { EventService } from '../../domain/event-service';
@@ -45,8 +45,8 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
     // 完整 D-001/D-003/D-004/D-005/D-006 AC 由各自 *.test.ts 於 PG 執行（全綠）；此為代表性覆核。
     const { event } = await seedEvent(t, { capacity: 1, groupId: 'G1' });
     const svc = makeReg(t);
-    const a = await svc.signup({ groupId: 'G1', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'a1', count: 1 });
-    const b = await svc.signup({ groupId: 'G1', executorLineUserId: 'U-b', executorDisplayName: 'B', messageId: 'b1', count: 1 });
+    const a = await svc.signup({ groupId: 'G1', eventId: await activeEventId(t, 'G1'), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'a1', count: 1 });
+    const b = await svc.signup({ groupId: 'G1', eventId: await activeEventId(t, 'G1'), executorLineUserId: 'U-b', executorDisplayName: 'B', messageId: 'b1', count: 1 });
     expect(a.kind === 'ok' && a.outcome).toBe('confirmed');
     expect(b.kind === 'ok' && b.outcome).toBe('waitlisted');
     expect(await t.registrations.countConfirmed(event.id)).toBe(1);
@@ -147,8 +147,8 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
   it('[D-007 AC-8] ON CONFLICT (message_id) DO NOTHING：同 id 第二次 rowCount=0 略過，無重複有效 registrations', async () => {
     const { event } = await seedEvent(t, { capacity: 4, groupId: 'G8' });
     const svc = makeReg(t);
-    const r1 = await svc.signup({ groupId: 'G8', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'dup8', count: 1 });
-    const r2 = await svc.signup({ groupId: 'G8', executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'dup8', count: 1 });
+    const r1 = await svc.signup({ groupId: 'G8', eventId: await activeEventId(t, 'G8'), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'dup8', count: 1 });
+    const r2 = await svc.signup({ groupId: 'G8', eventId: await activeEventId(t, 'G8'), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'dup8', count: 1 });
     expect(r1.kind).toBe('ok');
     expect(r2.kind).toBe('duplicate');
     expect(await t.registrations.countConfirmed(event.id)).toBe(1);
@@ -157,23 +157,26 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
     expect(await t.processed.markProcessed('x8')).toBe(false);
   });
 
-  it('[D-007 AC-9] 窄捕捉 23505 + constraint===ux_events_active_group → already_active；其他錯誤 re-throw', async () => {
-    const { host } = await seedEvent(t, { capacity: 4, groupId: 'G9' });
-    // (a) 真實重複 active group → pg 錯誤帶 code 23505 + constraint（窄捕捉的判別鍵）。
+  it('[D-007 AC-9] 窄捕捉 23505 + constraint===ux_events_active_group_venue_time → already_active；其他錯誤 re-throw', async () => {
+    const { host, event: seeded } = await seedEvent(t, { capacity: 4, groupId: 'G9' });
+    // (a) 真實重複（D-021 §1：0006 後判別鍵為「同群 active 內場地+時間相同」）→ pg 錯誤帶
+    //     code 23505 + constraint = 新索引名（窄捕捉的判別鍵，G8）。
     let caught: unknown;
     try {
-      await t.events.create({ groupId: 'G9', hostUserId: host.id, eventDatetime: '2026-09-01T00:00:00Z', location: 'Y', capacity: 4, status: 'draft' });
+      await t.events.create({ groupId: 'G9', hostUserId: host.id, eventDatetime: seeded.event_datetime, location: seeded.location, capacity: 4, status: 'draft' });
     } catch (e) {
       caught = e;
     }
     const err = caught as { code?: string; constraint?: string };
     expect(err.code).toBe('23505');
-    expect(err.constraint).toBe('ux_events_active_group');
+    expect(err.constraint).toBe('ux_events_active_group_venue_time');
 
     // (b) confirm 交易內 INSERT 撞約束（pre-check 以 prototype spy 失效模擬 race）→ 窄捕捉 already_active。
     const evt = makeEvt(t);
-    await t.conversations.upsert({ lineUserId: 'U-h2', groupId: 'G9', state: 'awaiting_confirm', payload: JSON.stringify({ date: '2026-09-02', time: '08:00', location: 'Z', capacity: 4, price: 0, priceMode: 'per_person' }) });
-    const spy = vi.spyOn(EventRepository.prototype, 'findActiveByGroup').mockResolvedValue(undefined);
+    // draft 的場地+時間須與 G9 既有 active 相同（seedEvent：林口高球場 / 2999-01-01T00:00:00Z
+    // ＝台灣 2999-01-01 08:00）才會撞 ux_events_active_group_venue_time（D-021 §1）。
+    await t.conversations.upsert({ lineUserId: 'U-h2', groupId: 'G9', state: 'awaiting_confirm', payload: JSON.stringify({ date: '2999-01-01', time: '08:00', location: '林口高球場', capacity: 4, price: 0, priceMode: 'per_person' }) });
+    const spy = vi.spyOn(EventRepository.prototype, 'listActiveByGroup').mockResolvedValue([]);
     const r = await evt.confirm({ groupId: 'G9', executorLineUserId: 'U-h2', messageId: 'm9', hostDisplayName: 'H2' });
     spy.mockRestore();
     expect(r.kind).toBe('already_active');

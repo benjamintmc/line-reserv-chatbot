@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { createTestDb, seedEvent, PAST_ISO, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, seedEvent, PAST_ISO, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { RegistrationService } from './registration-service';
 
 // D-010 加開名額（`加開 N`）：AC-1..8。
@@ -24,9 +24,10 @@ function nextMid(): string {
 }
 
 /** 以 signup 填 count 位正取（同一 owner，單批 confirmed）。 */
-async function fillConfirmed(svc: RegistrationService, groupId: string, count: number): Promise<void> {
+async function fillConfirmed(t: TestDb, svc: RegistrationService, groupId: string, count: number): Promise<void> {
   await svc.signup({
     groupId,
+    eventId: await activeEventId(t, groupId),
     executorLineUserId: 'U-fill',
     executorDisplayName: '填充',
     messageId: nextMid(),
@@ -36,6 +37,7 @@ async function fillConfirmed(svc: RegistrationService, groupId: string, count: n
 
 /** 逐一加候補（各自 owner，seq 依序遞增）。回傳各人 line userId。 */
 async function addWaitlisters(
+  t: TestDb,
   svc: RegistrationService,
   groupId: string,
   names: string[],
@@ -43,6 +45,7 @@ async function addWaitlisters(
   for (const name of names) {
     await svc.signup({
       groupId,
+      eventId: await activeEventId(t, groupId),
       executorLineUserId: `U-${name}`,
       executorDisplayName: name,
       messageId: nextMid(),
@@ -64,12 +67,13 @@ describe('RegistrationService.addCapacity（D-010）', () => {
   it('[D-010 AC-1] capacity=16/confirmed=16/waitlist=[w1,w2]，host 加開 3 → capacity=19、w1w2 遞補、剩餘 1', async () => {
     const { event } = await seedEvent(t, { capacity: 16, groupId: 'G' });
     const svc = makeService(t);
-    await fillConfirmed(svc, 'G', 16);
-    await addWaitlisters(svc, 'G', ['w1', 'w2']);
+    await fillConfirmed(t, svc, 'G', 16);
+    await addWaitlisters(t, svc, 'G', ['w1', 'w2']);
     expect(await t.registrations.listWaitlist(event.id)).toHaveLength(2);
 
     const r = await svc.addCapacity({
       groupId: 'G',
+      eventId: await activeEventId(t, 'G'),
       executorLineUserId: 'U-host',
       messageId: nextMid(),
       count: 3,
@@ -88,11 +92,12 @@ describe('RegistrationService.addCapacity（D-010）', () => {
   it('[D-010 AC-2] capacity=10/confirmed=10/waitlist 5，加開 2 → 恰遞補最小 seq 2 人（12/12）、餘 3 候補', async () => {
     const { event } = await seedEvent(t, { capacity: 10, groupId: 'G' });
     const svc = makeService(t);
-    await fillConfirmed(svc, 'G', 10);
-    await addWaitlisters(svc, 'G', ['a', 'b', 'c', 'd', 'e']);
+    await fillConfirmed(t, svc, 'G', 10);
+    await addWaitlisters(t, svc, 'G', ['a', 'b', 'c', 'd', 'e']);
 
     const r = await svc.addCapacity({
       groupId: 'G',
+      eventId: await activeEventId(t, 'G'),
       executorLineUserId: 'U-host',
       messageId: nextMid(),
       count: 2,
@@ -114,12 +119,12 @@ describe('RegistrationService.addCapacity（D-010）', () => {
   it('[D-010 AC-3] 兩則不同 messageId 的 加開 1 真並行 → 序列化後 capacity+2、有效正取數 ≤ 最終 capacity', async () => {
     const { event } = await seedEvent(t, { capacity: 16, groupId: 'G' });
     const svc = makeService(t);
-    await fillConfirmed(svc, 'G', 16);
-    await addWaitlisters(svc, 'G', ['w1', 'w2']);
+    await fillConfirmed(t, svc, 'G', 16);
+    await addWaitlisters(t, svc, 'G', ['w1', 'w2']);
 
     const [r1, r2] = await Promise.all([
-      svc.addCapacity({ groupId: 'G', executorLineUserId: 'U-host', messageId: nextMid(), count: 1 }),
-      svc.addCapacity({ groupId: 'G', executorLineUserId: 'U-host', messageId: nextMid(), count: 1 }),
+      svc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-host', messageId: nextMid(), count: 1 }),
+      svc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-host', messageId: nextMid(), count: 1 }),
     ]);
     expect([r1.kind, r2.kind]).toEqual(['ok', 'ok']);
     const finalCap = (await t.events.getById(event.id))!.capacity;
@@ -135,7 +140,7 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     {
       const { event } = await seedEvent(t, { capacity: 8, groupId: 'Gc', status: 'closed' });
       const svc = makeService(t);
-      const r = await svc.addCapacity({ groupId: 'Gc', executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
+      const r = await svc.addCapacity({ groupId: 'Gc', eventId: await activeEventId(t, 'Gc'), executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
       expect(r.kind).toBe('no_open_event');
       expect((await t.events.getById(event.id))!.capacity).toBe(8);
     }
@@ -143,7 +148,7 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     {
       const { event } = await seedEvent(t, { capacity: 8, groupId: 'Gx', status: 'cancelled' });
       const svc = makeService(t);
-      const r = await svc.addCapacity({ groupId: 'Gx', executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
+      const r = await svc.addCapacity({ groupId: 'Gx', eventId: await activeEventId(t, 'Gx'), executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
       expect(r.kind).toBe('no_open_event');
       expect((await t.events.getById(event.id))!.capacity).toBe(8);
     }
@@ -151,14 +156,14 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     {
       const { event } = await seedEvent(t, { capacity: 8, groupId: 'Ge', status: 'open', eventDatetime: PAST_ISO });
       const svc = makeService(t);
-      const r = await svc.addCapacity({ groupId: 'Ge', executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
+      const r = await svc.addCapacity({ groupId: 'Ge', eventId: await activeEventId(t, 'Ge'), executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
       expect(r.kind).toBe('event_ended');
       expect((await t.events.getById(event.id))!.capacity).toBe(8);
     }
     // (d) 無活動 → no_open_event。
     {
       const svc = makeService(t);
-      const r = await svc.addCapacity({ groupId: 'G-none', executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
+      const r = await svc.addCapacity({ groupId: 'G-none', eventId: await activeEventId(t, 'G-none'), executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
       expect(r.kind).toBe('no_open_event');
     }
   });
@@ -168,6 +173,7 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     const strangerSvc = makeService(t); // 無 super-admin
     const r = await strangerSvc.addCapacity({
       groupId: 'G',
+      eventId: await activeEventId(t, 'G'),
       executorLineUserId: 'U-mallory',
       messageId: nextMid(),
       count: 2,
@@ -178,13 +184,13 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     expect(await t.users.getByLineUserId('U-mallory')).toBeUndefined();
 
     // host 可加開。
-    const rHost = await strangerSvc.addCapacity({ groupId: 'G', executorLineUserId: 'U-host', messageId: nextMid(), count: 1 });
+    const rHost = await strangerSvc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-host', messageId: nextMid(), count: 1 });
     expect(rHost.kind).toBe('ok');
     expect((await t.events.getById(event.id))!.capacity).toBe(9);
 
     // super-admin（非 host）可加開。
     const adminSvc = makeService(t, ['U-super']);
-    const rAdmin = await adminSvc.addCapacity({ groupId: 'G', executorLineUserId: 'U-super', messageId: nextMid(), count: 1 });
+    const rAdmin = await adminSvc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-super', messageId: nextMid(), count: 1 });
     expect(rAdmin.kind).toBe('ok');
     expect((await t.events.getById(event.id))!.capacity).toBe(10);
   });
@@ -192,10 +198,10 @@ describe('RegistrationService.addCapacity（D-010）', () => {
   it('[D-010 AC-6] 加開後 capacity 嚴格增加、無 confirmed→waitlist 降級', async () => {
     const { event } = await seedEvent(t, { capacity: 4, groupId: 'G' });
     const svc = makeService(t);
-    await fillConfirmed(svc, 'G', 4);
+    await fillConfirmed(t, svc, 'G', 4);
     const before = await t.registrations.listConfirmed(event.id);
 
-    const r = await svc.addCapacity({ groupId: 'G', executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
+    const r = await svc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
     expect(r.kind).toBe('ok');
     expect((await t.events.getById(event.id))!.capacity).toBe(6); // 嚴格增加
     // 既有正取無一被降級為 waitlist。
@@ -211,10 +217,10 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     const { event } = await seedEvent(t, { capacity: 999, groupId: 'G' });
     const svc = makeService(t);
     // 撐 1 位候補以驗證 over_limit 不觸發遞補。
-    await fillConfirmed(svc, 'G', 999);
-    await addWaitlisters(svc, 'G', ['w1']);
+    await fillConfirmed(t, svc, 'G', 999);
+    await addWaitlisters(t, svc, 'G', ['w1']);
 
-    const r = await svc.addCapacity({ groupId: 'G', executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
+    const r = await svc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-host', messageId: nextMid(), count: 2 });
     expect(r.kind).toBe('over_limit'); // 999+2=1001 > MAX_CAPACITY(1000)
     expect((await t.events.getById(event.id))!.capacity).toBe(999);
     expect(await t.registrations.listWaitlist(event.id)).toHaveLength(1); // 未遞補
@@ -224,11 +230,11 @@ describe('RegistrationService.addCapacity（D-010）', () => {
     const { event } = await seedEvent(t, { capacity: 8, groupId: 'G' });
     const svc = makeService(t);
     const dupMid = 'dup-1';
-    const r1 = await svc.addCapacity({ groupId: 'G', executorLineUserId: 'U-host', messageId: dupMid, count: 2 });
+    const r1 = await svc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-host', messageId: dupMid, count: 2 });
     expect(r1.kind).toBe('ok');
     expect((await t.events.getById(event.id))!.capacity).toBe(10);
 
-    const r2 = await svc.addCapacity({ groupId: 'G', executorLineUserId: 'U-host', messageId: dupMid, count: 2 });
+    const r2 = await svc.addCapacity({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-host', messageId: dupMid, count: 2 });
     expect(r2.kind).toBe('duplicate');
     expect((await t.events.getById(event.id))!.capacity).toBe(10); // 未再增
   });

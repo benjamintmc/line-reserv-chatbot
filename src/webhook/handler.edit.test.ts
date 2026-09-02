@@ -60,6 +60,7 @@ function makeHandler(
     runInTransaction: t.runInTransaction,
   });
   return createWebhookHandler({
+    events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping,
     service,

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { createTestDb, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { EventService } from './event-service';
 
 /**
@@ -89,7 +89,7 @@ describe('EventService 授權簡化（D-006）', () => {
     const svc = makeSvc(t, []);
     const X = 'U-x';
     await openEventBy(svc, X);
-    const r = await svc.closeEvent({ groupId: G, executorLineUserId: X, messageId: nextMid() });
+    const r = await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: X, messageId: nextMid() });
     expect(r.kind).toBe('ok');
     expect((await t.events.findLatestDisplayable(G))?.status).toBe('closed');
   });
@@ -98,10 +98,10 @@ describe('EventService 授權簡化（D-006）', () => {
     const svc = makeSvc(t, []);
     const X = 'U-x';
     await openEventBy(svc, X);
-    const r = await svc.cancelEvent({ groupId: G, executorLineUserId: X, messageId: nextMid() });
+    const r = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: X, messageId: nextMid() });
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') expect(r.event.status).toBe('cancelled');
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined();
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
   });
 
   it('[D-006 AC-4] 非建立者非 super-admin 關閉被拒，無 DB 變更（含 users 無新列）', async () => {
@@ -109,9 +109,9 @@ describe('EventService 授權簡化（D-006）', () => {
     const X = 'U-x';
     const Y = 'U-y';
     await openEventBy(svc, X);
-    const r = await svc.closeEvent({ groupId: G, executorLineUserId: Y, messageId: 'ry' });
+    const r = await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: Y, messageId: 'ry' });
     expect(r.kind).toBe('not_authorized');
-    expect((await t.events.findActiveByGroup(G))?.status).toBe('open'); // 狀態不變
+    expect(((await t.events.listActiveByGroup(G)).at(-1))?.status).toBe('open'); // 狀態不變
     expect(await t.users.getByLineUserId(Y)).toBeUndefined(); // 唯讀判定：未為 Y upsert 寫列
     expect(await t.processed.has('ry')).toBe(false); // 未 mark
   });
@@ -121,9 +121,9 @@ describe('EventService 授權簡化（D-006）', () => {
     const X = 'U-x';
     const Y = 'U-y';
     await openEventBy(svc, X);
-    const r = await svc.cancelEvent({ groupId: G, executorLineUserId: Y, messageId: 'ry2' });
+    const r = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: Y, messageId: 'ry2' });
     expect(r.kind).toBe('not_authorized');
-    expect((await t.events.findActiveByGroup(G))?.status).toBe('open');
+    expect(((await t.events.listActiveByGroup(G)).at(-1))?.status).toBe('open');
     expect(await t.users.getByLineUserId(Y)).toBeUndefined();
     expect(await t.processed.has('ry2')).toBe(false);
   });
@@ -134,10 +134,10 @@ describe('EventService 授權簡化（D-006）', () => {
     const X = 'U-x';
     await openEventBy(svc, X);
     expect(await t.users.getByLineUserId(S)).toBeUndefined(); // S 開場前無 users 列
-    const r = await svc.cancelEvent({ groupId: G, executorLineUserId: S, messageId: nextMid() });
+    const r = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: S, messageId: nextMid() });
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') expect(r.event.status).toBe('cancelled');
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined();
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
     expect(await t.users.getByLineUserId(S)).toBeUndefined(); // super-admin 純 env 比對，仍無列
   });
 
@@ -146,7 +146,7 @@ describe('EventService 授權簡化（D-006）', () => {
     const svc = makeSvc(t, [S]);
     const X = 'U-x';
     await openEventBy(svc, X);
-    const r = await svc.closeEvent({ groupId: G, executorLineUserId: S, messageId: nextMid() });
+    const r = await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: S, messageId: nextMid() });
     expect(r.kind).toBe('ok');
     expect((await t.events.findLatestDisplayable(G))?.status).toBe('closed');
   });
@@ -174,7 +174,7 @@ describe('EventService 授權簡化（D-006）', () => {
     const auditBefore = auditBeforeRes.rows[0]!;
     expect(auditBefore.cancelled_at).not.toBeNull(); // soft-delete 稽核欄已寫
 
-    const r = await svc.cancelEvent({ groupId: G, executorLineUserId: X, messageId: nextMid() });
+    const r = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: X, messageId: nextMid() });
     expect(r.kind).toBe('ok');
     const after = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM registrations WHERE event_id = $1', [eventId]);
     expect(Number(after.rows[0]!.n)).toBe(4); // 列數不變（無 DELETE，G6）
@@ -206,13 +206,13 @@ describe('EventService 授權簡化（D-006）', () => {
 
     // 群 A：建立者 X 可關閉（授權）。
     await openEventBy(svc, X, '建立者', 'G-a');
-    expect((await svc.closeEvent({ groupId: 'G-a', executorLineUserId: X, messageId: 'a1' })).kind).toBe('ok');
+    expect((await svc.closeEvent({ groupId: 'G-a', eventId: await activeEventId(t, 'G-a'), executorLineUserId: X, messageId: 'a1' })).kind).toBe('ok');
 
     // 群 B：其他成員 O 被拒（唯讀不寫列）、super-admin S 授權。
     await openEventBy(svc, X, '建立者', 'G-b');
-    expect((await svc.closeEvent({ groupId: 'G-b', executorLineUserId: O, messageId: 'b1' })).kind).toBe('not_authorized');
+    expect((await svc.closeEvent({ groupId: 'G-b', eventId: await activeEventId(t, 'G-b'), executorLineUserId: O, messageId: 'b1' })).kind).toBe('not_authorized');
     expect(await t.users.getByLineUserId(O)).toBeUndefined(); // 唯讀解析，未 upsert O
-    expect((await svc.closeEvent({ groupId: 'G-b', executorLineUserId: S, messageId: 'b2' })).kind).toBe('ok');
+    expect((await svc.closeEvent({ groupId: 'G-b', eventId: await activeEventId(t, 'G-b'), executorLineUserId: S, messageId: 'b2' })).kind).toBe('ok');
   });
 
   // ── 補強（unit-tester）：canManageEvent false 分支 (b) executor 存在但 id≠host ──
@@ -230,9 +230,9 @@ describe('EventService 授權簡化（D-006）', () => {
     );
     expect(member.id).not.toBe((await t.users.getByLineUserId(X))!.id); // 確非 host
 
-    const r = await svc.closeEvent({ groupId: G, executorLineUserId: 'U-m', messageId: 'mclose' });
+    const r = await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', messageId: 'mclose' });
     expect(r.kind).toBe('not_authorized'); // id mismatch 分支 → 拒
-    expect((await t.events.findActiveByGroup(G))?.status).toBe('open'); // 狀態不變
+    expect(((await t.events.listActiveByGroup(G)).at(-1))?.status).toBe('open'); // 狀態不變
     expect(await t.processed.has('mclose')).toBe(false); // 未 mark
     // 既有 users 列數不因授權判定改變（唯讀 getByLineUserId、不 upsert）。
     const userCount = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM users');
@@ -249,9 +249,9 @@ describe('EventService 授權簡化（D-006）', () => {
     );
     const regsBefore = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM registrations WHERE event_id = $1', [eventId]);
 
-    const r = await svc.cancelEvent({ groupId: G, executorLineUserId: 'U-m', messageId: 'mcancel' });
+    const r = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', messageId: 'mcancel' });
     expect(r.kind).toBe('not_authorized');
-    expect((await t.events.findActiveByGroup(G))?.status).toBe('open');
+    expect(((await t.events.listActiveByGroup(G)).at(-1))?.status).toBe('open');
     expect(await t.processed.has('mcancel')).toBe(false);
     const regsAfter = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM registrations WHERE event_id = $1', [eventId]);
     expect(Number(regsAfter.rows[0]!.n)).toBe(Number(regsBefore.rows[0]!.n)); // 拒絕於進交易前，registrations 未動

@@ -26,9 +26,17 @@
 // unknown / 無流程 confirm·abort / 未攔截雜訊一律不回覆、不 markProcessed（G9）。
 
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
-import { parseCommand } from '../commands';
-import type { InvalidReason } from '../commands/types';
+import { parseCommand, splitSelector } from '../commands';
+import type { InvalidReason, ParsedCommand } from '../commands/types';
 import type { RegistrationRow } from '../db/schema';
+import type { EventReader } from '../db/repositories/event-repository';
+import { resolveTargetEvent } from '../domain/event-disambiguation';
+import {
+  formatAmbiguousEvent,
+  formatEventConflict,
+  formatEventNotFound,
+  formatEventTooMany,
+} from '../domain/disambiguation-formatter';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ConversationReader } from '../db/repositories/conversation-repository';
 import type {
@@ -123,6 +131,55 @@ import type { GroupRepository } from '../db/repositories/group-repository';
 const MAX_BATCH_LINES = 20;
 
 /**
+ * D-026 §5.2 `NEEDS_EVENT_SET`：需要「目標活動」才能執行的指令型別。其餘（my_id/confirm/abort/
+ * `create_event_start`／`create_event_oneline`／`group_next`／`unknown`／非 edit_event 的 invalid
+ * 皆屬此類）照舊分派——**不查候選、不消歧義**。
+ *
+ * `group_next`（`下一輪`）刻意不在集合內（G11）：目標活動完全由既有 grouping session 決定。
+ */
+const NEEDS_EVENT_SET: ReadonlySet<ParsedCommand['type']> = new Set([
+  'signup',
+  'cancel',
+  'list',
+  'add_capacity',
+  'group',
+  'close_event',
+  'cancel_event',
+  'edit_event',
+  'edit_help',
+]);
+
+/**
+ * 該指令是否需要先解出目標活動。
+ * `invalid{command:'edit_event'}` 亦需要——它會被送進 `editEvent`（D-015 N4/G5，要回覆就要消費
+ * message.id），故與 `edit_event` 同樣屬 `NEEDS_EVENT_SET`（D-026 §5.2 步驟 3 的「非 edit_event
+ * 的 invalid」反面）。
+ */
+function needsEventResolution(cmd: ParsedCommand): boolean {
+  if (cmd.type === 'invalid') return cmd.command === 'edit_event';
+  return NEEDS_EVENT_SET.has(cmd.type);
+}
+
+/**
+ * B1 修復（G14）：quote 解出的 eventId 必須先確認屬於當前群組，才可交給 `resolveTargetEvent`。
+ * 不符/查無 → 視為未引言（undefined），不建立專屬錯誤訊息、不洩漏別群任何資訊。
+ *
+ * **跨群防線只設在此一處**：service 內 `getById(eventId)` 不重複比對 `group_id`。
+ *
+ * 相位（D-026）：機制 A（`message_event_map` 的**寫入**）屬 T-033b，故本批 `rawEventId` 恆為
+ * `undefined`，本函式恆解出 `undefined`（＝「未引言」，落既有分支，無新行為）。
+ */
+async function resolveQuotedEventInGroup(
+  rawEventId: number | undefined,
+  groupId: string,
+  events: EventReader,
+): Promise<number | undefined> {
+  if (rawEventId === undefined) return undefined;
+  const row = await events.getById(rawEventId);
+  return row !== undefined && row.group_id === groupId ? rawEventId : undefined;
+}
+
+/**
  * 取群組成員顯示名的最小介面（結構相容 `messagingApi.MessagingApiClient.getGroupMemberProfile`）。
  * 用群組成員 profile 而非 `getProfile`：後者對未加 bot 好友者 404（AC-19、NFR-4）。
  */
@@ -142,6 +199,11 @@ export interface WebhookHandlerDeps {
   service: RegistrationService;
   eventService: EventService;
   grouping: GroupingService;
+  /**
+   * D-026 §5.2：dispatch 層消歧義需要候選集合（`listActiveByGroup`）與跨群校驗（`getById`）。
+   * 唯讀介面（pool-bound）；本層不寫任何 event。
+   */
+  events: EventReader;
   users: UserRepository;
   conversations: ConversationReader;
   profile: GroupProfileClient;
@@ -663,16 +725,81 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   }
 
   /**
+   * D-026 §5.2 消歧義結果：`ok` 帶目標活動（`undefined` = 候選數 0，由 service 沿用既有
+   * 「查無 active」分支）；`reject` 為四種純判斷、無副作用的拒絕。
+   */
+  type EventResolution =
+    | { kind: 'ok'; eventId: number | undefined }
+    | { kind: 'reject'; messages: messagingApi.Message[] };
+
+  /**
+   * D-026 §5.2 步驟 4：解出這則訊息要作用在哪一場活動。
+   *
+   * `ambiguous`/`conflict`/`not_found`/`too_many` 一律**直接回覆、不呼叫任何 service、
+   * 不 markProcessed**——這些是純判斷、零 DB 副作用的早退拒絕，屬 `CLAUDE.md` §4 去重政策的
+   * **具名例外 (b) 類**（授權依據見 `design/D-026` 的 errata，2026-09-02 使用者裁決）。
+   * 同型先例：`closeEvent`／`cancelEvent` 的 `not_authorized` 於 `event-service.ts:601-603`
+   * early-return，早於 `this.tx` 內的 `markProcessed`。
+   * 已知代價（接受，非缺陷）：LINE 重送時使用者會重複收到同一則提示。
+   */
+  async function resolveEventForCommand(
+    groupId: string,
+    selectorRaw: string | undefined,
+  ): Promise<EventResolution> {
+    const candidates = await deps.events.listActiveByGroup(groupId);
+    // 相位：機制 A（message_event_map 寫入）屬 T-033b ⇒ 本批無引言來源，恆 undefined。
+    const rawQuotedEventId: number | undefined = undefined;
+    const quotedEventId = await resolveQuotedEventInGroup(rawQuotedEventId, groupId, deps.events);
+    const resolution = resolveTargetEvent(candidates, quotedEventId, selectorRaw, nowIso());
+    switch (resolution.kind) {
+      case 'ambiguous':
+        return { kind: 'reject', messages: [toLineMessage(formatAmbiguousEvent())] };
+      case 'conflict':
+        return { kind: 'reject', messages: [toLineMessage(formatEventConflict())] };
+      case 'not_found':
+        return {
+          kind: 'reject',
+          messages: [toLineMessage(formatEventNotFound(resolution.selectorRaw))],
+        };
+      case 'too_many':
+        return {
+          kind: 'reject',
+          messages: [toLineMessage(formatEventTooMany(resolution.selectorRaw))],
+        };
+      case 'none':
+        return { kind: 'ok', eventId: undefined };
+      case 'single':
+      case 'resolved':
+        return { kind: 'ok', eventId: resolution.eventId };
+      default: {
+        const _exhaustive: never = resolution;
+        return _exhaustive;
+      }
+    }
+  }
+
+  /**
    * 單指令分派（D-003~D-011 既有路徑）。多行批次以外一律走此（單行、或批次以外的分派）。
    * G5：`lines.length <= 1` 時必須走與此完全相同的路徑，行為不得改變。
+   *
+   * D-026 §5.2：`text` 為 `splitSelector` 切出的 `rest`（呼叫端已切；無 `@` 前綴時 `rest === 原文`
+   * ⇒ 既有路徑零回歸），`selectorRaw` 為選擇器原文。需要目標活動的指令（`NEEDS_EVENT_SET`）
+   * 先跑一次消歧義解出 `eventId` 再呼叫 service；其餘照舊分派、不查候選。
    */
   async function dispatchSingle(
     groupId: string,
     userId: string,
     messageId: string,
     text: string,
+    selectorRaw?: string,
   ): Promise<messagingApi.Message[]> {
     const cmd = parseCommand(text);
+    let eventId: number | undefined;
+    if (needsEventResolution(cmd)) {
+      const resolved = await resolveEventForCommand(groupId, selectorRaw);
+      if (resolved.kind === 'reject') return resolved.messages;
+      eventId = resolved.eventId;
+    }
     switch (cmd.type) {
       case 'signup': {
         const displayName = await resolveDisplayName(groupId, userId);
@@ -683,6 +810,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           messageId,
           count: cmd.count,
           proxyName: cmd.proxyName,
+          eventId,
         });
         return renderSignup(result);
       }
@@ -695,11 +823,12 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           messageId,
           count: cmd.count,
           proxyName: cmd.proxyName,
+          eventId,
         });
         return renderCancel(result, cmd.proxyName);
       }
       case 'list': {
-        const result = await deps.service.getListView({ groupId, messageId });
+        const result = await deps.service.getListView({ groupId, messageId, eventId });
         return renderList(result);
       }
       // D-010：加開名額（`加開 N`）——service 內 canManageEvent 授權 + 鎖內加開遞補。
@@ -709,6 +838,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           executorLineUserId: userId,
           messageId,
           count: cmd.count,
+          eventId,
         });
         return renderAddCapacity(result);
       }
@@ -719,6 +849,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
             groupId,
             executorLineUserId: userId,
             messageId,
+            eventId,
           });
           return renderBalanced(result);
         }
@@ -729,6 +860,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           courts: cmd.courts,
           rounds: cmd.rounds,
           mode: cmd.mode,
+          eventId,
         });
         return renderStartRounds(result);
       }
@@ -791,6 +923,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           groupId,
           executorLineUserId: userId,
           messageId,
+          eventId,
         });
         return renderClose(result);
       }
@@ -800,6 +933,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           groupId,
           executorLineUserId: userId,
           messageId,
+          eventId,
         });
         return renderCancelEvent(result);
       }
@@ -818,6 +952,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
             executorLineUserId: userId,
             messageId,
             request,
+            eventId,
           }),
         );
       }
@@ -830,6 +965,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
             executorLineUserId: userId,
             messageId,
             request: { kind: 'help' },
+            eventId,
           }),
         );
       }
@@ -856,6 +992,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
               executorLineUserId: userId,
               messageId,
               request,
+              eventId,
             }),
           );
         }
@@ -875,12 +1012,18 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
    * 每非空行 parseCommand，**僅** signup/cancel 可執行（G1），其餘型別忽略；**依序 await**、
    * messageId 傳複合鍵 `${messageId}#${lineIndex}`（G2/G3，後行看得到前行效果）；合併為一次 reply（≤5 則，G4）。
    * 可執行 +/- 行數 > MAX_BATCH_LINES → 整則拒絕、不執行任何行、不 markProcessed（G6）。
+   *
+   * D-026 §5.2：`lines` 為 `splitSelector` 切出的 `rest` 拆行結果（`splitSelector` 對整段原文
+   * 只呼叫**一次**、且在拆行之前 ⇒「第一行 selector」的既定語意由換行穿越規則自然滿足）；
+   * `resolveTargetEvent` 針對整批也只解一次，解出的 `eventId` 套用到批次內每一行
+   * （**G12**：不支援批次內以第 2 行以後的 `@` 切換活動）。
    */
   async function handleBatch(
     groupId: string,
     userId: string,
     messageId: string,
     lines: string[],
+    selectorRaw?: string,
   ): Promise<messagingApi.Message[]> {
     // 逐行 trim 取可執行行（保留原 split 索引 i 作複合去重鍵）。空行/非 signup·cancel 一律忽略（G1）。
     type Executable = { index: number; cmd: Extract<ReturnType<typeof parseCommand>, { type: 'signup' | 'cancel' }> };
@@ -900,7 +1043,14 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       return [toLineMessage(formatBatchOverLimit(MAX_BATCH_LINES))];
     }
     // 無任何可執行行 → 回空（沿用「只回應可識別指令」，避免洗版）。
+    // **置於消歧義之前**：雜訊多行訊息不應查候選集合（熱路徑零新增查詢）。
     if (executables.length === 0) return [];
+
+    // G12：整批只解一次目標活動；拒絕時整則短路（不呼叫任何 service、不 markProcessed、
+    // 連 getGroupMemberProfile 都不打）。
+    const resolved = await resolveEventForCommand(groupId, selectorRaw);
+    if (resolved.kind === 'reject') return resolved.messages;
+    const eventId = resolved.eventId;
 
     // 同一 executor：顯示名快照取一次即可（signup/cancel 皆用）。
     const displayName = await resolveDisplayName(groupId, userId);
@@ -921,6 +1071,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           messageId: compositeId,
           count: cmd.count,
           proxyName: cmd.proxyName,
+          eventId,
         });
         switch (result.kind) {
           case 'ok':
@@ -952,6 +1103,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           messageId: compositeId,
           count: cmd.count,
           proxyName: cmd.proxyName,
+          eventId,
         });
         switch (result.kind) {
           case 'ok':
@@ -1041,12 +1193,17 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       return renderContinue(result);
     }
 
+    // D-026 §5.2 步驟 1：`splitSelector` 對整段原文呼叫**一次**，且在 D-012 既有拆行**之前**
+    // （置於 conversation 攔截之後——開團問答/分組 session 的答案不吃 `@selector` 語法）。
+    // 無 `@` 前綴時 `rest === text`（原樣不動）⇒ 既有拆行與分派路徑零回歸。
+    const { selectorRaw, rest } = splitSelector(text);
+
     // D-012：以 /\r?\n/ 拆行。行數 ≤1 → 現行單指令路徑（零回歸，G5）；行數 ≥2 → 批次路徑。
-    const lines = text.split(/\r?\n/);
+    const lines = rest.split(/\r?\n/);
     if (lines.length >= 2) {
-      return handleBatch(groupId, userId, messageId, lines);
+      return handleBatch(groupId, userId, messageId, lines, selectorRaw);
     }
-    return dispatchSingle(groupId, userId, messageId, text);
+    return dispatchSingle(groupId, userId, messageId, rest, selectorRaw);
   }
 
   return { handleEvent };

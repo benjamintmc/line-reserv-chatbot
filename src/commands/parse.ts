@@ -30,6 +30,30 @@ const UNKNOWN: ParsedCommand = { type: 'unknown' };
 const CREATE_KEYWORDS = ['開團', '新活動'];
 
 /**
+ * 本檔 dispatch 表的**全部指令頭關鍵字**（§3 精確比對 + §4/D-010/D-011/D-015 的首 token）。
+ *
+ * D-024 G-selector-sync：`splitSelector` 的停止 token 集合**必須**是本集合的超集——新增任何
+ * 指令首字關鍵字時兩處須同步更新，否則該關鍵字會被誤吞進 `@selector` 文字。
+ * 由 `[D-024 AC-29]` 的子集斷言守門，並另有靜態掃描測試防止本清單與下方 dispatch 字面漂移。
+ * 大小寫規則同 dispatch 表（`list`／`我的id` 以 case-fold 比對）。
+ */
+export const COMMAND_HEAD_KEYWORDS: ReadonlyArray<string> = [
+  '名單',
+  'list',
+  '確認',
+  '取消活動',
+  '取消',
+  '關閉報名',
+  '下一輪',
+  '我的id',
+  '開團',
+  '新活動',
+  '分組',
+  '加開',
+  '編輯',
+];
+
+/**
  * 文字訊息 → 結構化指令。詳見 D-002。
  * @param text LINE `message.text`（型別上恆為 string；防禦性上非 string 一律 unknown）。
  */

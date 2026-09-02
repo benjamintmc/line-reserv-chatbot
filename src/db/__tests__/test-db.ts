@@ -71,7 +71,7 @@ export async function createTestDb(): Promise<TestDb> {
   }
 
   await pool.query(
-    'TRUNCATE users, events, registrations, conversation_states, processed_events, groups RESTART IDENTITY CASCADE',
+    'TRUNCATE users, events, registrations, conversation_states, processed_events, groups, message_event_map RESTART IDENTITY CASCADE',
   );
 
   return {
@@ -118,4 +118,16 @@ export async function seedEvent(
     status: opts.status ?? 'open',
   });
   return { host, event };
+}
+
+/**
+ * 測試輔助（D-021 §5.1）：以 repository 層等義重現 **dispatch 層消歧義**在「候選數 ≤ 1」時的結果。
+ *
+ * `findActiveByGroup` 已隨 0006 移除（G1），service 改吃 handler 解出的 `eventId`。既有 domain 層
+ * 測試直接呼叫 service（沒有 handler），故以本 helper 補上那一步：取候選集合末列的 id
+ * （`ORDER BY id ASC` ⇒ `.at(-1)` = 舊 `findActiveByGroup` 的 `ORDER BY id DESC LIMIT 1`）；
+ * 無候選 → `undefined`，等義於消歧義的 `none`（service 沿用既有「查無 active」分支）。
+ */
+export async function activeEventId(t: TestDb, groupId: string): Promise<number | undefined> {
+  return (await t.events.listActiveByGroup(groupId)).at(-1)?.id;
 }

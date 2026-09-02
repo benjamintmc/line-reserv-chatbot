@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import type { WebhookEvent } from '@line/bot-sdk';
-import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, seedEvent, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
 import { EventService } from '../domain/event-service';
 import { GroupingService } from '../domain/grouping-service';
@@ -39,6 +39,7 @@ function makeHandler(
 ): WebhookHandler {
   const service = opts.service ?? makeService(t);
   return createWebhookHandler({
+    events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: new GroupingService({
       events: t.events,
@@ -236,6 +237,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     // 模擬半途中斷：第1行（m#0）已成功 commit + markProcessed，第2行尚未執行。
     await service.signup({
       groupId: 'G',
+      eventId: await activeEventId(t, 'G'),
       executorLineUserId: 'U-x',
       executorDisplayName: '阿明',
       messageId: 'm#0',

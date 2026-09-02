@@ -56,12 +56,21 @@ export interface BalancedInput {
   groupId: string;
   executorLineUserId: string;
   messageId: string;
+  /**
+   * D-021 §5.1：由 handler 層消歧義解出的目標活動（`undefined` = 候選數為 0，沿用既有
+   * `no_open_event` 分支）。跨群校驗已於 dispatch 層完成（G14），此處不重複比對 `group_id`。
+   */
+  eventId?: number;
 }
 export interface StartRoundsInput extends BalancedInput {
   courts?: number;
   rounds?: number;
   mode: GroupMode;
 }
+/**
+ * `下一輪`。**刻意不帶 `eventId`（G11）**：目標活動完全由既有 grouping session 決定，
+ * session 本身即是消歧義結果，不需重跑（decision #9 判斷順序清單未列 `下一輪`）。
+ */
 export interface NextRoundInput {
   /** 來源群。D-013：session 鍵為 `(group_id, line_user_id)`，本欄即**查詢鍵**（原僅供 B1 守衛比對）。 */
   groupId: string;
@@ -131,7 +140,9 @@ export class GroupingService {
    */
   async groupBalanced(input: BalancedInput): Promise<BalancedResult> {
     if (!(await this.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
-    const active = await this.events.findActiveByGroup(input.groupId);
+    // D-021 §5.1：改讀消歧義解出的 `eventId`；undefined = 候選數 0 → 既有 no_open_event。
+    const active =
+      input.eventId === undefined ? undefined : await this.events.getById(input.eventId);
     if (active === undefined) return { kind: 'no_open_event' };
     if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
@@ -142,7 +153,9 @@ export class GroupingService {
 
   /** 策略B：啟動 session、產第 1 輪、寫入 conversation_states（state='grouping'）。 */
   async startRounds(input: StartRoundsInput): Promise<StartRoundsResult> {
-    const active = await this.events.findActiveByGroup(input.groupId);
+    // D-021 §5.1：同 groupBalanced。
+    const active =
+      input.eventId === undefined ? undefined : await this.events.getById(input.eventId);
     if (active === undefined) return { kind: 'no_open_event' };
     if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };

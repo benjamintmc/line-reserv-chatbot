@@ -25,7 +25,9 @@ export type EventStatus = 'draft' | 'open' | 'closed' | 'cancelled' | 'done';
 export type PriceMode = 'per_person' | 'split_venue';
 
 /**
- * active 集合（擋團/生命週期）：受 ux_events_active_group 約束（D-008 §1a）。
+ * active 集合（擋團/生命週期）。**0006（D-021 §1）起不再受「同群至多一場」的
+ * `ux_events_active_group` 約束**——該索引已 DROP，改由 `ux_events_active_group_venue_time`
+ * （同群 active 內場地+時間不得重複）把關（D-008 §1a 的 predicate 語意沿用）。
  * D-008 T-014：`closed` 移出 active 集合——closed 釋放擋團（不再擋新開團），
  * 但名單仍可查（見 {@link DISPLAYABLE_EVENT_STATUSES}）。migration 0003 同步重定義索引 predicate。
  */

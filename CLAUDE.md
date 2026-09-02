@@ -58,7 +58,7 @@
 - 錯誤處理：後端統一錯誤格式 `{ code, message, details }`；對使用者的 LINE 回覆一律繁體中文，且只回應可識別指令（其餘群組訊息忽略，避免洗版）。
 - 併發與冪等：報名寫入須用 DB transaction / row lock 防超賣；以 LINE webhook `message.id` 去重（`processed_events`）。
   - **決策輸入必須鎖內取得**：任何「讀 → 決策 → 寫」流程，決策所依據的值（capacity、已用名額、可釋出數…）一律於鎖內重讀，**不得沿用交易外快照**——「寫在鎖內」不等於安全。
-  - **去重政策（拒絕回覆一律消費）**：凡本次會送出回覆的訊息（**含純拒絕文案**），一律消費其 `message.id`，重送即不再回覆。唯一例外是「本來就不回覆」的路徑（`unknown`／未攔截雜訊），不得消費。新增指令分支時，`markProcessed` 須置於所有拒絕 early-return **之前**。
+  - **去重政策（拒絕回覆一律消費）**：凡本次會送出回覆的訊息（**含純拒絕文案**），一律消費其 `message.id`，重送即不再回覆。例外**僅限**下列兩類，其餘一律消費：(a)「本來就不回覆」的路徑（`unknown`／未攔截雜訊）；(b) **純判斷、零 DB 副作用的早退拒絕**——即不呼叫任何 service、不產生任何狀態變化者，現況為 `closeEvent`／`cancelEvent` 的交易外 `not_authorized`（`event-service.ts:601-603`）與 D-026 §5.2 的四種消歧義拒絕（`ambiguous`／`conflict`／`not_found`／`too_many`）。**(b) 類的代價是 LINE 重送會重複回覆同一則提示，此為已知並接受的取捨**（2026-09-02 使用者裁決，見 D-026 errata）；新增此類分支須在該設計文件明列，不得默默擴大。新增指令分支時，`markProcessed` 須置於所有拒絕 early-return **之前**。
 - 秘密管理：`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`、`DATABASE_URL`、`ADMIN_USER_IDS` 一律走環境變數，`.env` 不進版控。
 - Commit 訊息：可追溯格式 `type(D-xxx/T-xxx): 描述`，例 `feat(D-003/T-014): 新增報名追加邏輯`；
   維運型允許 `chore:/docs:/ci:`。檢查：`harness/checks/check_commit_trace.sh`

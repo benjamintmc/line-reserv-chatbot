@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { createTestDb, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { EventService } from './event-service';
 import { EventRepository } from '../db/repositories/event-repository';
 
@@ -67,7 +67,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     });
     expect(r1.kind).toBe('awaiting_confirm');
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined(); // 尚未 INSERT
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined(); // 尚未 INSERT
 
     const r2 = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'm2', hostDisplayName: '主辦人' });
     expect(r2.kind).toBe('created');
@@ -151,7 +151,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
       const r = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: mid, text, hostDisplayName: '主辦人' });
       expect(r.kind).toBe('confirm_reprompt');
       expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm'); // 停留
-      expect(await t.events.findActiveByGroup(G)).toBeUndefined(); // 不建立
+      expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined(); // 不建立
     }
     const done = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 'rc', text: '確認', hostDisplayName: '主辦人' });
     expect(done.kind).toBe('created');
@@ -164,7 +164,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const ab = await svc.continueFlow({ groupId: G, executorLineUserId: HOST, messageId: 's2', text: '取消', hostDisplayName: '主辦人' });
     expect(ab.kind).toBe('aborted');
     expect(await t.conversations.get(G, HOST)).toBeUndefined();
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined();
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
     // 無流程 confirm → noop
     const c = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 's3', hostDisplayName: '主辦人' });
     expect(c.kind).toBe('noop');
@@ -174,14 +174,14 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const svc = makeSvc(t);
     await walkToConfirm(svc);
     await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'c', hostDisplayName: '主辦人' });
-    const close1 = await svc.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: 'x1' });
+    const close1 = await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'x1' });
     expect(close1.kind).toBe('ok');
     if (close1.kind === 'ok') expect(close1.event.status).toBe('closed');
-    // D-008：closed 已釋放擋團 → findActiveByGroup 不再返回；closed 事件仍存在（顯示集可查）。
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined();
+    // D-008：closed 已釋放擋團 → 不在 active 候選集合內；closed 事件仍存在（顯示集可查）。
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
     expect((await t.events.findLatestDisplayable(G))?.status).toBe('closed');
     // 二次 關閉報名 → no_active（原 already_closed 不可達，errata D-004 §5.1）。
-    const close2 = await svc.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: 'x2' });
+    const close2 = await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'x2' });
     expect(close2.kind).toBe('no_active');
     expect((await t.events.findLatestDisplayable(G))?.status).toBe('closed');
   });
@@ -208,20 +208,20 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const before = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM registrations WHERE event_id = $1', [eventId]);
     expect(Number(before.rows[0]!.n)).toBe(4);
 
-    const cancel = await svc.cancelEvent({ groupId: G, executorLineUserId: HOST, messageId: 'z1' });
+    const cancel = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'z1' });
     expect(cancel.kind).toBe('ok');
     if (cancel.kind === 'ok') expect(cancel.event.status).toBe('cancelled');
     // registrations 列數不變（無 DELETE，G10）；稽核欄保留。
     const after = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM registrations WHERE event_id = $1', [eventId]);
     expect(Number(after.rows[0]!.n)).toBe(4);
     // 群組 active 集合清空 → 可再開團
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined();
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
 
-    // D-008：closed 已釋放 → 取消活動 對 closed 回 no_active（closed 不再由 findActiveByGroup 返回，errata D-004 §5.2）。
+    // D-008：closed 已釋放 → 取消活動 對 closed 回 no_active（closed 不在 active 候選集合內，errata D-004 §5.2）。
     await walkToConfirm(svc);
     await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'c2', hostDisplayName: '主辦人' });
-    await svc.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: 'cl2' });
-    const cancel2 = await svc.cancelEvent({ groupId: G, executorLineUserId: HOST, messageId: 'z2' });
+    await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'cl2' });
+    const cancel2 = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'z2' });
     expect(cancel2.kind).toBe('no_active');
     expect((await t.events.findLatestDisplayable(G))?.status).toBe('closed'); // closed 事件仍在
   });
@@ -238,9 +238,9 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     await t.events.create({ groupId: G, hostUserId: host.id, eventDatetime: FUTURE_DATETIME, location: 'X', capacity: 4, status: 'open' });
 
     // B（非 host、非 super-admin）close/cancel → not_authorized、零 DB 變更。
-    expect((await svc.closeEvent({ groupId: G, executorLineUserId: B, messageId: 'b3' })).kind).toBe('not_authorized');
-    expect((await svc.cancelEvent({ groupId: G, executorLineUserId: B, messageId: 'b4' })).kind).toBe('not_authorized');
-    expect((await t.events.findActiveByGroup(G))?.status).toBe('open'); // 狀態不變
+    expect((await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: B, messageId: 'b3' })).kind).toBe('not_authorized');
+    expect((await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: B, messageId: 'b4' })).kind).toBe('not_authorized');
+    expect(((await t.events.listActiveByGroup(G)).at(-1))?.status).toBe('open'); // 狀態不變
     expect(await t.users.getByLineUserId(B)).toBeUndefined(); // 唯讀判定：未為 B upsert 寫列
     for (const m of ['b3', 'b4']) expect(await t.processed.has(m)).toBe(false); // 未 mark
   });
@@ -259,7 +259,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(await t.processed.has('r2')).toBe(false);
 
     // D-008 AC-1：closed 已釋放擋團 → 可再開新團（flow_started，非 already_active）。
-    await svc.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: 'cl' });
+    await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'cl' });
     expect((await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'r3' })).kind).toBe('flow_started');
   });
 
@@ -288,21 +288,22 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(c.kind === 'flow_started' ? c.abandoned : undefined).toBeUndefined();
   });
 
-  it('[D-004 AC-12] confirm 撞 ux_events_active_group（UNIQUE）→ 窄捕捉 already_active + 清 conversation', async () => {
+  it('[D-004 AC-12] confirm 撞 ux_events_active_group_venue_time（UNIQUE）→ 窄捕捉 already_active + 清 conversation', async () => {
     const svc = makeSvc(t);
-    // 直接布置 awaiting_confirm 流程（避免 startCreation 觸 findActiveByGroup）。
+    // 直接布置 awaiting_confirm 流程（避免 startCreation 觸 listActiveByGroup）。
     await t.conversations.upsert({
       lineUserId: HOST,
       groupId: G,
       state: 'awaiting_confirm',
       payload: JSON.stringify({ date: '2999-08-15', time: '07:30', location: '東方球場', capacity: 16, price: 2200, priceMode: 'per_person' }),
     });
-    // 先有一場未過期 open（佔用 ux_events_active_group）。
+    // 先有一場未過期 open，且**場地+時間與 draft 完全相同**（D-021 §1：0006 後判別鍵已由
+    // 「同群一場」改為「同群 active 內場地+時間不得重複」，故 fixture 須以新語意構造）。
     const other = await t.users.upsert('U-other', '別人');
-    await t.events.create({ groupId: G, hostUserId: other.id, eventDatetime: FUTURE_DATETIME, location: '既有', capacity: 4, status: 'open' });
+    await t.events.create({ groupId: G, hostUserId: other.id, eventDatetime: '2999-08-14T23:30:00Z', location: '東方球場', capacity: 4, status: 'open' });
     // 讓「交易內入口早退」失效（模擬 race：pre-check 讀不到 active，但 INSERT 撞約束）。
     // 路線 A：confirm 交易內走 client-bound repos.events（每交易新建），故 spy 打在 prototype 才能命中。
-    const spy = vi.spyOn(EventRepository.prototype, 'findActiveByGroup').mockResolvedValue(undefined);
+    const spy = vi.spyOn(EventRepository.prototype, 'listActiveByGroup').mockResolvedValue([]);
 
     const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'm', hostDisplayName: '主辦人' });
     expect(r.kind).toBe('already_active');
@@ -340,7 +341,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     await t.processed.markProcessed('dup');
     const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'dup', hostDisplayName: '主辦人' });
     expect(r.kind).toBe('duplicate');
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined(); // 未建立
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined(); // 未建立
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm'); // 流程保留（可正常重放）
   });
 
@@ -366,19 +367,19 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(a.kind).toBe('noop');
     expect(await t.processed.has('n1')).toBe(false);
     expect(await t.processed.has('n2')).toBe(false);
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined();
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
   });
 
   it('[D-004 AC-17] 無 active 時 close/cancel → no_active、無狀態變更；cancelled 終態不可再轉移', async () => {
     const svc = makeSvc(t);
-    expect((await svc.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: 'y1' })).kind).toBe('no_active');
-    expect((await svc.cancelEvent({ groupId: G, executorLineUserId: HOST, messageId: 'y2' })).kind).toBe('no_active');
+    expect((await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'y1' })).kind).toBe('no_active');
+    expect((await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'y2' })).kind).toBe('no_active');
 
-    // 建立 → 取消 → cancelled 終態；再 close/cancel → no_active（findActiveByGroup 不含 cancelled）。
+    // 建立 → 取消 → cancelled 終態；再 close/cancel → no_active（active 候選集合不含 cancelled）。
     await walkToConfirm(svc);
     await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'c', hostDisplayName: '主辦人' });
-    await svc.cancelEvent({ groupId: G, executorLineUserId: HOST, messageId: 'z' });
-    expect((await svc.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: 'y3' })).kind).toBe('no_active');
-    expect((await svc.cancelEvent({ groupId: G, executorLineUserId: HOST, messageId: 'y4' })).kind).toBe('no_active');
+    await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'z' });
+    expect((await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'y3' })).kind).toBe('no_active');
+    expect((await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'y4' })).kind).toBe('no_active');
   });
 });

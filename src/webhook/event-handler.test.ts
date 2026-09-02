@@ -59,6 +59,7 @@ function makeHandler(t: TestDb, superAdminUserIds: string[] = [HOST]): WebhookHa
     logError: () => {},
   });
   return createWebhookHandler({
+    events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
     service,
@@ -89,7 +90,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     const out = await handler.handleEvent(groupTextEvent('開團 只有一個參數', { messageId: 'm1' }));
     expect(textOf(out)).toContain('格式：開團');
     expect(await t.conversations.get(G, HOST)).toBeUndefined();
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined();
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
     expect(await t.processed.has('m1')).toBe(false);
   });
 
@@ -129,7 +130,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     // 確認 → 開團公告 (D)（走 conversation 攔截 → continueFlow confirm）。
     const announce = await handler.handleEvent(groupTextEvent('確認', { userId: HOST, messageId: 'o2' }));
     expect(textOf(announce)).toContain('開團成功');
-    const event = await t.events.findActiveByGroup(G);
+    const event = (await t.events.listActiveByGroup(G)).at(-1);
     expect(event?.status).toBe('open');
     // D-005 §3：主辦自動登記為第 1 正取。
     expect(await t.registrations.countConfirmed(event!.id)).toBe(1);
@@ -170,7 +171,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
       groupTextEvent('+1', { userId: HOST, messageId: 'b0', groupId: 'Gid-BBB' }),
     );
     expect(textOf(bOut)).toContain('報名名單（');
-    const eventB = await t.events.findActiveByGroup('Gid-BBB');
+    const eventB = (await t.events.listActiveByGroup('Gid-BBB')).at(-1);
     expect(await t.registrations.countConfirmed(eventB!.id)).toBe(1);
 
     // B 群「名單」照常唯讀查詢；B 群雜訊靜默不回覆。
@@ -204,14 +205,14 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
       groupTextEvent('確認', { userId: HOST, messageId: 'b0', groupId: 'Gid-BBB' }),
     );
     expect(bOut).toEqual([]); // 別群的「確認」→ noop、不回覆
-    expect(await t.events.findActiveByGroup('Gid-BBB')).toBeUndefined(); // 不得在 B 群建立
-    expect(await t.events.findActiveByGroup(G)).toBeUndefined(); // 也不得提前在 A 群建立
+    expect((await t.events.listActiveByGroup('Gid-BBB')).at(-1)).toBeUndefined(); // 不得在 B 群建立
+    expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined(); // 也不得提前在 A 群建立
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm'); // A 群流程保留
 
     // 回 A 群「確認」→ 正常建立於 A 群。
     const aOut = await handler.handleEvent(groupTextEvent('確認', { userId: HOST, messageId: 'a1' }));
     expect(textOf(aOut)).toContain('開團成功');
-    expect((await t.events.findActiveByGroup(G))?.group_id).toBe(G);
+    expect(((await t.events.listActiveByGroup(G)).at(-1))?.group_id).toBe(G);
   });
 
   it('[D-004 errata 跨群] A 群流程進行中，B 群輸入「取消」→ 不放棄 A 群流程', async () => {
@@ -274,8 +275,8 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     // 回 A 群作答（`確認`）正常前進、以 A 群 draft 建立於 A 群。
     const aOut = await handler.handleEvent(groupTextEvent('確認', { userId: HOST, messageId: 'a1' }));
     expect(textOf(aOut)).toContain('開團成功');
-    expect((await t.events.findActiveByGroup(G))?.location).toBe('東方球場');
-    expect(await t.events.findActiveByGroup('Gid-BBB')).toBeUndefined();
+    expect(((await t.events.listActiveByGroup(G)).at(-1))?.location).toBe('東方球場');
+    expect((await t.events.listActiveByGroup('Gid-BBB')).at(-1)).toBeUndefined();
   });
 
   it('[D-013 AC-2] A 群有 grouping session 時，B 群「下一輪」→ no_session、回覆不含 A 群人名；B 群「確認」/「取消」對 A 群零影響', async () => {
