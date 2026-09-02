@@ -4,12 +4,28 @@
 > 各角色以 `docs/worklists/<role>.md` 的「狀態提議」提出 `PROPOSE → DONE`，由 orchestrator 驗證後裁定。
 > 只保留未完成 + 最近 10 筆 DONE，其餘見 `docs/task-board-archive.md`。
 
-## 目前階段：**PROD LIVE**（image `:v8`／revision `00011-98d`，2026-09-02）
+## 目前階段：**PROD LIVE**（image `:v9`／revision `00013-pxr`，2026-09-02）
 
 > Service `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app`（GCP `group-chatbot-504305`／`asia-east1`／min-instances=0／Neon 免費層＝$0）。
-> 座標與部署程序見 `docs/deployment-runbook.md`；憑證走 Secret Manager。migration 已套用 **0001–0005**。
-> 現況全綠（2026-09-02 於本機實跑）：lint 0／typecheck 0／build／**488 tests**／harness **AC 249/249**。**無未結阻塞項**。
-> 最近一輪（T-034／T-032）：`編輯 費用` 切換計費模式上線並經**真機驗證通過**（2026-09-02）、測試檔假綠防護（`npm run typecheck`）納入 CI。
+> 座標與部署程序見 `docs/deployment-runbook.md`；憑證走 Secret Manager。migration 已套用 **0001–0006**。
+> 現況全綠（2026-09-02 於本機實跑）：lint 0／typecheck 0／build／**523 tests**／harness **AC 266/266**。
+> 最近一輪（**T-033a**）：解除單場限制 + 消歧義全鏈路 + `名單` 回退上線（PR #24；PR #23 文件同批合併）。
+> **⚠️ 唯一未結項：真機驗證未做**——見下方清單。**部署細節、pre/post-flight 證據與退版條件見 `docs/deployment-runbook.md` §2.2。**
+>
+### 真機待驗清單（T-033a，2026-09-02 上線後）
+
+> 多場並行**尚未對使用者開燈**（開團入口仍擋第二場，要到 T-033c），故以下以**單場零回歸**為主。
+
+| # | 驗證項 | 預期 |
+|---|---|---|
+| 1 | 任一群組打 `名單` | 正常回覆當前活動名單（G9 回退路徑） |
+| 2 | `+1` / `-1` 報名與取消 | 與 v8 完全相同 |
+| 3 | `@隨便打的文字 +1`（單場時） | **照常成功報名**——單場時完全不驗證 selector（AC-6 零回歸） |
+| 4 | `開團`（逐步或一行式） | 正常；已有 active 時仍回既有的「已有進行中活動」說法 |
+| 5 | `編輯 日期/時間/場地/費用` | 與 v8 相同 |
+| 6 | `分組` → `下一輪` | 正常（`下一輪` 不跑消歧義，G11） |
+| 7 | 多行批次 `+1
+-1 陳先生` | 正常（批次消歧義只解一次） |
 
 ## 看板
 | ID | 任務 | 設計文件 | 風險 | 負責角色 | 狀態 | 產出路徑 | 備註 |

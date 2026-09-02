@@ -79,6 +79,57 @@ npm run db:migrate
 
 ---
 
+## 2.2 升級 `0006_multi_event_per_group`（D-021 / T-033a）— **單階段，須照順序**（2026-09-02 已執行）
+
+`0006` `DROP ux_events_active_group`、建 `ux_events_active_group_venue_time`（`(group_id, location, event_datetime)`，
+predicate `status IN ('draft','open')`）與 `message_event_map` 表。**與舊版程式不向後相容**：
+舊版（`:v8`）`confirm()` 的窄捕捉比對**舊**索引名，0006 後同場地+時間的 race 會噴出**未捕捉的 23505**。
+且 migrate 完到 deploy 完之間 DB 已不擋同群多場，若真撞出兩場，**舊版沒有 `@selector` 可救**（那是 `:v9` 才有），
+殘留活動會卡到新版上線。故採**單階段**，比照 §2.1。
+
+**執行順序（窗口只剩 deploy 本身）**：
+1. §3 build + push image（慢，不動 DB、不換 revision，提前做不違反順序約束）
+2. 對 Neon **直連**跑 `npm run db:migrate`
+3. `gcloud run deploy`（快）
+
+> **直連字串**：`.env` 內只有 pooled 一條；直連＝**同一 endpoint 拿掉 `-pooler`**
+> （`ep-xxx-pooler.c-3...` → `ep-xxx.c-3...`），2026-09-02 經連線實測確認可用。
+
+**Pre-flight（唯讀，建議每次照做）**：確認 `schema_migrations` 已到 0005、`ux_events_active_group` 仍在、
+`message_event_map` 不存在，並跑一次多場檢查：
+```sql
+SELECT group_id, count(*) FROM events WHERE status IN ('draft','open') GROUP BY group_id HAVING count(*) > 1;
+-- 預期：0 列
+```
+
+**Post-flight 驗證**：
+```sql
+SELECT to_regclass('public.ux_events_active_group');        -- 預期 NULL（已 DROP）
+SELECT pg_get_indexdef(oid) FROM pg_class WHERE relname = 'ux_events_active_group_venue_time';
+SELECT to_regclass('public.message_event_map');             -- 預期非 NULL
+```
+再對服務打 `POST /webhook`（無簽章）應回 **401**。
+
+**⚠️ 退版有條件**：回退 0006 需重建 `ux_events_active_group`，一旦屆時已有任何群組存在 2 場 active，
+**重建會直接失敗**。退版前必須先跑上方那條多場檢查確認為空。
+（T-033a 期間開團入口仍擋第二場，故僅極窄 race 可產生多場。）
+
+**2026-09-02 實際執行紀錄**：
+> **Pre-flight（唯讀）**：0001–0005 已套用、`ux_events_active_group` 仍在、`message_event_map` 不存在、
+> 7 群各 1 場 active、**多場群組數 0**、events 15 列。
+> **Post-flight**：0006 已套用、舊索引 **GONE**、新索引 predicate 為
+> `(group_id, location, event_datetime) WHERE status IN ('draft','open')`、`message_event_map` 三欄型別正確、
+> 多場群組數仍為 0；`POST /webhook` 無簽章回 **401**（驗簽正常）；部署後 log 無錯誤
+> （僅 smoke test 造成的 404／401 兩則 WARNING）。
+>
+> **⚠️ 看板漂移已更正**：部署前實際運行的是 `00012-t92`（仍為 `:v8`），非本檔原記的 `00011-98d`——
+> 中間有過一次未登記的重新部署。本次一併校正。
+>
+> **⚠️ 退版有條件**：回退 0006 需重建 `ux_events_active_group`，一旦屆時已有任何群組存在 2 場 active，
+> **重建會直接失敗**。退版前須先確認 `SELECT group_id FROM events WHERE status IN ('draft','open')
+> GROUP BY group_id HAVING count(*)>1` 為空。（T-033a 期間開團入口仍擋第二場，故僅極窄 race 可產生。）
+
+
 ## 3. Build image 並推到 Artifact Registry
 
 ```bash
