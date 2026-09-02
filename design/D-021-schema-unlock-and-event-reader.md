@@ -4,6 +4,26 @@
 - 風險等級：**R2（高）**——資料 migration + `src/domain/event-service.ts`／`registration-service.ts`（CLAUDE.md §4.5 高風險模組）。
 - 來源：D-020 §1／§2／§5.1；內文所有 `§x` 皆指 **D-020 的舊章節編號**（逐字保留，轉址表見 umbrella `D-020`）。同屬 T-033a 的並行文件：D-022、D-023、D-024、D-026。
 
+## errata（2026-09-02，來源 T-033a R2 雙審 architect-reviewer N3；**事實更正，本節生效**）
+
+> **§5.1「`closeEvent`／`cancelEvent` 的雙層授權模式」中「交易內權威重讀（`FOR UPDATE` 再讀一次）」
+> 的敘述與程式碼不符。** 經 orchestrator 查證：`EventService` 的 `this.tx` 是 `tx.ts:44-48` 的
+> `TransactionRunner`，其 doc 明寫「**不鎖 event**」、走純 `BEGIN`；真正帶
+> `SELECT ... FOR UPDATE` 的 `createImmediateRunner`（`tx.ts:92-102`）**只有 `editEvent` 在用**
+> （`event-service.ts:698`）。故 `closeEvent`／`cancelEvent` 的交易內重讀**無列鎖**。
+>
+> **這是 0006 之前就存在的既有狀態**（原 `findActiveByGroup` 同樣在無鎖交易內），T-033a 未引入
+> 任何行為回歸；本 errata 只更正文字，**不要求改碼**。
+>
+> 1. §5.1 該句更正為：「交易外 early-return 授權檢查 + **交易內權威重讀（`getById`，走
+>    `TransactionRunner`，無列鎖）**」。
+> 2. 「兩次查詢都保留、不得合併」的要求**不變**——兩層各自的鎖前/鎖內重讀語意仍有意義
+>    （交易內重讀可看到同交易前段的寫入、並縮短 TOCTOU 窗口），只是**不得**再宣稱有 `FOR UPDATE`
+>    等級的併發保證。
+> 3. 連帶：`event-service.ts` 中沿用此措辭的註解須一併更正（歸 backend-engineer）。
+>
+> **本節由 orchestrator 落筆，尚未經 architect 確認。**
+
 ## 一、設計內容
 
 ### 1. Schema 變更（migration `0006_multi_event_per_group.sql`）
