@@ -17,7 +17,7 @@
 > 1. 文案與 AC-7「不呼叫任何 service、不 markProcessed」皆為已核可裁決，改實作須連帶改寫 §5.2、
 >    AC-7 與測試。
 > 2. **已有同型先例**：`closeEvent`／`cancelEvent` 的 `not_authorized` 於 `event-service.ts:601-603`
->    early-return，早於 `this.tx` 內 `:607` 的 `markProcessed`——同樣是「回覆但不消費」。
+>    early-return，早於 `this.tx` 內 `:606` 的 `markProcessed`——同樣是「回覆但不消費」。
 >    （審查意見原稱「全 repo 無此先例」，經 orchestrator 查證**不成立**；該意見只檢視了 `editEvent`
 >    `:698-711`，那條走 `runImmediate` 先 mark 再授權，是 repo 內並存的**另一種**模式。）
 > 3. 這四種拒絕是純判斷、零 DB 副作用，重送重跑不產生任何狀態變化。
