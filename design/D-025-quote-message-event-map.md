@@ -101,11 +101,18 @@ T-033a 期間 quote 恆解出 `undefined`，故所有指令拿到的 `eventId` �
 |---|---|---|
 | `+N`／`-N` | `isOpenForSignup`（status='open' 且未過期） | ✅ 原本就有，無須改動 |
 | `加開 N` | `status !== 'open'` → `no_open_event`（`registration-service.ts:450`） | ✅ 原本就有 |
-| `編輯` | 鎖內重讀判 `closed`／非 `open`（`event-service.ts:706-708`） | ✅ 原本就有 |
+| `編輯`／`編輯`（說明） | 鎖內重讀判 `closed`／非 `open`（`event-service.ts:706-708`） | ✅ 原本就有 |
 | `關閉報名`／`取消活動` | 交易外授權先跑、交易內重讀判狀態 | ⚠ 見下方 (1) |
 | **`名單`** | **無**（`findEventForDisplay` 註解宣稱「必為 draft/open，天然正確」） | ❌ **缺陷，T-033b 修正** |
 | **`分組`／`分組 N場`** | **無**（`grouping-service.ts` 全檔零 status 判斷） | ❌ **缺陷，T-033b 修正** |
 | `下一輪` | 不吃 quote（G11，目標活動由 session 決定） | ✅ 不受影響 |
+
+> **表列涵蓋 `NEEDS_EVENT_SET` 全部 9 個成員**（`handler.ts:141-151`）。`編輯` 那列涵蓋兩個
+> command type：`edit_event` 與 **`edit_help`**——後者走的是**不同的 render 分支**
+> （`renderEdit/help` 會輸出該場活動現值），但共用同一道鎖內守門（`help` 分支在
+> `event-service.ts:725`，位於 `:704-709` 的狀態判定**之後**）⇒ 引用已取消活動打 `編輯`
+> 不會印出現值。**特意點名，是因為日後有人單獨動 help 路徑時，表上沒點名就擋不住**
+> （architect-reviewer 複審 nit，2026-09-02）。
 
 **(1) `close`／`cancel` 的交易外結果會變（規範中的行為，非缺陷）**：非授權者引用一場已關閉活動下
 `關閉報名`／`取消活動` → 交易外授權判定先跑，回 `not_authorized` 而**非** `no_active`（交易內重讀
