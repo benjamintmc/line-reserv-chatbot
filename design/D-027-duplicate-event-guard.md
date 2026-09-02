@@ -4,6 +4,22 @@
 - 風險等級：**R2（高）**——本檔移除開團入口的 `already_active` 拒絕，是多場並行**對使用者開燈**的那一步；動 `src/domain/event-service.ts`（CLAUDE.md §4.5 高風險模組）。
 - 來源：D-020 §3；內文所有 `§x` 皆指 **D-020 的舊章節編號**（轉址表見 umbrella `D-020`）。同屬 T-033c 的並行文件：D-028（同批落地，不得只上其一）。
 
+## errata E1（2026-09-02，T-033c 驗收發現；隨 D-028 errata E1 同批生效）
+
+> **查重的候選範圍同樣排除「已過期但仍為 `open`」的活動。** §3 的
+> `candidates = listActiveByGroup(groupId)` 於 `handleOneline` 入口與 `confirm` 交易內，
+> 一律先濾掉 `isExpired` 者再比對場地+時間——理由與 D-028 errata E1 同源：對一場**已結束**的活動
+> 回「已有相同時間地點的球敘」是同一種不實陳述。
+>
+> `confirm` 內的過期候選會在判斷前先 flip 為 `done`（見 D-028 errata E1 的順序：
+> **flip 過期 → 判上限 → 判查重**），故該路徑濾除與 flip 的結果一致。
+>
+> **G7 的兩層防護不受影響**：`ux_events_active_group_venue_time` 的 predicate 為
+> `status IN ('draft','open')`，過期候選 flip 為 `done` 後即退出索引範圍，DB 安全網那一層
+> （G7 下半 / G8 窄捕捉）**維持原樣、不得移除或放寬**。
+>
+> **本節由 orchestrator 落筆，尚未經原設計 agent 確認。**
+
 ## 一、設計內容
 
 ### 3. 開團查重（取代舊的「已有 active 就拒絕」）
