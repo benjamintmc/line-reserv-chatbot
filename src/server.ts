@@ -35,7 +35,12 @@ export interface ReplyClient {
   ): Promise<messagingApi.ReplyMessageResponse>;
 }
 
-/** `buildServer` 的可注入依賴（皆選填；未給者走生產預設，見 {@link defaultDeps}）。 */
+/**
+ * `buildServer` 的可注入依賴（皆選填；未給者走生產預設，見 {@link defaultDeps}）。
+ *
+ * ⚠ **部分注入的陷阱**：只給 `{ handler, replyClient }` 時，`messageEventMap` 會靜默落到
+ * `defaultDeps()` ⇒ 真的建一個 `pg.Pool`。測試若要完全脫離 DB，三個都要給。
+ */
 export interface ServerDeps {
   handler?: WebhookHandler;
   replyClient?: ReplyClient;

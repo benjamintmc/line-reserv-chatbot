@@ -68,3 +68,49 @@
 
 `formatAmbiguousEvent` 的釘死字串含「請回覆或標註 @場地/@時間」——**「回覆」自本批起真正生效**
 （T-033a~b 期間為已知空窗，D-026 §一 B-2 裁定不因相位改寫）。註解已同步更新，字串本身未動。
+
+---
+
+## 7. R2 雙審結果與封閉（2026-09-02）
+
+### design-reviewer：**PASS with nits**（0 blocker）
+四則釘死文案以 **sha256 + code point 雙重驗證**：本批零字元變動，且與 D-024／D-025／D-026／brief
+全等；formatter 的改動全在 JSDoc。球種中性通過（新增行 grep 球種用語 0 命中；生產碼新增的唯一
+中文字串是 log，不送使用者）。4 條 nit：
+1. **D-026 相位註記過時** → **已修**：D-026 補 errata，聲明該兩段自 `41c15fc` 起為歷史敘述。
+2. ambiguous 提示的「回覆」缺指向、可能形成無說明迴圈 → 入 backlog（釘死字串，改動需先出 errata）。
+3. `分組`／`下一輪` 回覆不含活動識別 → 入 backlog（根因在 D-011 組版）。
+4. 候選恰 1 場時 quote 被忽略（G2 既有規則）→ 非回歸，僅記錄。
+
+### architect-reviewer：**BLOCK → 已封閉**
+G3／G4／G6／G11／G14 五條全數通過，**G14 讀取點窮舉經其自行 grep 複驗屬實**；§3 三點裁定全部同意
+（並補充：真正避免第二個 `pg.Pool` 的是 `defaultDeps()` 快取而非物件參數本身；`resolveQuotedEvent`
+在無 quote 時早退，第 3 點的成本比本包描述更低）。
+
+**B-1：D-025 errata E1 的「新暴露路徑」枚舉不完整。經 orchestrator 逐條查證——兩條均屬實，已修。**
+
+| 查證項 | 結果 |
+|---|---|
+| `displayPhase`（`event-status.ts:31-35`）無 `cancelled` 分支 → 落 `live` | **屬實** |
+| `findEventForDisplay`（`registration-service.ts:262-266`）註解宣稱「必為 draft/open，天然正確」 | **屬實，且該不變式自本批起失效** |
+| `grouping-service.ts` 全檔零 status 判斷 | **屬實**（`grep -n "status" ` 零命中） |
+| 對照：`signup`／`cancel`／`加開`／`編輯` 是否原本就有守門 | **有**（`isOpenForSignup`／`:450`／`:706-708`）——故只有 `名單`／`分組` 兩條需修 |
+
+**修法**（皆為維持 T-033b 前語意的最小改動，不做新產品決策）：
+- `findEventForDisplay` 的 `eventId` 分支先過 `DISPLAYABLE_EVENT_STATUSES`；cancelled/done →
+  `no_open_event`，**`closed` 仍可查並標「（報名已截止）」**（不過度收緊）。同步修正假註解。
+- `groupBalanced`／`startRounds` 加 `isActiveEvent`（`{draft, open}`）守門。
+- D-025 errata E1 改寫為**逐指令完整盤點表**（7 個指令，標明哪些原本就有守門）。
+
+**回歸鎖已驗證有效**：`d025-quote-mapping.test.ts`「D-025 errata E1」段 4 條；
+`git stash` 移除修正後**恰好該 2 條轉紅**（`名單` 顯示已取消活動、`分組` 對已關閉活動成功），
+其餘 7 條維持綠（證明守門未誤傷）。
+
+### nit 處置
+- architect nit「`renderBalanced`／`renderStartRounds` 的 `eventId === undefined` 分支不可達」→ 已加註型別收斂用。
+- architect nit「`buildServer` 部分注入會靜默建 Pool」→ 已在 `ServerDeps` 加 ⚠ 註記。
+- architect nit「`recordReplyMapping` 迴圈內逐列 await，中途拋錯會部分成功」→ 實務 1–2 則，接受現狀。
+- 其餘（`cachedDeps` 模組級全域、`GroupingState.eventId` 選填取捨）皆判定為可接受，僅記錄。
+
+### 修正後關卡（orchestrator 於本機重跑）
+lint 0／typecheck 0／build ✓／**537 tests（68 檔，+4）**／harness **AC 273/273**、doc_budget ✓、board_sync ✓。

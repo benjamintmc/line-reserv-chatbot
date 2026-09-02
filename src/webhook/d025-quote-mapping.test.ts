@@ -189,3 +189,100 @@ describe('D-025 機制 A：quote → message_event_map（讀取端 + G14 跨群�
     expect(await t.registrations.countConfirmed(b.id)).toBe(0);
   });
 });
+
+/**
+ * architect-reviewer B-1（R2 雙審，2026-09-02）：quote 解出的 `eventId` **刻意不過濾**「是否仍在
+ * 候選集合內」（`event-disambiguation.ts` §4.3），因此 T-033b 起各指令會第一次收到非 active 的
+ * 活動。D-025 errata E1 枚舉了受影響路徑，本段為其回歸鎖。
+ */
+describe('D-025 errata E1：quote 指向非 active 活動時，各指令的狀態守門', () => {
+  let t: TestDb;
+  let live: EventRow; // 仍 open（確保候選數 >= 2，否則 quote 依 G2 會被忽略）
+  let live2: EventRow;
+  let service: RegistrationService;
+  let handler: WebhookHandler;
+
+  beforeEach(async () => {
+    t = await createTestDb();
+    live = await mkEvent(t, { location: '旭陽球場', at: T_0815_0730 });
+    live2 = await mkEvent(t, { location: '東方球場', at: T_0920_0730 });
+    service = makeService(t);
+    handler = makeHandler(t, service);
+  });
+  afterEach(async () => {
+    await t.cleanup();
+  });
+
+  /** 建一場已離開 active 集的活動 + 一則指向它的 bot 訊息映射。 */
+  async function mkEndedWithQuote(
+    status: 'cancelled' | 'closed',
+    messageId: string,
+  ): Promise<EventRow> {
+    const ev = await mkEvent(t, { location: '天母練習場', at: T_0815_0730 });
+    await t.events.updateStatus(ev.id, status);
+    await t.messageEventMap.record(messageId, ev.id);
+    const after = await t.events.getById(ev.id);
+    if (after === undefined) throw new Error('seed 失敗');
+    return after;
+  }
+
+  it('[D-025 AC-13] `名單` 引用已取消的活動 → 不得顯示為進行中', async () => {
+    await mkEndedWithQuote('cancelled', 'bot-cancelled');
+
+    const msgs = await handleMessages(
+      handler,
+      groupTextEvent('名單', { messageId: 'm-c', quotedMessageId: 'bot-cancelled' }),
+    );
+
+    // 修正前：displayPhase 不認得 cancelled → 落 'live' → 整份名單被當進行中活動印出來。
+    expect(textOf(msgs)).toBe('目前沒有開放報名的活動。');
+    expect(textOf(msgs)).not.toContain('天母練習場');
+  });
+
+  it('[D-025 AC-13] `名單` 引用已關閉報名的活動 → 仍可查，且標記為報名已截止（未過度收緊）', async () => {
+    const closed = await mkEndedWithQuote('closed', 'bot-closed');
+
+    const msgs = await handleMessages(
+      handler,
+      groupTextEvent('名單', { messageId: 'm-k', quotedMessageId: 'bot-closed' }),
+    );
+
+    expect(textOf(msgs)).toContain(closed.location);
+    expect(textOf(msgs)).toContain('（報名已截止）');
+  });
+
+  it('[D-025 AC-13] `分組` 引用已關閉／已取消的活動 → no_open_event，且不建立 grouping session', async () => {
+    const closed = await mkEndedWithQuote('closed', 'bot-g-closed');
+    const host = await t.users.upsert('U-host', '主辦人');
+    for (const name of ['甲', '乙', '丙', '丁']) {
+      await t.registrations.insertSlot({
+        eventId: closed.id,
+        ownerUserId: host.id,
+        displayName: name,
+        kind: 'proxy',
+        status: 'confirmed',
+      });
+    }
+
+    const msgs = await handleMessages(
+      handler,
+      groupTextEvent('分組 1場', { messageId: 'm-g', userId: 'U-host', quotedMessageId: 'bot-g-closed' }),
+    );
+
+    // 修正前：分組全檔零 status 判斷 ⇒ 引用舊訊息即可對已關閉活動分組（本批意外開出的新功能）。
+    expect(textOf(msgs)).toBe('目前沒有開放報名的活動。');
+    expect(await t.conversations.get(GX, 'U-host')).toBeUndefined();
+  });
+
+  it('[D-025 errata E1] 對照組：quote 指向仍 open 的另一場 → 照常作用於該場（守門未誤傷）', async () => {
+    await t.messageEventMap.record('bot-live2', live2.id);
+
+    await handleMessages(
+      handler,
+      groupTextEvent('+1', { messageId: 'm-ok', quotedMessageId: 'bot-live2' }),
+    );
+
+    expect(await t.registrations.countConfirmed(live2.id)).toBe(1);
+    expect(await t.registrations.countConfirmed(live.id)).toBe(0);
+  });
+});

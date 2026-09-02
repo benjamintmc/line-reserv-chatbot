@@ -88,17 +88,43 @@
 
 > 落筆者：orchestrator（裁決／實作紀錄，比照 D-007／D-021 前例）；設計主體未改。
 
-### E1（architect-reviewer 5b 要求落檔）：`close`／`cancel` 於 quote 上線後的交易外結果會變
+### E1：quote 上線後，`eventId` 不再保證 active——受影響路徑全枚舉
 
-T-033a 期間 quote 恆解出 `undefined`，故 `close`／`cancel`／`edit` 拿到的 `eventId` 必然來自
-`listActiveByGroup` ⇒ `status ∈ {draft, open}`。**T-033b 之後 quote 可指向已 `closed`／`cancelled`
-的活動**（§4.3 明定 `quotedEventId` 不過濾「是否仍在候選集合內」，該場能不能做這件事交給各指令
-自身的狀態判斷）。連帶效果：
+> 初版只列了 `close`／`cancel` 一條（architect-reviewer 5b 的要求）。
+> **T-033b R2 雙審 architect-reviewer B-1 指出該枚舉不完整**，經查證屬實，本節改為完整清單。
 
-- 非授權者引用一場**已關閉**活動下 `關閉報名`／`取消活動` → 交易外授權判定先跑，回
-  `not_authorized` 而**非** `no_active`（交易內重讀仍會正確地判 `no_active`／`already_closed`）。
-- 這是**規範中的行為**，不是回歸：授權失敗優先於狀態失敗，兩者都不洩漏活動內容。
-  日後若要改為「狀態先判」，須另立設計並同步 D-021 §5.1。
+T-033a 期間 quote 恆解出 `undefined`，故所有指令拿到的 `eventId` 必然來自 `listActiveByGroup`
+⇒ `status ∈ {draft, open}`。**T-033b 之後不再成立**：§4.3 明定 `quotedEventId` 不過濾「是否仍在
+候選集合內」，該場能不能做這件事交給各指令自身的狀態判斷。逐指令盤點結果：
+
+| 指令 | T-033b 前的狀態守門 | 判定 |
+|---|---|---|
+| `+N`／`-N` | `isOpenForSignup`（status='open' 且未過期） | ✅ 原本就有，無須改動 |
+| `加開 N` | `status !== 'open'` → `no_open_event`（`registration-service.ts:450`） | ✅ 原本就有 |
+| `編輯` | 鎖內重讀判 `closed`／非 `open`（`event-service.ts:706-708`） | ✅ 原本就有 |
+| `關閉報名`／`取消活動` | 交易外授權先跑、交易內重讀判狀態 | ⚠ 見下方 (1) |
+| **`名單`** | **無**（`findEventForDisplay` 註解宣稱「必為 draft/open，天然正確」） | ❌ **缺陷，T-033b 修正** |
+| **`分組`／`分組 N場`** | **無**（`grouping-service.ts` 全檔零 status 判斷） | ❌ **缺陷，T-033b 修正** |
+| `下一輪` | 不吃 quote（G11，目標活動由 session 決定） | ✅ 不受影響 |
+
+**(1) `close`／`cancel` 的交易外結果會變（規範中的行為，非缺陷）**：非授權者引用一場已關閉活動下
+`關閉報名`／`取消活動` → 交易外授權判定先跑，回 `not_authorized` 而**非** `no_active`（交易內重讀
+仍正確判 `no_active`／`already_closed`）。授權失敗優先於狀態失敗，兩者都不洩漏活動內容。
+日後若要改為「狀態先判」，須另立設計並同步 D-021 §5.1。
+
+**(2) `名單`（已修正）**：`displayPhase` 只認 `{closed, ended, live}`，cancelled 會落到 `live`
+⇒ 引用一則指向**已取消**活動的舊訊息打 `名單`，會把它當進行中活動整份印出來。
+修正：`findEventForDisplay` 的 `eventId` 分支先過 `DISPLAYABLE_EVENT_STATUSES`
+（cancelled/done → `undefined` → `no_open_event`），與下方 fallback 路徑同一條規則；
+`closed` 仍可查、標「（報名已截止）」，不過度收緊。
+
+**(3) `分組`（已修正）**：分組原本由「`eventId` 必來自 active 集」隱式保證，本層從未判 status
+⇒ 引用舊訊息即可對已關閉／已取消的活動分組並寫入 grouping session。
+修正：`groupBalanced`／`startRounds` 加 `isActiveEvent`（`{draft, open}`）守門，**維持 T-033b 前的
+語意**（`關閉報名` 後不能再分組）。若日後要開放「關閉報名後才分組」，那是產品決策，另案處理。
+
+回歸鎖：`src/webhook/d025-quote-mapping.test.ts` 的「D-025 errata E1」段（4 條，含未過度收緊的
+對照組）。已驗證：移除修正後恰好該 2 條轉紅。
 
 ### E2：`message_event_map` 的讀取點（G14 窮舉，T-033b 落地後複驗）
 

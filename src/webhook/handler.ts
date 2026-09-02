@@ -491,8 +491,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   // ── D-011 render（分組；中性純文字，無 mention） ───────────────────────
   /**
    * D-029 §5.3：`BalancedResult` 本身不帶 event（`分組` 只讀名單），故 `eventId` 由呼叫端
-   * （`dispatchSingle`）把消歧義解出的那一場傳進來。`balanced` 分支必然已解出活動——
-   * 沒有活動時 service 會先回 `no_open_event`。
+   * （`dispatchSingle`）把消歧義解出的那一場傳進來。
+   *
+   * `balanced` 配 `eventId === undefined` **不可達**（service 在 `eventId === undefined` 時必先回
+   * `no_open_event`）；保留該分支純為型別收斂，比照 `event-disambiguation.ts` 既有寫法。
    */
   function renderBalanced(result: BalancedResult, eventId: number | undefined): HandleEventResult {
     switch (result.kind) {
@@ -513,7 +515,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  /** D-029 §5.3：`eventId` 同 `renderBalanced`（呼叫端附加；亦已寫入 `GroupingState.eventId`）。 */
+  /**
+   * D-029 §5.3：`eventId` 同 `renderBalanced`（呼叫端附加；亦已寫入 `GroupingState.eventId`）。
+   * 同樣地，`round` 配 `eventId === undefined` 不可達，該分支為型別收斂用。
+   */
   function renderStartRounds(
     result: StartRoundsResult,
     eventId: number | undefined,

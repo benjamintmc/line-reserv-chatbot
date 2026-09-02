@@ -21,7 +21,7 @@ import type { ConversationReader } from '../db/repositories/conversation-reposit
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
 import type { TransactionRunner } from '../db/tx';
-import type { EventRow } from '../db/schema';
+import { ACTIVE_EVENT_STATUSES, type EventRow } from '../db/schema';
 import { buildRoster } from './roster';
 import {
   partitionBalanced,
@@ -107,6 +107,19 @@ export type NextRoundResult =
    */
   | { kind: 'round'; round: Round; mode: GroupMode; eventId?: number };
 
+/**
+ * 目標活動是否仍在 active 集（{draft, open}）。
+ *
+ * **T-033b 起必要**（architect-reviewer B-1，D-025 errata E1）：在此之前 `eventId` 必來自
+ * `listActiveByGroup` ⇒ 由構造保證 active，本層因而從未判過 status。quote 上線後，解出的 id
+ * 刻意不過濾「是否仍在候選集合內」（`event-disambiguation.ts` §4.3 把狀態判斷交給各指令自己），
+ * 分組若不判就會變成「引用一則舊訊息即可對已關閉／已取消的活動分組」——那是本批意外開出的
+ * 新功能，不是既有行為。本守門即**維持 T-033b 前的語意不變**（`關閉報名` 後不能再分組）。
+ */
+function isActiveEvent(event: EventRow | undefined): event is EventRow {
+  return event !== undefined && ACTIVE_EVENT_STATUSES.includes(event.status);
+}
+
 export class GroupingService {
   private readonly events: EventReader;
   private readonly users: UserRepository;
@@ -153,7 +166,7 @@ export class GroupingService {
     // D-021 §5.1：改讀消歧義解出的 `eventId`；undefined = 候選數 0 → 既有 no_open_event。
     const active =
       input.eventId === undefined ? undefined : await this.events.getById(input.eventId);
-    if (active === undefined) return { kind: 'no_open_event' };
+    if (!isActiveEvent(active)) return { kind: 'no_open_event' };
     if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
@@ -166,7 +179,7 @@ export class GroupingService {
     // D-021 §5.1：同 groupBalanced。
     const active =
       input.eventId === undefined ? undefined : await this.events.getById(input.eventId);
-    if (active === undefined) return { kind: 'no_open_event' };
+    if (!isActiveEvent(active)) return { kind: 'no_open_event' };
     if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
