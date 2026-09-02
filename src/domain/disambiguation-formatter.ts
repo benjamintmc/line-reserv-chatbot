@@ -35,9 +35,9 @@ export function truncateForDisplay(s: string, max = 20): string {
 /**
  * `ambiguous`：>1 候選、既無 `@selector` 也無引言（AC-7）。
  *
- * **相位註記（D-026）**：機制 A（`message_event_map` 寫入）屬 T-033b，故 T-033a~b 期間「回覆」
- * （引言）恆無效，唯一可用的指定方式是 `@selector`。此為釘死字串，**不因相位改寫**
- * （改了會製造第二種說法，且 T-033b 落地後須改回）。
+ * **相位註記（D-026）**：機制 A（`message_event_map` 讀寫）已於 **T-033b 落地**，「回覆」（引言）
+ * 自此真正生效——本句在 T-033a~b 之間曾有一段「照做卻無效」的空窗，屬已知並接受的取捨。
+ * 釘死字串本身自始未改（D-026 §一 B-2 裁定不因相位改寫）。
  */
 export function formatAmbiguousEvent(): MessageDescriptor {
   return text('群組內有多場球敘進行中，請回覆或標註 @場地/@時間 以指定要操作的球敘');

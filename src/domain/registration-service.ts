@@ -24,7 +24,12 @@
 // 本層**回傳結構化 domain 結果物件（非 LINE 訊息）**，對 LINE SDK 零耦合、可純測。
 // 嚴禁 any（G11）；不得出現 SQL 字串或直接存取 db（G10）——一律經 repository 原語 / 交易 runner。
 
-import type { EventRow, RegistrationRow, RegistrationStatus } from '../db/schema';
+import {
+  DISPLAYABLE_EVENT_STATUSES,
+  type EventRow,
+  type RegistrationRow,
+  type RegistrationStatus,
+} from '../db/schema';
 import type { EventReader } from '../db/repositories/event-repository';
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
@@ -252,18 +257,25 @@ export class RegistrationService {
   /**
    * 顯示用（`名單`）：候選數 >=1 → 用消歧義解出的那場；候選數 0 → 才退回最新一場可顯示活動
    * （{draft,open,closed} latest-by-id，D-008 §2/OP-4）+ phase。
-   * latest 為 cancelled/無 → undefined（no_open_event）；done 不入顯示集（必被更新 open 取代）。
+   * 兩條路徑都只顯示 {draft,open,closed}；cancelled/done → undefined（no_open_event）。
    */
   private async findEventForDisplay(
     eventId: number | undefined,
     groupId: string,
   ): Promise<{ event: EventRow; phase: ListPhase } | undefined> {
     // D-022 §5.4 / G9：候選數 >= 1（dispatch 已跑完消歧義 ⇒ eventId !== undefined）時
-    // **一律**用解出的那場（必為 draft/open，天然正確）。多場並行下 latest-by-id 已不安全：
-    // 較晚建立但已 closed 的活動會蓋掉仍 open 的較舊活動。
+    // **一律**用解出的那場。多場並行下 latest-by-id 已不安全：較晚建立但已 closed 的活動
+    // 會蓋掉仍 open 的較舊活動。
+    //
+    // **T-033b 起 `eventId` 不再保證是 active**（architect-reviewer B-1，D-025 errata E1）：
+    // quote 解出的 id 刻意不過濾「是否仍在候選集合內」（`event-disambiguation.ts` §4.3），
+    // 因此這裡可能拿到 cancelled/done 的列。`displayPhase` 只認 {closed, ended, live}
+    // ——cancelled 會被歸成 `live`、把已取消的活動當進行中顯示。故先過顯示集，
+    // 與下方 fallback 路徑（`findLatestDisplayable` 本就只回 {draft,open,closed}）採同一條規則。
     if (eventId !== undefined) {
       const event = await this.events.getById(eventId);
       if (event === undefined) return undefined;
+      if (!DISPLAYABLE_EVENT_STATUSES.includes(event.status)) return undefined;
       return { event, phase: displayPhase(event, nowIso()) };
     }
     // **只有**候選數 === 0（eventId === undefined；ambiguous/conflict/not_found/too_many 已於

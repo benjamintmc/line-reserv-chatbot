@@ -21,7 +21,7 @@ import type { ConversationReader } from '../db/repositories/conversation-reposit
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
 import type { TransactionRunner } from '../db/tx';
-import type { EventRow } from '../db/schema';
+import { ACTIVE_EVENT_STATUSES, type EventRow } from '../db/schema';
 import { buildRoster } from './roster';
 import {
   partitionBalanced,
@@ -95,7 +95,30 @@ export type NextRoundResult =
   | { kind: 'no_session' }
   | { kind: 'duplicate' }
   | { kind: 'exhausted' }
-  | { kind: 'round'; round: Round; mode: GroupMode };
+  /**
+   * D-029 §5.3：`eventId` 取自 session（`GroupingState.eventId`），供 handler 附
+   * `relatedEventId`。`下一輪` **不**因此參與消歧義（G11）——它只是把「這輪屬於哪一場」
+   * 如實回報給接線層。
+   *
+   * **選填**：T-033b 上線前建立、尚未結束的 grouping session，其 payload 沒有 `eventId`
+   * 欄位（見 `nextRound` 的相容處理）。這類 session 的 `下一輪` 回覆不登記映射即可
+   * （最多是那幾則舊訊息不能被 quote），**不得**因此改判 `no_session` 而把使用者的
+   * 分組流程打斷。
+   */
+  | { kind: 'round'; round: Round; mode: GroupMode; eventId?: number };
+
+/**
+ * 目標活動是否仍在 active 集（{draft, open}）。
+ *
+ * **T-033b 起必要**（architect-reviewer B-1，D-025 errata E1）：在此之前 `eventId` 必來自
+ * `listActiveByGroup` ⇒ 由構造保證 active，本層因而從未判過 status。quote 上線後，解出的 id
+ * 刻意不過濾「是否仍在候選集合內」（`event-disambiguation.ts` §4.3 把狀態判斷交給各指令自己），
+ * 分組若不判就會變成「引用一則舊訊息即可對已關閉／已取消的活動分組」——那是本批意外開出的
+ * 新功能，不是既有行為。本守門即**維持 T-033b 前的語意不變**（`關閉報名` 後不能再分組）。
+ */
+function isActiveEvent(event: EventRow | undefined): event is EventRow {
+  return event !== undefined && ACTIVE_EVENT_STATUSES.includes(event.status);
+}
 
 export class GroupingService {
   private readonly events: EventReader;
@@ -143,7 +166,7 @@ export class GroupingService {
     // D-021 §5.1：改讀消歧義解出的 `eventId`；undefined = 候選數 0 → 既有 no_open_event。
     const active =
       input.eventId === undefined ? undefined : await this.events.getById(input.eventId);
-    if (active === undefined) return { kind: 'no_open_event' };
+    if (!isActiveEvent(active)) return { kind: 'no_open_event' };
     if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
@@ -156,14 +179,15 @@ export class GroupingService {
     // D-021 §5.1：同 groupBalanced。
     const active =
       input.eventId === undefined ? undefined : await this.events.getById(input.eventId);
-    if (active === undefined) return { kind: 'no_open_event' };
+    if (!isActiveEvent(active)) return { kind: 'no_open_event' };
     if (!(await this.isHost(active, input.executorLineUserId))) {
       return { kind: 'not_authorized' };
     }
     const labels = await this.loadLabels(active.id);
     const started = startSession(
       labels,
-      { courts: input.courts, rounds: input.rounds ?? null, mode: input.mode },
+      // D-029 §5.5：session 綁定消歧義解出的那一場（`active.id`＝鎖前唯讀重讀的權威 id）。
+      { courts: input.courts, rounds: input.rounds ?? null, mode: input.mode, eventId: active.id },
       this.rng,
     );
     if (started.kind === 'insufficient') return { kind: 'insufficient' };
@@ -197,6 +221,8 @@ export class GroupingService {
       return { kind: 'no_session' };
     }
     if (conv.group_id !== input.groupId) return { kind: 'no_session' }; // B1：跨群不得讀他群 session
+    // 舊 payload 相容（T-033b）：跨版本存活的 session 沒有 `eventId`，故 `as GroupingState`
+    // 對該欄位是張空頭支票——只在確實是數字時才往下傳（見 NextRoundResult 的說明）。
     const state = JSON.parse(conv.payload) as GroupingState;
     const advanced = nextRoundPure(state, this.rng);
     if (advanced.kind === 'exhausted') return { kind: 'exhausted' };
@@ -209,7 +235,13 @@ export class GroupingService {
         state: GROUPING_STATE,
         payload: JSON.stringify(advanced.state),
       });
-      return { kind: 'round', round: advanced.round, mode: advanced.state.mode };
+      const eventId: unknown = advanced.state.eventId;
+      return {
+        kind: 'round',
+        round: advanced.round,
+        mode: advanced.state.mode,
+        ...(typeof eventId === 'number' ? { eventId } : {}),
+      };
     });
   }
 }

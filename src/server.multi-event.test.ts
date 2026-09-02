@@ -4,6 +4,7 @@ import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { buildServer, type ReplyClient } from './server';
 import { config } from './config';
 import type { WebhookHandler } from './webhook/handler';
+import type { MessageEventMapWriter } from './db/repositories/message-event-map-repository';
 
 // 覆蓋缺口補強（unit-tester，T-012 覆核）：AC-4 於「多事件」與「單事件失敗」下的時序。
 // §4 明載：一個 webhook body 可含多事件 → Promise.all 並行處理、**全部 await 完成才回 200**；
@@ -26,26 +27,34 @@ function msgEvent(id: string, replyToken: string): WebhookEvent {
   } as unknown as WebhookEvent;
 }
 
+/** 空的映射寫入端：本檔驗時序與錯誤隔離，不驗機制 A（見 d025-quote-mapping.test.ts）。 */
+const noopMap: MessageEventMapWriter = { record: async (): Promise<void> => {} };
+
+/** LINE `replyMessage` 的最小合法回應。 */
+function sentOnce(id = 's1'): messagingApi.ReplyMessageResponse {
+  return { sentMessages: [{ id, quoteToken: 'q1' }] };
+}
+
 describe('server 多事件 / 錯誤隔離時序（D-007 §4 / G3）', () => {
   it('[D-007 AC-4] 多事件 body：全部 handleEvent + replyMessage 於回 200 前完成', async () => {
     const handled: string[] = [];
     const replied: string[] = [];
     let sent = false;
     const handler: WebhookHandler = {
-      handleEvent: async (event): Promise<messagingApi.Message[]> => {
+      handleEvent: async (event) => {
         handled.push((event as { message: { id: string } }).message.id);
-        return [{ type: 'text', text: 'ok' }];
+        return { messages: [{ type: 'text', text: 'ok' }] };
       },
     };
     const replyClient: ReplyClient = {
-      replyMessage: async (req): Promise<unknown> => {
+      replyMessage: async (req): Promise<messagingApi.ReplyMessageResponse> => {
         // 回 200 之前，reply 必須尚未被 onSend 標記（先處理再回 200）。
         expect(sent).toBe(false);
         replied.push((req as { replyToken: string }).replyToken);
-        return {};
+        return sentOnce();
       },
     };
-    const app = buildServer(handler, replyClient);
+    const app = buildServer({ handler, replyClient, messageEventMap: noopMap });
     app.addHook('onSend', async (_req, _reply, payload) => {
       sent = true;
       return payload;
@@ -68,19 +77,19 @@ describe('server 多事件 / 錯誤隔離時序（D-007 §4 / G3）', () => {
   it('[D-007 AC-4] 單事件 handleEvent 拋錯：記 log 不中止其他事件，整體仍回 200', async () => {
     const replied: string[] = [];
     const handler: WebhookHandler = {
-      handleEvent: async (event): Promise<messagingApi.Message[]> => {
+      handleEvent: async (event) => {
         const id = (event as { message: { id: string } }).message.id;
         if (id === 'boom') throw new Error('handler 爆炸');
-        return [{ type: 'text', text: 'ok' }];
+        return { messages: [{ type: 'text', text: 'ok' }] };
       },
     };
     const replyClient: ReplyClient = {
-      replyMessage: async (req): Promise<unknown> => {
+      replyMessage: async (req): Promise<messagingApi.ReplyMessageResponse> => {
         replied.push((req as { replyToken: string }).replyToken);
-        return {};
+        return sentOnce();
       },
     };
-    const app = buildServer(handler, replyClient);
+    const app = buildServer({ handler, replyClient, messageEventMap: noopMap });
 
     const body = bodyWith([msgEvent('boom', 'rt-boom'), msgEvent('ok1', 'rt-ok')]);
     const res = await app.inject({
@@ -98,12 +107,12 @@ describe('server 多事件 / 錯誤隔離時序（D-007 §4 / G3）', () => {
 
   it('[D-007 AC-4] replyMessage 拋錯：記 log 不影響回 200（回覆送出失敗不使 webhook 失敗）', async () => {
     const handler: WebhookHandler = {
-      handleEvent: async (): Promise<messagingApi.Message[]> => [{ type: 'text', text: 'ok' }],
+      handleEvent: async () => ({ messages: [{ type: 'text', text: 'ok' }] }),
     };
     const replyClient: ReplyClient = {
       replyMessage: vi.fn().mockRejectedValue(new Error('reply 失敗')),
     };
-    const app = buildServer(handler, replyClient);
+    const app = buildServer({ handler, replyClient, messageEventMap: noopMap });
 
     const body = bodyWith([msgEvent('m1', 'rt1')]);
     const res = await app.inject({

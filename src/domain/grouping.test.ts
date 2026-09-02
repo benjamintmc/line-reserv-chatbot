@@ -33,6 +33,9 @@ function allNames(groups: string[][]): string[] {
   return groups.flat().sort();
 }
 
+/** D-029 §5.5：純函式測試不涉及真實活動，session 綁定的 eventId 給固定值。 */
+const SESSION_EVENT_ID = 1;
+
 /** 跑 rounds 輪（startSession + nextRound*），回傳最終 state 與各輪。 */
 function runRounds(
   n: number,
@@ -41,7 +44,8 @@ function runRounds(
   total: number,
 ): { state: GroupingState; rounds: Round[] } {
   const rng = mulberry32(seed);
-  const start = startSession(labels(n), opts, rng);
+  // eventId 為 session 綁定欄位（D-029 §5.5），不參與分組運算 → 純函式測試給固定值即可。
+  const start = startSession(labels(n), { ...opts, eventId: SESSION_EVENT_ID }, rng);
   if (start.kind !== 'round') throw new Error('expected round');
   let state = start.state;
   const rounds: Round[] = [start.round];
@@ -136,7 +140,7 @@ describe('D-011 策略B：逐輪輪替排程', () => {
   });
 
   it('[D-011 AC-11] 啟動只輸出「第 1 輪」（單一輪、round=1）', () => {
-    const start = startSession(labels(16), { courts: 4, mode: 'doubles' }, mulberry32(9));
+    const start = startSession(labels(16), { courts: 4, mode: 'doubles', eventId: SESSION_EVENT_ID }, mulberry32(9));
     if (start.kind !== 'round') throw new Error('expected round');
     expect(start.round.round).toBe(1);
     expect(start.state.round).toBe(1);
@@ -144,7 +148,7 @@ describe('D-011 策略B：逐輪輪替排程', () => {
 
   it('[D-011 AC-12] 雙打 M 未帶 → floor(N/4)（N=12 → 3 場）', () => {
     expect(defaultCourts(12, 'doubles')).toBe(3);
-    const start = startSession(labels(12), { mode: 'doubles' }, mulberry32(10));
+    const start = startSession(labels(12), { mode: 'doubles', eventId: SESSION_EVENT_ID }, mulberry32(10));
     if (start.kind !== 'round') throw new Error('expected round');
     expect(start.round.courts).toHaveLength(3);
   });
@@ -163,7 +167,7 @@ describe('D-011 策略B：逐輪輪替排程', () => {
 
   it('[D-011 AC-19] 單打 M 未帶 → floor(N/2)（N=10 → 5 場）', () => {
     expect(defaultCourts(10, 'singles')).toBe(5);
-    const start = startSession(labels(10), { mode: 'singles' }, mulberry32(11));
+    const start = startSession(labels(10), { mode: 'singles', eventId: SESSION_EVENT_ID }, mulberry32(11));
     if (start.kind !== 'round') throw new Error('expected round');
     expect(start.round.courts).toHaveLength(5);
   });
@@ -178,7 +182,7 @@ describe('D-011 策略B：逐輪輪替排程', () => {
   it('[D-011 AC-22] R 上限：帶 5輪 到第 5 輪後 exhausted；未帶（null）可連續 >5 輪', () => {
     // 帶上限：rounds=2 → 第 1、2 輪後 exhausted。
     const rng = mulberry32(8);
-    const start = startSession(labels(8), { courts: 2, rounds: 2, mode: 'doubles' }, rng);
+    const start = startSession(labels(8), { courts: 2, rounds: 2, mode: 'doubles', eventId: SESSION_EVENT_ID }, rng);
     if (start.kind !== 'round') throw new Error('expected round');
     const r2 = nextRound(start.state, rng);
     if (r2.kind !== 'round') throw new Error('expected round');
@@ -192,6 +196,6 @@ describe('D-011 策略B：逐輪輪替排程', () => {
   });
 
   it('連一場都湊不滿（單打 N=1）→ insufficient', () => {
-    expect(startSession(labels(1), { mode: 'singles' }, mulberry32(1)).kind).toBe('insufficient');
+    expect(startSession(labels(1), { mode: 'singles', eventId: SESSION_EVENT_ID }, mulberry32(1)).kind).toBe('insufficient');
   });
 });

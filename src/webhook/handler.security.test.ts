@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { handleMessages } from './__tests__/handle-messages';
 import type { WebhookEvent } from '@line/bot-sdk';
 import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
@@ -29,6 +30,7 @@ function makeHandler(
   logError?: (msg: string, meta?: Record<string, unknown>) => void,
 ): WebhookHandler {
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: new GroupingService({
@@ -79,9 +81,9 @@ describe('資安 M4：textV2 大括號跳脫', () => {
 
     // 代報名字是使用者可控、且**落在 mention 範圍之外**的文字 ⇒ M4 的真實利用路徑。
     // 未跳脫時 `{m0}` 會被 LINE 當成第 0 個 mention 佔位符（冒名），或整則被 API 拒絕。
-    await handler.handleEvent(groupTextEvent('+1', { userId: 'U-a', messageId: 'ma' }));
-    await handler.handleEvent(groupTextEvent('+1 {m0}壞人', { userId: 'U-w', messageId: 'mw' }));
-    const out = await handler.handleEvent(groupTextEvent('-1', { userId: 'U-a', messageId: 'mc' }));
+    await handleMessages(handler, groupTextEvent('+1', { userId: 'U-a', messageId: 'ma' }));
+    await handleMessages(handler, groupTextEvent('+1 {m0}壞人', { userId: 'U-w', messageId: 'mw' }));
+    const out = await handleMessages(handler, groupTextEvent('-1', { userId: 'U-a', messageId: 'mc' }));
 
     const notice = out[out.length - 1]!;
     expect(notice.type).toBe('textV2');
@@ -103,7 +105,7 @@ describe('資安 M4：textV2 大括號跳脫', () => {
       getGroupMemberProfile: vi.fn().mockResolvedValue({ displayName: 'X' }),
     });
     // 無進行中活動 → 純拒絕文案，type 應為 text。
-    const out = await handler.handleEvent(groupTextEvent('+1', { userId: 'U-a', messageId: 'm0' }));
+    const out = await handleMessages(handler, groupTextEvent('+1', { userId: 'U-a', messageId: 'm0' }));
     expect(out[0]?.type).toBe('text');
   });
 });
@@ -138,7 +140,7 @@ describe('資安 M5：log 識別碼去識別化', () => {
       },
     );
 
-    await handler.handleEvent(groupTextEvent('+1', { userId: 'U-secret', messageId: 'm1' }));
+    await handleMessages(handler, groupTextEvent('+1', { userId: 'U-secret', messageId: 'm1' }));
 
     expect(logged.length).toBeGreaterThan(0);
     const dump = JSON.stringify(logged);

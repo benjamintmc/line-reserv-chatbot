@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { handleMessages } from './__tests__/handle-messages';
 import type { WebhookEvent } from '@line/bot-sdk';
 import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
@@ -56,6 +57,7 @@ function makeHandler(
   opts: { groups?: GroupRepository; groupSummary?: GroupSummaryClient } = {},
 ): WebhookHandler {
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: opts.groups ?? t.groups,
     groupSummary: opts.groupSummary,
@@ -111,7 +113,7 @@ describe('D-018 觸及與擴散觀測', () => {
 
   it('[D-018 AC-1] join 事件建立 groups 列且完全不回覆', async () => {
     const handler = makeHandler(t);
-    const msgs = await handler.handleEvent(lifecycleEvent('join'));
+    const msgs = await handleMessages(handler, lifecycleEvent('join'));
 
     expect(msgs).toEqual([]); // G2：join 不回覆。
 
@@ -123,25 +125,25 @@ describe('D-018 觸及與擴散觀測', () => {
 
   it('[D-018 AC-2] leave 寫入 left_at；重複 leave 不覆蓋首次離開時間', async () => {
     const handler = makeHandler(t);
-    await handler.handleEvent(lifecycleEvent('join'));
+    await handleMessages(handler, lifecycleEvent('join'));
 
-    const leaveMsgs = await handler.handleEvent(lifecycleEvent('leave'));
+    const leaveMsgs = await handleMessages(handler, lifecycleEvent('leave'));
     expect(leaveMsgs).toEqual([]); // G2：leave 亦不回覆。
     const first = (await t.groups.get('G-1'))?.left_at;
     expect(first).not.toBeNull();
 
     // LINE 可能重送 leave；首次離開時間是指標依據，不得被覆蓋。
-    await handler.handleEvent(lifecycleEvent('leave'));
+    await handleMessages(handler, lifecycleEvent('leave'));
     expect((await t.groups.get('G-1'))?.left_at).toBe(first);
   });
 
   it('[D-018 AC-3] 被移出後再度加入：left_at 清回 null，joined_at 維持首次值', async () => {
     const handler = makeHandler(t);
-    await handler.handleEvent(lifecycleEvent('join'));
+    await handleMessages(handler, lifecycleEvent('join'));
     const firstJoinedAt = (await t.groups.get('G-1'))?.joined_at;
-    await handler.handleEvent(lifecycleEvent('leave'));
+    await handleMessages(handler, lifecycleEvent('leave'));
 
-    await handler.handleEvent(lifecycleEvent('join'));
+    await handleMessages(handler, lifecycleEvent('join'));
     const row = await t.groups.get('G-1');
     expect(row?.left_at).toBeNull();
     // 指標問的是「這個群何時開始接觸產品」，不是最近一次加入。
@@ -153,13 +155,13 @@ describe('D-018 觸及與擴散觀測', () => {
     const handler = makeHandler(t, { groupSummary: summary });
 
     // 刻意用「雜訊」訊息：加了機器人卻從不開團的群，只會產生這種訊息。
-    await handler.handleEvent(groupTextEvent('今天天氣真好', { messageId: 'm-1' }));
+    await handleMessages(handler, groupTextEvent('今天天氣真好', { messageId: 'm-1' }));
     const row = await t.groups.get('G-1');
     expect(row?.discovered_via).toBe('message');
     expect(row?.group_name).toBe('週三球敘');
     expect(summary.getGroupSummary).toHaveBeenCalledTimes(1);
 
-    await handler.handleEvent(groupTextEvent('那再約', { messageId: 'm-2' }));
+    await handleMessages(handler, groupTextEvent('那再約', { messageId: 'm-2' }));
     // G4：每群一生最多一次名稱查詢，不得落在每則訊息的熱路徑上。
     expect(summary.getGroupSummary).toHaveBeenCalledTimes(1);
 
@@ -171,13 +173,14 @@ describe('D-018 觸及與擴散觀測', () => {
     await seedEvent(t, { capacity: 4, groupId: 'G-1' });
 
     // 基準：未接名稱查詢時的回覆。
-    const baseline = await makeHandler(t).handleEvent(
+    const baseline = await handleMessages(
+      makeHandler(t),
       groupTextEvent('名單', { messageId: 'm-base' }),
     );
     await t.pool.query('DELETE FROM groups');
 
     const handler = makeHandler(t, { groupSummary: summaryClient(new Error('LINE 500')) });
-    const msgs = await handler.handleEvent(groupTextEvent('名單', { messageId: 'm-1' }));
+    const msgs = await handleMessages(handler, groupTextEvent('名單', { messageId: 'm-1' }));
 
     expect(msgs).toEqual(baseline); // G1：使用者看到的東西完全一樣。
     const row = await t.groups.get('G-1');
@@ -187,7 +190,8 @@ describe('D-018 觸及與擴散觀測', () => {
 
   it('[D-018 AC-6] groups 寫入拋錯時，使用者仍收到原本的回覆', async () => {
     await seedEvent(t, { capacity: 4, groupId: 'G-1' });
-    const baseline = await makeHandler(t).handleEvent(
+    const baseline = await handleMessages(
+      makeHandler(t),
       groupTextEvent('名單', { messageId: 'm-base' }),
     );
 
@@ -196,7 +200,7 @@ describe('D-018 觸及與擴散觀測', () => {
     vi.spyOn(broken, 'recordSeen').mockRejectedValue(new Error('DB down'));
     const handler = makeHandler(t, { groups: broken });
 
-    const msgs = await handler.handleEvent(groupTextEvent('名單', { messageId: 'm-1' }));
+    const msgs = await handleMessages(handler, groupTextEvent('名單', { messageId: 'm-1' }));
     // G1：統計壞掉不得讓報名一起壞掉。
     expect(msgs).toEqual(baseline);
   });
@@ -204,9 +208,9 @@ describe('D-018 觸及與擴散觀測', () => {
   it('[D-018 AC-8] 非群組來源（1:1／room）的 join 與訊息一律不寫入 groups', async () => {
     const handler = makeHandler(t);
 
-    await handler.handleEvent(lifecycleEvent('join', { type: 'user', userId: 'U-solo' }));
-    await handler.handleEvent(lifecycleEvent('join', { type: 'room', roomId: 'R-1' }));
-    await handler.handleEvent({
+    await handleMessages(handler, lifecycleEvent('join', { type: 'user', userId: 'U-solo' }));
+    await handleMessages(handler, lifecycleEvent('join', { type: 'room', roomId: 'R-1' }));
+    await handleMessages(handler, {
       type: 'message',
       message: { type: 'text', id: 'm-1', text: '名單' },
       source: { type: 'user', userId: 'U-solo' },

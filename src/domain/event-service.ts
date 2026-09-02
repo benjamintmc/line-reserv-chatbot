@@ -175,6 +175,8 @@ export interface EditEventInput {
 export type EditEventResult =
   | {
       kind: 'ok';
+      /** D-029 §5.3：被編輯的活動 id（供 handler 附 `relatedEventId`）。 */
+      eventId: number;
       field: EditField;
       /** 改前值（date/time 為合併後完整時刻 `YYYY-MM-DD HH:MM`；D-019：費用切換模式時為帶標籤全稱）。 */
       before: string;
@@ -802,6 +804,7 @@ export class EventService {
       //    （比照 buildPromotionNotice／renderAddCapacity），不得在鎖內做 N+1 查詢延長鎖期（N5/G9）。
       return {
         kind: 'ok',
+        eventId: fresh.id,
         field: req.field,
         before,
         after,

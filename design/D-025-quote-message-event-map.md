@@ -1,7 +1,6 @@
 # D-025: 機制 A — quote-reply → `message_event_map`（含跨群校驗 B1）
 
 - 狀態：**APPROVED（繼承 D-020，2026-09-01）**——設計內容自 D-020 §4.1 **逐字**切出，未改動任何已核可決定。
-- AC 覆蓋：**待動工豁免**（**T-033b** 尚未動工；**動工時必須移除本行**，否則本檔 5 條 AC 不受檢＝假綠）。
 - 風險等級：**R2（高）**——G14／AC-28 為跨群資訊外洩的防禦深度（architect-reviewer B1 blocker 的修復），屬授權/隔離類。
 - 來源：D-020 §4.1；內文所有 `§x` 皆指 **D-020 的舊章節編號**（轉址表見 umbrella `D-020`）。相依：D-021（表由 0006 建立）、D-026（`resolveQuotedEventInGroup` 的插入點）。同屬 T-033b：D-029。
 
@@ -84,3 +83,60 @@
   （`undefined`），行為等同「群組 X 有 2 場、無引言、無 selector」→ 回既有 `ambiguous` 提示
   （「群組內有多場球敘進行中...」），**訊息內容不含群組 Y 任一活動的場地／時間／id**；不呼叫
   任何 service、不誤判定到群組 Y 的活動、不 markProcessed。
+
+## 四、errata（T-033b 動工時追加，2026-09-02）
+
+> 落筆者：orchestrator（裁決／實作紀錄，比照 D-007／D-021 前例）；設計主體未改。
+
+### E1：quote 上線後，`eventId` 不再保證 active——受影響路徑全枚舉
+
+> 初版只列了 `close`／`cancel` 一條（architect-reviewer 5b 的要求）。
+> **T-033b R2 雙審 architect-reviewer B-1 指出該枚舉不完整**，經查證屬實，本節改為完整清單。
+
+T-033a 期間 quote 恆解出 `undefined`，故所有指令拿到的 `eventId` 必然來自 `listActiveByGroup`
+⇒ `status ∈ {draft, open}`。**T-033b 之後不再成立**：§4.3 明定 `quotedEventId` 不過濾「是否仍在
+候選集合內」，該場能不能做這件事交給各指令自身的狀態判斷。逐指令盤點結果：
+
+| 指令 | T-033b 前的狀態守門 | 判定 |
+|---|---|---|
+| `+N`／`-N` | `isOpenForSignup`（status='open' 且未過期） | ✅ 原本就有，無須改動 |
+| `加開 N` | `status !== 'open'` → `no_open_event`（`registration-service.ts:450`） | ✅ 原本就有 |
+| `編輯`／`編輯`（說明） | 鎖內重讀判 `closed`／非 `open`（`event-service.ts:706-708`） | ✅ 原本就有 |
+| `關閉報名`／`取消活動` | 交易外授權先跑、交易內重讀判狀態 | ⚠ 見下方 (1) |
+| **`名單`** | **無**（`findEventForDisplay` 註解宣稱「必為 draft/open，天然正確」） | ❌ **缺陷，T-033b 修正** |
+| **`分組`／`分組 N場`** | **無**（`grouping-service.ts` 全檔零 status 判斷） | ❌ **缺陷，T-033b 修正** |
+| `下一輪` | 不吃 quote（G11，目標活動由 session 決定） | ✅ 不受影響 |
+
+> **表列涵蓋 `NEEDS_EVENT_SET` 全部 9 個成員**（`handler.ts:141-151`）。`編輯` 那列涵蓋兩個
+> command type：`edit_event` 與 **`edit_help`**——後者走的是**不同的 render 分支**
+> （`renderEdit/help` 會輸出該場活動現值），但共用同一道鎖內守門（`help` 分支在
+> `event-service.ts:725`，位於 `:704-709` 的狀態判定**之後**）⇒ 引用已取消活動打 `編輯`
+> 不會印出現值。**特意點名，是因為日後有人單獨動 help 路徑時，表上沒點名就擋不住**
+> （architect-reviewer 複審 nit，2026-09-02）。
+
+**(1) `close`／`cancel` 的交易外結果會變（規範中的行為，非缺陷）**：非授權者引用一場已關閉活動下
+`關閉報名`／`取消活動` → 交易外授權判定先跑，回 `not_authorized` 而**非** `no_active`（交易內重讀
+仍正確判 `no_active`／`already_closed`）。授權失敗優先於狀態失敗，兩者都不洩漏活動內容。
+日後若要改為「狀態先判」，須另立設計並同步 D-021 §5.1。
+
+**(2) `名單`（已修正）**：`displayPhase` 只認 `{closed, ended, live}`，cancelled 會落到 `live`
+⇒ 引用一則指向**已取消**活動的舊訊息打 `名單`，會把它當進行中活動整份印出來。
+修正：`findEventForDisplay` 的 `eventId` 分支先過 `DISPLAYABLE_EVENT_STATUSES`
+（cancelled/done → `undefined` → `no_open_event`），與下方 fallback 路徑同一條規則；
+`closed` 仍可查、標「（報名已截止）」，不過度收緊。
+
+**(3) `分組`（已修正）**：分組原本由「`eventId` 必來自 active 集」隱式保證，本層從未判 status
+⇒ 引用舊訊息即可對已關閉／已取消的活動分組並寫入 grouping session。
+修正：`groupBalanced`／`startRounds` 加 `isActiveEvent`（`{draft, open}`）守門，**維持 T-033b 前的
+語意**（`關閉報名` 後不能再分組）。若日後要開放「關閉報名後才分組」，那是產品決策，另案處理。
+
+回歸鎖：`src/webhook/d025-quote-mapping.test.ts` 的「D-025 errata E1」段（4 條，含未過度收緊的
+對照組）。已驗證：移除修正後恰好該 2 條轉紅。
+
+### E2：`message_event_map` 的讀取點（G14 窮舉，T-033b 落地後複驗）
+
+生產碼**只有一處**讀取：`handler.ts` 的 `resolveQuotedEvent` → 立即交給
+`resolveQuotedEventInGroup` 以 `events.getById` 比對 `group_id`。repository 的 `getEventId`
+無其他呼叫端。**新增讀取點時必須經過 `resolveQuotedEventInGroup`**，不得把
+`getEventId` 的結果直接交給 service 或 `resolveTargetEvent`（`conversation_states` 前例：
+寫入有存 `group_id`、5 個讀取點全沒用）。

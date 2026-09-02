@@ -26,6 +26,19 @@
 >
 > **本節由 orchestrator 落筆記錄使用者裁決，尚未經 architect 確認。**
 
+## errata（2026-09-02，T-033b 落地；來源 R2 雙審 design-reviewer nit-1）
+
+> **下方「〔切檔新增〕相位說明」與「〔切檔複審新增〕」兩段自 commit `41c15fc` 起為歷史敘述，
+> 不再描述現況。** 機制 A（`message_event_map` 讀寫）已隨 T-033b 落地：
+>
+> - 步驟 4 的 `quotedEventId` **不再恆為 `undefined`**；`resolveQuotedEventInGroup` 是生產碼中
+>   `message_event_map` 的唯一讀取消費點，G14／AC-28 已實作並有測試（D-025 errata E2）。
+> - AC-7 釘死文案中的「**回覆**」（引言）**自此真正生效**，與 `@selector` 兩種指定方式並存。
+>   T-033a~b 之間那段「照做卻靜默無效」的空窗已結束；釘死字串自始未改（B-2 裁定不因相位改寫）。
+> - 仍未落地的只剩 §3.5 開團側（同群 open 上限、開團查重）——屬 **T-033c**（D-027／D-028）。
+>
+> 兩段歷史敘述保留不刪，以免後續 agent 對照 commit 歷史時失去脈絡。
+
 ## 一、設計內容
 
 > **〔切檔新增〕相位說明**：本檔描述 dispatch 管線的**最終狀態**。T-033a 落地時機制 A 尚未實作，

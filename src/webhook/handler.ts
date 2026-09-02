@@ -30,6 +30,7 @@ import { parseCommand, splitSelector } from '../commands';
 import type { InvalidReason, ParsedCommand } from '../commands/types';
 import type { RegistrationRow } from '../db/schema';
 import type { EventReader } from '../db/repositories/event-repository';
+import type { MessageEventMapReader } from '../db/repositories/message-event-map-repository';
 import { resolveTargetEvent } from '../domain/event-disambiguation';
 import {
   formatAmbiguousEvent,
@@ -166,8 +167,10 @@ function needsEventResolution(cmd: ParsedCommand): boolean {
  *
  * **跨群防線只設在此一處**：service 內 `getById(eventId)` 不重複比對 `group_id`。
  *
- * 相位（D-026）：機制 A（`message_event_map` 的**寫入**）屬 T-033b，故本批 `rawEventId` 恆為
- * `undefined`，本函式恆解出 `undefined`（＝「未引言」，落既有分支，無新行為）。
+ * **本函式是 `message_event_map` 在生產碼的唯一讀取消費點**（T-033b 落地後仍然是；
+ * repository 的 `getEventId` 只被 `resolveQuotedEvent` 呼叫，其結果只流進這裡）。
+ * 新增任何「由 quote 解出 eventId」的路徑時**必須**經過本函式，不得直接把
+ * `messageEventMap.getEventId` 的結果交給 service 或 `resolveTargetEvent`（G14）。
  */
 async function resolveQuotedEventInGroup(
   rawEventId: number | undefined,
@@ -204,6 +207,12 @@ export interface WebhookHandlerDeps {
    * 唯讀介面（pool-bound）；本層不寫任何 event。
    */
   events: EventReader;
+  /**
+   * D-025 §4.1：quote（引言）→ 活動 id 的查表來源（機制 A 的**讀取**端）。
+   * **必填**——選填會讓「引言指定活動」靜默失效而無人察覺（理由同 D-018 §1 的先例）。
+   * 寫入端在 `server.ts`（G3：只能用 `replyMessage` 回應的 `sentMessages[].id`）。
+   */
+  messageEventMap: MessageEventMapReader;
   users: UserRepository;
   conversations: ConversationReader;
   profile: GroupProfileClient;
@@ -220,14 +229,42 @@ export interface WebhookHandlerDeps {
   logError?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
+/**
+ * D-025 §4.1：單一事件的處理結果。
+ *
+ * 與舊版（直接回 `Message[]`）的差別只在多帶一個「這次回覆屬於哪一場活動」——
+ * `server.ts` 在 reply **成功之後**用它把 `sentMessages[].id` 寫進 `message_event_map`（G3）。
+ */
+export interface HandleEventResult {
+  messages: messagingApi.Message[];
+  /** 這次回覆若與某一場具體活動相關，其 id；undefined = 不寫入 `message_event_map`。 */
+  relatedEventId?: number;
+}
+
 export interface WebhookHandler {
-  /** 處理單一 WebhookEvent，回傳待 reply 的 LINE 訊息陣列（空陣列＝不回覆）。 */
-  handleEvent(event: WebhookEvent): Promise<messagingApi.Message[]>;
+  /** 處理單一 WebhookEvent，回傳待 reply 的 LINE 訊息（空陣列＝不回覆）與其活動錨點。 */
+  handleEvent(event: WebhookEvent): Promise<HandleEventResult>;
 }
 
 /** 純文字 LINE 訊息（分組回覆無 mention，直接組 TextMessage）。 */
 function textMessage(text: string): messagingApi.Message {
   return { type: 'text', text };
+}
+
+/** 不回覆（同時也不會有任何 `sentMessages` 可登記）。 */
+const NO_REPLY: HandleEventResult = { messages: [] };
+
+/**
+ * 有回覆、但**不**錨定到任何單一活動——對應 D-029 §5.3 的「明確不附」清單。
+ * 新增分支時請先回該表確認歸屬，不得憑感覺選 `plain` 或 `anchored`（G4）。
+ */
+function plain(...messages: messagingApi.Message[]): HandleEventResult {
+  return { messages };
+}
+
+/** 有回覆且錨定到某一場活動——對應 D-029 §5.3 表列分支（`relatedEventId` 來源見該表）。 */
+function anchored(eventId: number, ...messages: messagingApi.Message[]): HandleEventResult {
+  return { messages, relatedEventId: eventId };
 }
 
 /**
@@ -366,16 +403,16 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   }
 
   // ── D-003 render（D-008：新增 event_ended / 名單 phase） ────────────────
-  function renderSignup(result: SignupResult): messagingApi.Message[] {
+  function renderSignup(result: SignupResult): HandleEventResult {
     switch (result.kind) {
       case 'no_open_event':
-        return [toLineMessage(formatNoOpenEvent())];
+        return plain(toLineMessage(formatNoOpenEvent()));
       case 'event_ended':
-        return [toLineMessage(formatEventEnded())]; // D-008 §8(1)/AC-4
+        return plain(toLineMessage(formatEventEnded())); // D-008 §8(1)/AC-4
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'ok':
-        return [toLineMessage(formatSignup(result))];
+        return anchored(result.view.event.id, toLineMessage(formatSignup(result)));
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -386,23 +423,23 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   async function renderCancel(
     result: CancelResult,
     proxyName?: string,
-  ): Promise<messagingApi.Message[]> {
+  ): Promise<HandleEventResult> {
     switch (result.kind) {
       case 'no_open_event':
-        return [toLineMessage(formatNoOpenEvent())];
+        return plain(toLineMessage(formatNoOpenEvent()));
       case 'event_ended':
-        return [toLineMessage(formatEventEnded())]; // D-008 §8(1)/AC-4
+        return plain(toLineMessage(formatEventEnded())); // D-008 §8(1)/AC-4
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'nothing_to_cancel':
-        return [toLineMessage(formatNothingToCancel(proxyName))];
+        return plain(toLineMessage(formatNothingToCancel(proxyName)));
       case 'ok': {
         const messages = [toLineMessage(formatCancel(result))];
         if (result.promoted.length > 0) {
           const notices = await Promise.all(result.promoted.map((row) => buildPromotionNotice(row)));
           messages.push(toLineMessage(formatPromotionNotice(notices)));
         }
-        return messages;
+        return anchored(result.view.event.id, ...messages);
       }
       default: {
         const _exhaustive: never = result;
@@ -411,14 +448,15 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderList(result: ListResult): messagingApi.Message[] {
+  function renderList(result: ListResult): HandleEventResult {
     switch (result.kind) {
       case 'no_open_event':
-        return [toLineMessage(formatNoOpenEvent())];
+        return plain(toLineMessage(formatNoOpenEvent()));
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'ok':
-        return [toLineMessage(formatList(result.view, result.phase))]; // D-008 §8(3)：phase 化
+        // D-008 §8(3)：phase 化
+        return anchored(result.view.event.id, toLineMessage(formatList(result.view, result.phase)));
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -427,21 +465,21 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   }
 
   // ── D-010 render（加開名額；單一則：公告 + 名單 + 同則遞補 @，需 await 解析 owner） ──
-  async function renderAddCapacity(result: AddCapacityResult): Promise<messagingApi.Message[]> {
+  async function renderAddCapacity(result: AddCapacityResult): Promise<HandleEventResult> {
     switch (result.kind) {
       case 'no_open_event':
-        return [toLineMessage(formatNoOpenEvent())];
+        return plain(toLineMessage(formatNoOpenEvent()));
       case 'event_ended':
-        return [toLineMessage(formatAddCapacityEnded())];
+        return plain(toLineMessage(formatAddCapacityEnded()));
       case 'not_authorized':
-        return [toLineMessage(formatAddCapacityNotAuthorized())];
+        return plain(toLineMessage(formatAddCapacityNotAuthorized()));
       case 'over_limit':
-        return [toLineMessage(formatAddCapacityOverLimit())];
+        return plain(toLineMessage(formatAddCapacityOverLimit()));
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'ok': {
         const notices = await Promise.all(result.promoted.map((row) => buildPromotionNotice(row)));
-        return [toLineMessage(formatAddCapacity(result, notices))];
+        return anchored(result.view.event.id, toLineMessage(formatAddCapacity(result, notices)));
       }
       default: {
         const _exhaustive: never = result;
@@ -451,16 +489,25 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   }
 
   // ── D-011 render（分組；中性純文字，無 mention） ───────────────────────
-  function renderBalanced(result: BalancedResult): messagingApi.Message[] {
+  /**
+   * D-029 §5.3：`BalancedResult` 本身不帶 event（`分組` 只讀名單），故 `eventId` 由呼叫端
+   * （`dispatchSingle`）把消歧義解出的那一場傳進來。
+   *
+   * `balanced` 配 `eventId === undefined` **不可達**（service 在 `eventId === undefined` 時必先回
+   * `no_open_event`）；保留該分支純為型別收斂，比照 `event-disambiguation.ts` 既有寫法。
+   */
+  function renderBalanced(result: BalancedResult, eventId: number | undefined): HandleEventResult {
     switch (result.kind) {
       case 'no_open_event':
-        return [toLineMessage(formatNoOpenEvent())];
+        return plain(toLineMessage(formatNoOpenEvent()));
       case 'not_authorized':
-        return [textMessage(formatGroupNotHost())]; // errata：分組 host-only（非主辦含 super-admin 皆拒）
+        return plain(textMessage(formatGroupNotHost())); // errata：分組 host-only（非主辦含 super-admin 皆拒）
       case 'duplicate':
-        return []; // B2：策略A 唯讀去重（重送不重算、不二次回覆）
+        return NO_REPLY; // B2：策略A 唯讀去重（重送不重算、不二次回覆）
       case 'balanced':
-        return [textMessage(formatPartition(result.result))];
+        return eventId === undefined
+          ? plain(textMessage(formatPartition(result.result)))
+          : anchored(eventId, textMessage(formatPartition(result.result)));
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -468,18 +515,27 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderStartRounds(result: StartRoundsResult): messagingApi.Message[] {
+  /**
+   * D-029 §5.3：`eventId` 同 `renderBalanced`（呼叫端附加；亦已寫入 `GroupingState.eventId`）。
+   * 同樣地，`round` 配 `eventId === undefined` 不可達，該分支為型別收斂用。
+   */
+  function renderStartRounds(
+    result: StartRoundsResult,
+    eventId: number | undefined,
+  ): HandleEventResult {
     switch (result.kind) {
       case 'no_open_event':
-        return [toLineMessage(formatNoOpenEvent())];
+        return plain(toLineMessage(formatNoOpenEvent()));
       case 'not_authorized':
-        return [textMessage(formatGroupNotHost())]; // errata：分組 host-only
+        return plain(textMessage(formatGroupNotHost())); // errata：分組 host-only
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'insufficient':
-        return [textMessage(formatInsufficientForRounds())];
+        return plain(textMessage(formatInsufficientForRounds()));
       case 'round':
-        return [textMessage(formatRound(result.round))];
+        return eventId === undefined
+          ? plain(textMessage(formatRound(result.round)))
+          : anchored(eventId, textMessage(formatRound(result.round)));
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -487,16 +543,22 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderNextRound(result: NextRoundResult): messagingApi.Message[] {
+  /**
+   * D-029 §5.3：`下一輪` 的 `eventId` 來自 session（`GroupingState.eventId`），**不**重跑消歧義
+   * （G11）。T-033b 上線前建立的舊 session 沒有該欄位 → 不附錨點（見 `NextRoundResult`）。
+   */
+  function renderNextRound(result: NextRoundResult): HandleEventResult {
     switch (result.kind) {
       case 'no_session':
-        return [textMessage(formatNoGroupingSession())];
+        return plain(textMessage(formatNoGroupingSession()));
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'exhausted':
-        return [textMessage(formatRoundsExhausted())];
+        return plain(textMessage(formatRoundsExhausted()));
       case 'round':
-        return [textMessage(formatRound(result.round))];
+        return result.eventId === undefined
+          ? plain(textMessage(formatRound(result.round)))
+          : anchored(result.eventId, textMessage(formatRound(result.round)));
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -505,30 +567,30 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   }
 
   // ── D-004 / D-006 render ─────────────────────────────────────────────
-  function renderCreateEntry(result: CreateEntryResult): messagingApi.Message[] {
+  function renderCreateEntry(result: CreateEntryResult): HandleEventResult {
     // D-006：開團全開 → CreateEntryResult 無 not_authorized 成員。
     switch (result.kind) {
       case 'already_active':
-        return [toLineMessage(formatAlreadyActiveEntry(result.event))]; // (I)
+        // (I)。**刻意不附錨點**（相位，D-029 §5.3）：表列的是 T-033c 才存在的
+        // `duplicate_event`；`already_active` 是 T-033c 會整段移除的入口拒絕（開團查重上線後
+        // 由 `duplicate_event` 取代），此刻附上等於偷跑一個表上沒有的分支（G4）。
+        return plain(toLineMessage(formatAlreadyActiveEntry(result.event)));
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'flow_started': {
         // (A) ＋ (N2)：若本次開新流程覆寫掉前一段未完成流程，附一句告知（D-004 errata 跨群）。
+        // draft 尚未成為 event 列 → 不附錨點（D-029 §5.3 明確不附）。
         const base = formatFlowPrompt(result.state, nowIso());
-        return [
-          toLineMessage(
-            result.abandoned === 'grouping' ? withAbandonedNotice(base) : base,
-          ),
-        ];
+        return plain(
+          toLineMessage(result.abandoned === 'grouping' ? withAbandonedNotice(base) : base),
+        );
       }
       case 'awaiting_confirm': {
         // (B) ＋ (N2)：同上（一行式路徑）。
         const base = formatConfirmSummary(result.draft);
-        return [
-          toLineMessage(
-            result.abandoned === 'grouping' ? withAbandonedNotice(base) : base,
-          ),
-        ];
+        return plain(
+          toLineMessage(result.abandoned === 'grouping' ? withAbandonedNotice(base) : base),
+        );
       }
       default: {
         const _exhaustive: never = result;
@@ -537,25 +599,26 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderContinue(result: ContinueFlowResult): messagingApi.Message[] {
+  function renderContinue(result: ContinueFlowResult): HandleEventResult {
     switch (result.kind) {
       case 'noop':
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'field_error':
-        return [toLineMessage(formatFieldError(result.state, nowIso()))]; // (C)
+        return plain(toLineMessage(formatFieldError(result.state, nowIso()))); // (C)
       case 'advanced':
-        return [toLineMessage(formatFlowPrompt(result.state, nowIso()))]; // (A)
+        return plain(toLineMessage(formatFlowPrompt(result.state, nowIso()))); // (A)
       case 'awaiting_confirm':
-        return [toLineMessage(formatConfirmSummary(result.draft))]; // (B)
+        return plain(toLineMessage(formatConfirmSummary(result.draft))); // (B)
       case 'confirm_reprompt':
-        return [toLineMessage(formatConfirmReprompt())]; // (M)
+        return plain(toLineMessage(formatConfirmReprompt())); // (M)
       case 'aborted':
-        return [toLineMessage(formatAborted())]; // (G)
+        return plain(toLineMessage(formatAborted())); // (G)
       case 'created':
-        return [toLineMessage(formatOpenAnnouncement(result.event))]; // (D)
+        // (D)。D-029 §5.3：**新建活動的公告訊息，最重要的錨點**——群組後續的 quote 幾乎都指向它。
+        return anchored(result.event.id, toLineMessage(formatOpenAnnouncement(result.event)));
       case 'already_active':
-        return [toLineMessage(formatRaceLost())]; // (L)
+        return plain(toLineMessage(formatRaceLost())); // (L)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -563,15 +626,15 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderConfirm(result: ConfirmResult): messagingApi.Message[] {
+  function renderConfirm(result: ConfirmResult): HandleEventResult {
     switch (result.kind) {
       case 'noop':
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'already_active':
-        return [toLineMessage(formatRaceLost())]; // (L)
+        return plain(toLineMessage(formatRaceLost())); // (L)
       case 'created':
-        return [toLineMessage(formatOpenAnnouncement(result.event))]; // (D)
+        return anchored(result.event.id, toLineMessage(formatOpenAnnouncement(result.event))); // (D)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -579,13 +642,13 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderAbort(result: AbortResult): messagingApi.Message[] {
+  function renderAbort(result: AbortResult): HandleEventResult {
     switch (result.kind) {
       case 'noop':
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'aborted':
-        return [toLineMessage(formatAborted())]; // (G)
+        return plain(toLineMessage(formatAborted())); // (G)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -593,21 +656,22 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderClose(result: CloseResult): messagingApi.Message[] {
+  function renderClose(result: CloseResult): HandleEventResult {
     switch (result.kind) {
       case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())]; // (H′) 非建立者非 super-admin
+        return plain(toLineMessage(formatNotAuthorized())); // (H′) 非建立者非 super-admin
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'no_active':
-        return [toLineMessage(formatNoActiveEvent())]; // (J)
+        return plain(toLineMessage(formatNoActiveEvent())); // (J)
       case 'already_closed':
-        return [toLineMessage(formatAlreadyClosed())]; // (J)（D-008：不可達，保留防禦）
+        return plain(toLineMessage(formatAlreadyClosed())); // (J)（D-008：不可達，保留防禦）
       case 'ok':
         // D-005 §4：settledPerPerson 為結算唯一真相來源（split 才有值），confirmedCount 供顯示 K。
-        return [
+        return anchored(
+          result.event.id,
           toLineMessage(formatClosed(result.event, result.settledPerPerson, result.confirmedCount)),
-        ]; // (E)
+        ); // (E)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -615,16 +679,16 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderCancelEvent(result: EventCancelResult): messagingApi.Message[] {
+  function renderCancelEvent(result: EventCancelResult): HandleEventResult {
     switch (result.kind) {
       case 'not_authorized':
-        return [toLineMessage(formatNotAuthorized())]; // (H′) 非建立者非 super-admin
+        return plain(toLineMessage(formatNotAuthorized())); // (H′) 非建立者非 super-admin
       case 'duplicate':
-        return [];
+        return NO_REPLY;
       case 'no_active':
-        return [toLineMessage(formatNoActiveEvent())]; // (J)
+        return plain(toLineMessage(formatNoActiveEvent())); // (J)
       case 'ok':
-        return [toLineMessage(formatCancelled(result.event))]; // (F)
+        return anchored(result.event.id, toLineMessage(formatCancelled(result.event))); // (F)
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -636,10 +700,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   //
   // `users.getById` 的逐人解析刻意留在**這裡**（交易外、鎖已釋放），
   // 不進 domain 的 FOR UPDATE 區段（N5/G9），比照既有 buildPromotionNotice／renderAddCapacity。
-  async function renderEdit(result: EditEventResult): Promise<messagingApi.Message[]> {
+  async function renderEdit(result: EditEventResult): Promise<HandleEventResult> {
     switch (result.kind) {
       case 'duplicate':
-        return []; // 重送：不回覆、不二次寫入
+        return NO_REPLY; // 重送：不回覆、不二次寫入
       case 'ok': {
         // G9：overflow 為真 → 整則退化，**不新增任何解析查詢**（連 users.getById 都不打）。
         const targets: EditMentionTarget[] = result.overflow
@@ -653,27 +717,30 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
                 };
               }),
             );
-        return [toLineMessage(formatEditOk(result, targets))];
+        return anchored(result.eventId, toLineMessage(formatEditOk(result, targets)));
       }
       case 'help':
-        return [toLineMessage(formatEditHelp(result.event, result.confirmedCount, result.now))];
+        // D-029 §5.3「明確不附」清單含 `help`——說明句雖引用該場現值，但不是「這次動了哪一場」。
+        return plain(
+          toLineMessage(formatEditHelp(result.event, result.confirmedCount, result.now)),
+        );
       case 'capacity':
-        return [toLineMessage(formatEditCapacityRedirect())];
+        return plain(toLineMessage(formatEditCapacityRedirect()));
       case 'format_error':
         // 時鐘於邊界層注入（formatter 不得自取，G7）；沿用既有 formatOnelineFormatHelp(nowIso()) 的作法。
-        return [toLineMessage(formatEditFormatError(result.field, nowIso(), result.detail))];
+        return plain(toLineMessage(formatEditFormatError(result.field, nowIso(), result.detail)));
       case 'bad_fee':
-        return [toLineMessage(formatEditBadFee())];
+        return plain(toLineMessage(formatEditBadFee()));
       case 'past_datetime':
-        return [toLineMessage(formatEditPastDatetime(result.now))];
+        return plain(toLineMessage(formatEditPastDatetime(result.now)));
       case 'not_authorized':
-        return [toLineMessage(formatEditNotAuthorized())];
+        return plain(toLineMessage(formatEditNotAuthorized()));
       case 'no_active':
-        return [toLineMessage(formatNoActiveEvent())]; // (J) 沿用既有字串
+        return plain(toLineMessage(formatNoActiveEvent())); // (J) 沿用既有字串
       case 'closed_not_editable':
-        return [toLineMessage(formatEditClosedNotEditable())];
+        return plain(toLineMessage(formatEditClosedNotEditable()));
       case 'event_ended':
-        return [toLineMessage(formatEditEventEnded())];
+        return plain(toLineMessage(formatEditEventEnded()));
       default: {
         const _exhaustive: never = result;
         return _exhaustive;
@@ -712,11 +779,11 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     }
   }
 
-  function renderInvalidOneline(result: InvalidOnelineResult): messagingApi.Message[] {
+  function renderInvalidOneline(result: InvalidOnelineResult): HandleEventResult {
     // D-006：開團全開 → InvalidOnelineResult 收斂為單一 format_help。
     switch (result.kind) {
       case 'format_help':
-        return [toLineMessage(formatOnelineFormatHelp(nowIso()))]; // (K′)
+        return plain(toLineMessage(formatOnelineFormatHelp(nowIso()))); // (K′)
       default: {
         const _exhaustive: never = result.kind;
         return _exhaustive;
@@ -733,6 +800,22 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     | { kind: 'reject'; messages: messagingApi.Message[] };
 
   /**
+   * D-025 §4.1：把 LINE 的 `quotedMessageId` 換成「本群的」活動 id。
+   *
+   * 兩段式，缺一不可：①查 `message_event_map`（得到**不可信任**的 `rawEventId`）；
+   * ②交給 `resolveQuotedEventInGroup` 以 `events.getById` 比對群組（G14）。
+   * 沒有引言時**完全不查 DB**（熱路徑零新增查詢——絕大多數訊息不帶 quote）。
+   */
+  async function resolveQuotedEvent(
+    quotedMessageId: string | undefined,
+    groupId: string,
+  ): Promise<number | undefined> {
+    if (quotedMessageId === undefined) return undefined;
+    const rawEventId = await deps.messageEventMap.getEventId(quotedMessageId);
+    return resolveQuotedEventInGroup(rawEventId, groupId, deps.events);
+  }
+
+  /**
    * D-026 §5.2 步驟 4：解出這則訊息要作用在哪一場活動。
    *
    * `ambiguous`/`conflict`/`not_found`/`too_many` 一律**直接回覆、不呼叫任何 service、
@@ -745,11 +828,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
   async function resolveEventForCommand(
     groupId: string,
     selectorRaw: string | undefined,
+    quotedMessageId: string | undefined,
   ): Promise<EventResolution> {
     const candidates = await deps.events.listActiveByGroup(groupId);
-    // 相位：機制 A（message_event_map 寫入）屬 T-033b ⇒ 本批無引言來源，恆 undefined。
-    const rawQuotedEventId: number | undefined = undefined;
-    const quotedEventId = await resolveQuotedEventInGroup(rawQuotedEventId, groupId, deps.events);
+    const quotedEventId = await resolveQuotedEvent(quotedMessageId, groupId);
     const resolution = resolveTargetEvent(candidates, quotedEventId, selectorRaw, nowIso());
     switch (resolution.kind) {
       case 'ambiguous':
@@ -791,13 +873,15 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     userId: string,
     messageId: string,
     text: string,
-    selectorRaw?: string,
-  ): Promise<messagingApi.Message[]> {
+    selectorRaw: string | undefined,
+    quotedMessageId: string | undefined,
+  ): Promise<HandleEventResult> {
     const cmd = parseCommand(text);
     let eventId: number | undefined;
     if (needsEventResolution(cmd)) {
-      const resolved = await resolveEventForCommand(groupId, selectorRaw);
-      if (resolved.kind === 'reject') return resolved.messages;
+      const resolved = await resolveEventForCommand(groupId, selectorRaw, quotedMessageId);
+      // 四種消歧義拒絕皆在 D-029 §5.3「明確不附」清單內 → 一律 plain。
+      if (resolved.kind === 'reject') return plain(...resolved.messages);
       eventId = resolved.eventId;
     }
     switch (cmd.type) {
@@ -851,7 +935,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
             messageId,
             eventId,
           });
-          return renderBalanced(result);
+          return renderBalanced(result, eventId);
         }
         const result = await deps.grouping.startRounds({
           groupId,
@@ -862,7 +946,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           mode: cmd.mode,
           eventId,
         });
-        return renderStartRounds(result);
+        return renderStartRounds(result, eventId);
       }
       case 'group_next': {
         // B1：傳來源 groupId，service 比對 session 的 group_id（跨群 → no_session，不外洩他群名單）。
@@ -939,7 +1023,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       }
       case 'my_id':
         // D-006 §3：接線回 (MyID)——傳訊人自身 userId（群回、唯讀、不 mark）。
-        return [toLineMessage(formatMyId(userId))];
+        return plain(toLineMessage(formatMyId(userId)));
       // D-015：編輯活動資訊。`人數` 轉導向請求（domain 零異動），其餘為單欄 set。
       case 'edit_event': {
         const request: EditEventRequest =
@@ -976,7 +1060,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
           return renderInvalidOneline(result);
         }
         if (cmd.command === 'group') {
-          return [textMessage(formatGroupFormatHelp())];
+          return plain(textMessage(formatGroupFormatHelp()));
         }
         // D-015 N4/G5：edit_event 類**不得**照抄下方 `return []`——那會「有回覆卻未消費 message.id」。
         // 一律送進 editEvent（轉 format_error），由 domain 在交易內先 markProcessed。
@@ -996,10 +1080,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
             }),
           );
         }
-        return [];
+        return NO_REPLY;
       }
       case 'unknown':
-        return []; // G9：不回覆、不 mark。
+        return NO_REPLY; // G9：不回覆、不 mark。
       default: {
         const _exhaustive: never = cmd;
         return _exhaustive;
@@ -1023,8 +1107,9 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     userId: string,
     messageId: string,
     lines: string[],
-    selectorRaw?: string,
-  ): Promise<messagingApi.Message[]> {
+    selectorRaw: string | undefined,
+    quotedMessageId: string | undefined,
+  ): Promise<HandleEventResult> {
     // 逐行 trim 取可執行行（保留原 split 索引 i 作複合去重鍵）。空行/非 signup·cancel 一律忽略（G1）。
     type Executable = { index: number; cmd: Extract<ReturnType<typeof parseCommand>, { type: 'signup' | 'cancel' }> };
     const executables: Executable[] = [];
@@ -1040,16 +1125,16 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
 
     // G6：可執行行數超過上限 → 整則拒絕，不執行任何行、不 markProcessed。
     if (executables.length > MAX_BATCH_LINES) {
-      return [toLineMessage(formatBatchOverLimit(MAX_BATCH_LINES))];
+      return plain(toLineMessage(formatBatchOverLimit(MAX_BATCH_LINES)));
     }
     // 無任何可執行行 → 回空（沿用「只回應可識別指令」，避免洗版）。
     // **置於消歧義之前**：雜訊多行訊息不應查候選集合（熱路徑零新增查詢）。
-    if (executables.length === 0) return [];
+    if (executables.length === 0) return NO_REPLY;
 
     // G12：整批只解一次目標活動；拒絕時整則短路（不呼叫任何 service、不 markProcessed、
     // 連 getGroupMemberProfile 都不打）。
-    const resolved = await resolveEventForCommand(groupId, selectorRaw);
-    if (resolved.kind === 'reject') return resolved.messages;
+    const resolved = await resolveEventForCommand(groupId, selectorRaw, quotedMessageId);
+    if (resolved.kind === 'reject') return plain(...resolved.messages);
     const eventId = resolved.eventId;
 
     // 同一 executor：顯示名快照取一次即可（signup/cancel 皆用）。
@@ -1140,30 +1225,34 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         const notices = await Promise.all(promotedRows.map((row) => buildPromotionNotice(row)));
         messages.push(toLineMessage(formatPromotionNotice(notices)));
       }
-      return messages;
+      // D-029 §5.3：`handleBatch` 成功路徑錨在 `lastView.event.id`（批次整批只作用於同一場，G12）。
+      return anchored(lastView.event.id, ...messages);
     }
 
     // 無成功行：全 duplicate → 回空、不 reply（G9/AC-2）；否則呈現最後一筆原因一次。
-    if (fallback !== undefined) return [toLineMessage(fallback)];
-    return [];
+    if (fallback !== undefined) return plain(toLineMessage(fallback));
+    return NO_REPLY;
   }
 
-  async function handleEvent(event: WebhookEvent): Promise<messagingApi.Message[]> {
+  async function handleEvent(event: WebhookEvent): Promise<HandleEventResult> {
     // D-018 §1.2：join/leave 只寫觀測資料，**一律不回覆、不 markProcessed**（G2）——屬 CLAUDE.md
     // §4 去重政策中「本來就不回覆」的例外路徑。非群組來源（1:1／room）一律不記（G7）。
     // D-003 §5 errata：原規格「非 text 事件一律忽略」自此僅適用於 message 類事件。
     if (event.type === 'join' || event.type === 'leave') {
       if (event.source.type === 'group') await recordGroupLifecycle(event.type, event.source.groupId);
-      return [];
+      return NO_REPLY;
     }
     // 僅處理群組來源的文字訊息事件；其餘一律忽略（不回覆、不 mark；沿用骨架）。
-    if (event.type !== 'message' || event.message.type !== 'text') return [];
-    if (event.source.type !== 'group') return [];
+    if (event.type !== 'message' || event.message.type !== 'text') return NO_REPLY;
+    if (event.source.type !== 'group') return NO_REPLY;
     const groupId = event.source.groupId;
     const userId = event.source.userId;
-    if (userId === undefined) return [];
+    if (userId === undefined) return NO_REPLY;
     const messageId = event.message.id;
     const text = event.message.text;
+    // D-025 §4.1：使用者若引用了過去某則訊息，webhook 文字事件即帶此欄位（否則 undefined）。
+    // 只往下傳，真正查表在 `resolveQuotedEvent`（且僅在需要目標活動的指令上才會走到）。
+    const quotedMessageId = event.message.quotedMessageId;
 
     // D-018 §1.3：首見補登。置於指令分派**之前**——雜訊訊息同樣代表「機器人在這個群裡」，
     // 是「加了不用」的唯一訊號；若移到可識別指令之後，該類群組將永遠觀測不到。
@@ -1201,9 +1290,9 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     // D-012：以 /\r?\n/ 拆行。行數 ≤1 → 現行單指令路徑（零回歸，G5）；行數 ≥2 → 批次路徑。
     const lines = rest.split(/\r?\n/);
     if (lines.length >= 2) {
-      return handleBatch(groupId, userId, messageId, lines, selectorRaw);
+      return handleBatch(groupId, userId, messageId, lines, selectorRaw, quotedMessageId);
     }
-    return dispatchSingle(groupId, userId, messageId, rest, selectorRaw);
+    return dispatchSingle(groupId, userId, messageId, rest, selectorRaw, quotedMessageId);
   }
 
   return { handleEvent };
