@@ -53,6 +53,8 @@ export interface EventReader {
 }
 ```
 
+`listActiveByGroup` 的 SQL **必須**為 `... WHERE group_id = $1 AND status = ANY($2) ORDER BY id ASC`（**不得**沿用現況 `findActiveByGroup` 的 `ORDER BY id DESC`）。升冪是下方過渡條文 `actives.at(-1)` 的唯一正確性依據。
+
 **`findActiveByGroup` 整個移除**（不保留 wrapper、不留 deprecated 別名，G1）：它「回傳單一列」的
 介面形狀本身就是「同群只有一場」假設的化身，留著就會被日後新代碼誤用而悄悄退回單場語意。
 所有原呼叫點改寫為：`listActiveByGroup(groupId)` 取得候選集合 → 消歧義（§4）解出 `eventId` →
@@ -102,15 +104,22 @@ service 內沿用各自原本「查無 active」的既有分支（`no_open_event
 >    而 `listActiveByGroup` 依 §2 為 **id 升冪**——取 `[0]` 會取到最舊的一場，是靜默行為變更。
 > 3. 本段是 G1 的**明示過渡例外，不是 wrapper**：它不重建「同群只有一場」的假設，只是在該假設仍由
 >    應用層維持的期間，把它留在唯一還需要它的入口。**T-033c 落地 §3 時必須整段移除**，D-027 的驗收
->    須確認開團側不再有 `actives.at(-1)` 這類取用。
-> 4. 極窄 race 下若同時存在 2 場過期 active，`confirm()` 只會 flip 最新那場——與現況邏輯一致（現況
->    N 恆 ≤1 故不會發生），殘留的過期場顯示為 `ended`、可由 `關閉報名` 清除，T-033c 後由 §3 取代。
+>    須確認 `src/domain/event-service.ts` 的 `startCreation`／`handleOneline`／`confirm` 三個函式內
+>    不再出現 `actives.at(-1)` 或 `actives[actives.length - 1]`
+>    （`grep -n "at(-1)\|length - 1" src/domain/event-service.ts` 應無命中）。
+> 4. 極窄 race 下若同時存在 2 場過期 active，`confirm()` 只會 flip 最新那場——與現況邏輯一致（此處
+>    「現況」指 0006 套用前：`ux_events_active_group` 仍在、N 恆 ≤1，該分支不可達。0006 之後此分支
+>    可達，行為即如上句所述。），殘留的過期場顯示為 `ended`、在 N≥2 時須由主辦以 `@selector` 指定該場
+>    後下 `關閉報名`／`取消活動` 清除（裸下 `關閉報名` 會落入消歧義、不會直接清除）；N=1 時裸下即可，
+>    T-033c 後由 §3 取代。
 
 ## 二、Guardrails（Must NOT）
 
 - **G1（無單值介面殘留）**：`EventReader` 不得保留 `findActiveByGroup` 或任何「回傳單一活動」
   當作預設路徑的方法；所有原呼叫點改用 `listActiveByGroup` + 明確消歧義/查重邏輯，不得以
-  wrapper（如 `listActiveByGroup(groupId)[0]`）掩蓋、變相恢復單場假設。
+  wrapper（如 `listActiveByGroup(groupId)[0]`）掩蓋、變相恢復單場假設。**唯一例外**：§1 開團側過渡
+  條文明列的三處內聯 `actives.at(-1)`（`startCreation`／`handleOneline`／`confirm`）。例外僅限這三個
+  函式內、僅限 T-033a~b，不得新增第四處、不得抽成共用函式或方法。
 - **G8（窄捕捉限定新索引名）**：`confirm()` 的窄捕捉判斷式必須比對**新**約束名
   `ux_events_active_group_venue_time`；不得用「任何 `23505` 皆視為重複活動」的寬鬆判斷
   （會誤吞其他未來新增的唯一索引違反，掩蓋真正的錯誤）。
@@ -126,9 +135,11 @@ service 內沿用各自原本「查無 active」的既有分支（`no_open_event
 > `already_active`。T-033a 對 G8（窄捕捉改比對新索引名）的驗收，由既有 `[D-004 AC-12]` 兩處測試涵蓋
 > （須依 umbrella errata 同步改為新索引名），完整的並發 race 驗收隨 AC-5 於 T-033c 進行。
 
-- [ ] **[D-020 AC-1]（migration 結構）**：套用 0006 後，`ux_events_active_group` 不存在；
+- [ ] **[D-021 AC-1]（migration 結構）**：套用 0006 後，`ux_events_active_group` 不存在；
   `ux_events_active_group_venue_time` 存在且 `pg_get_indexdef` 顯示 predicate 為
   `status IN ('draft','open')`、欄位為 `(group_id, location, event_datetime)`；`message_event_map`
   表存在且 `message_id` 為 PK、`event_id` 有 FK 指向 `events(id)`、`ix_message_event_map_event` 存在。
-- [ ] **[D-020 AC-2]（同群多場並存）**：同群連續開兩場「場地或時間不同」的活動皆成功
-  （`status='open'` 各一列並存）；`listActiveByGroup` 回傳兩列。
+- [ ] **[D-021 AC-2]（同群多場並存）**：同群連續開兩場「場地或時間不同」的活動皆成功
+  （`status='open'` 各一列並存）；`listActiveByGroup` 回傳兩列；且兩列依 id 升冪排列
+  （`rows[0].id < rows[1].id`），本斷言為過渡條文取末列的保護網。**驗證層級：repository 層**
+  （連續 `events.create` 兩列），非 `開團` 流程——依 D-020 不變式 #1，T-033a 開團側仍拒第二場。
