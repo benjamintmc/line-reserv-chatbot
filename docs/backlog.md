@@ -110,3 +110,13 @@
   牽動 D-011 的授權與 session 語意（closed 活動還能不能開新 session、`下一輪` 要不要跟著放寬）。
   **動工前**：先由使用者裁決要不要支援，再由 architect 決定是改 D-011 還是新開設計。
   （出處：architect-reviewer 複審意見 (b)，`docs/reviews/RP-T-033b.md` §7。）
+
+- **（T-033c 驗收衍生，2026-09-02，文件維護）`CLAUDE.md` §4 去重政策例外 (b) 的「現況為…」枚舉不完整**：
+  該句只列了 `closeEvent`／`cancelEvent` 的交易外 `not_authorized` 與 D-026 §5.2 的四種消歧義拒絕，
+  但**開團入口的早退拒絕早在 T-033c 之前就同屬例外 (b)**——T-033a~b 的 `already_active`
+  （`startCreation`／`handleOneline` 於 `this.tx` 之前 early-return、零寫入）從未被列入。
+  T-033c 把它改名為 `duplicate_event` 並新增 `group_open_limit`，兩者已依 §4 要求分別明列於
+  `design/D-027` errata E2 與 `design/D-028` errata E2，**規則本身沒有被繞過**；缺的只是憲法那句
+  快照的準確性。**為什麼現在不做**：`CLAUDE.md` 是專案憲法，且 §0–§7 編號已凍結、多份 APPROVED
+  文件硬引用 §4，改動應由使用者裁決而非 orchestrator 逕行。
+  **動工前**：確認是「補列這三個分支」還是「改寫成指向各設計文件的通則、不再逐一枚舉」（後者較不易再次過時）。

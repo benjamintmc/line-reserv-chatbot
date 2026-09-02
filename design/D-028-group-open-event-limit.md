@@ -34,6 +34,28 @@
 >
 > **本節由 orchestrator 落筆，尚未經原設計 agent 確認。**
 
+## errata E2（2026-09-02，去重政策明列；依 CLAUDE.md §4「新增此類分支須在該設計文件明列」）
+
+> **`group_open_limit` 的兩個入口拒絕歸 CLAUDE.md §4 去重政策的例外 (b)（純判斷、零 DB 副作用的
+> 早退拒絕），`確認` 內的同名拒絕走預設政策（消費 `message.id`）。** 由 orchestrator 裁定。
+>
+> | 位置 | 分類 | 依據 |
+> |---|---|---|
+> | `startCreation`／`handleOneline` 入口 | **例外 (b)**，不消費 | 在 `this.tx` 之前 early-return；查 `listActiveByGroup` 但**零寫入**、不產生任何狀態變化 |
+> | `confirm` 交易內 | **預設政策**，消費 | 位於帶 `markProcessed` 的同一交易內，且一併提交 errata E1 的過期 flip 寫入 |
+>
+> **裁定理由**：①§3.5 與 AC-25 明文要求入口拒絕「**不寫 `conversation_states`**」，`markProcessed`
+> 是 DB 寫入，拒絕前 mark 會違反該 AC 字面；②形狀與例外 (b) 既有成員一致——orchestrator 已查證
+> `closeEvent`／`cancelEvent` 的交易外 `not_authorized` 同樣**讀 DB（`getById` + `canManageEvent`）
+> 而不寫**，可見「零 DB 副作用」指的是零**寫入**，讀取不影響歸類。
+>
+> **已知並接受的代價**（與 D-026 §5.2 四種消歧義拒絕同款）：LINE 重送會重複回覆同一則上限提示。
+> 該提示純文字、無狀態變化，故可接受。
+>
+> **去重政策的例外清單到此為止，不得再默默擴大**（CLAUDE.md §4）。
+>
+> **本節由 orchestrator 落筆。**
+
 ## 一、設計內容
 
 > **〔切檔新增〕脈絡交叉引用**：本檔「不以 DB 約束加固上限、接受 race window」的論證，與 D-021

@@ -20,6 +20,20 @@
 >
 > **本節由 orchestrator 落筆，尚未經原設計 agent 確認。**
 
+## errata E2（2026-09-02，去重政策明列；依 CLAUDE.md §4「新增此類分支須在該設計文件明列」）
+
+> **`handleOneline` 入口的 `duplicate_event` 歸 CLAUDE.md §4 去重政策的例外 (b)；`確認` 交易內與
+> DB 窄捕捉路徑的 `duplicate_event` 走預設政策（消費 `message.id`）。** 由 orchestrator 裁定，
+> 判準與 D-028 errata E2 同源，該表為權威，此處不重複。
+>
+> **本分支不是新增的例外，是既有成員的改名**：T-033c 之前，`startCreation`／`handleOneline` 入口的
+> `already_active` 早退同樣位於 `this.tx` 之前、零寫入 ⇒ 早已屬例外 (b)。**惟 CLAUDE.md §4 的
+> 「現況為…」枚舉從未列入它**——該枚舉在 T-033c 之前即已不完整，非本任務造成，已登記 Backlog。
+>
+> AC-3 明文要求本分支「**不寫 `conversation_states`**（**無 DB 副作用**）」，與上述分類一致。
+>
+> **本節由 orchestrator 落筆。**
+
 ## 一、設計內容
 
 ### 3. 開團查重（取代舊的「已有 active 就拒絕」）
