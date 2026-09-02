@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { handleMessages } from './__tests__/handle-messages';
 import type { WebhookEvent } from '@line/bot-sdk';
 import { createTestDb, seedEvent, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
@@ -39,6 +40,7 @@ function makeHandler(
 ): WebhookHandler {
   const service = opts.service ?? makeService(t);
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: new GroupingService({
@@ -88,7 +90,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const signupSpy = vi.spyOn(service, 'signup');
     const handler = makeHandler(t, { service, profile: profileReturning('報名者') });
 
-    const out = await handler.handleEvent(
+    const out = await handleMessages(handler, 
       groupTextEvent('+1 陳小姐\n+1 張先生', { userId: 'U-x', messageId: 'm' }),
     );
 
@@ -121,14 +123,14 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const { event } = await seedEvent(t, { capacity: 16, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('報名者') });
 
-    const first = await handler.handleEvent(
+    const first = await handleMessages(handler, 
       groupTextEvent('+1\n+1', { userId: 'U-x', messageId: 'm' }),
     );
     expect(first).toHaveLength(2); // 摘要 + 名單
     expect(await t.registrations.listConfirmed(event.id)).toHaveLength(2);
 
     // 同一 message.id 重送 → m#0 / m#1 皆 duplicate。
-    const second = await handler.handleEvent(
+    const second = await handleMessages(handler, 
       groupTextEvent('+1\n+1', { userId: 'U-x', messageId: 'm' }),
     );
     expect(second).toEqual([]); // 全 duplicate → 回空、不 reply（G9）
@@ -142,7 +144,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const cancelSpy = vi.spyOn(service, 'cancel');
     const handler = makeHandler(t, { service, profile: profileReturning('報名者') });
 
-    await handler.handleEvent(
+    await handleMessages(handler, 
       groupTextEvent('+1 A\n今天天氣真好\n-1', { userId: 'U-x', messageId: 'm' }),
     );
 
@@ -159,7 +161,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const signupSpy = vi.spyOn(service, 'signup');
     const handler = makeHandler(t, { service, profile: profileReturning('王小明') });
 
-    const out = await handler.handleEvent(groupTextEvent('+3', { userId: 'U-wang', messageId: 'm1' }));
+    const out = await handleMessages(handler, groupTextEvent('+3', { userId: 'U-wang', messageId: 'm1' }));
 
     // 單行路徑：messageId 為原始 message.id（非複合鍵）。
     expect(signupSpy.mock.calls[0]![0].messageId).toBe('m1');
@@ -172,7 +174,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const { event } = await seedEvent(t, { capacity: 1, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('阿明') });
 
-    const out = await handler.handleEvent(
+    const out = await handleMessages(handler, 
       groupTextEvent('+1\n+1', { userId: 'U-x', messageId: 'm' }),
     );
 
@@ -187,15 +189,15 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const handler = makeHandler(t, { profile: profileReturning('報名者') });
 
     // 先由 U-x 代報 A、B 各一位。
-    await handler.handleEvent(groupTextEvent('+1 A', { userId: 'U-x', messageId: 'a1' }));
-    await handler.handleEvent(groupTextEvent('+1 B', { userId: 'U-x', messageId: 'b1' }));
+    await handleMessages(handler, groupTextEvent('+1 A', { userId: 'U-x', messageId: 'a1' }));
+    await handleMessages(handler, groupTextEvent('+1 B', { userId: 'U-x', messageId: 'b1' }));
     expect(await t.registrations.listConfirmed(event.id)).toHaveLength(2);
 
     const service = makeService(t);
     // 用同一 t 的新 handler 附 spy 驗複合鍵。
     const cancelSpy = vi.spyOn(service, 'cancel');
     const handler2 = makeHandler(t, { service, profile: profileReturning('報名者') });
-    await handler2.handleEvent(groupTextEvent('-1 A\n-1 B', { userId: 'U-x', messageId: 'c' }));
+    await handleMessages(handler2, groupTextEvent('-1 A\n-1 B', { userId: 'U-x', messageId: 'c' }));
 
     expect(cancelSpy).toHaveBeenCalledTimes(2);
     expect(cancelSpy.mock.calls[0]![0]).toMatchObject({ proxyName: 'A', messageId: 'c#0' });
@@ -210,7 +212,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const handler = makeHandler(t, { service, profile: profileReturning('阿明') });
 
     const text21 = Array.from({ length: 21 }, () => '+1').join('\n');
-    const out = await handler.handleEvent(groupTextEvent(text21, { userId: 'U-x', messageId: 'm' }));
+    const out = await handleMessages(handler, groupTextEvent(text21, { userId: 'U-x', messageId: 'm' }));
 
     expect(out).toHaveLength(1);
     expect(textOf(out[0]!)).toBe('一次最多報名 20 筆，請分次輸入。');
@@ -223,7 +225,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const handler = makeHandler(t, { profile: profileReturning('阿明') });
 
     const text20 = Array.from({ length: 20 }, () => '+1').join('\n');
-    const out = await handler.handleEvent(groupTextEvent(text20, { userId: 'U-x', messageId: 'm' }));
+    const out = await handleMessages(handler, groupTextEvent(text20, { userId: 'U-x', messageId: 'm' }));
 
     expect(await t.registrations.listConfirmed(event.id)).toHaveLength(20);
     expect(out).toHaveLength(2); // 摘要 + 名單
@@ -247,7 +249,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     expect(await t.processed.has('m#0')).toBe(true);
 
     // 整則重送：m#0 → duplicate 略過；m#1 → 首次執行成功。
-    const out = await handler.handleEvent(
+    const out = await handleMessages(handler, 
       groupTextEvent('+1\n+1', { userId: 'U-x', messageId: 'm' }),
     );
 
@@ -260,7 +262,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
     const { event } = await seedEvent(t, { capacity: 16, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('報名者') });
 
-    const out = await handler.handleEvent(
+    const out = await handleMessages(handler, 
       groupTextEvent('+1 陳小姐\n+1 陳小姐', { userId: 'U-x', messageId: 'm' }),
     );
 
@@ -273,7 +275,7 @@ describe('webhook handler（D-012 §二/§三 多行批次報名）', () => {
   it('多行全為非 signup/cancel（名單\\n名單）→ 忽略、回空不 reply', async () => {
     await seedEvent(t, { capacity: 16, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('X') });
-    const out = await handler.handleEvent(
+    const out = await handleMessages(handler, 
       groupTextEvent('名單\n名單', { userId: 'U-x', messageId: 'm' }),
     );
     expect(out).toEqual([]);

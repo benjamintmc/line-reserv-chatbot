@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { handleMessages } from './__tests__/handle-messages';
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { createTestDb, type TestDb } from '../db/__tests__/test-db';
 import { taipeiToUtcIso } from '../db/time';
@@ -60,6 +61,7 @@ function makeHandler(
     runInTransaction: t.runInTransaction,
   });
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping,
@@ -118,21 +120,21 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
   it('[D-015 AC-8] `編輯`（edit_help）：第一次回 help、同 messageId 第二次不回覆', async () => {
     await seed(t);
     const h = makeHandler(t, profile);
-    const first = await h.handleEvent(groupTextEvent('編輯', { messageId: 'm-help' }));
+    const first = await handleMessages(h, groupTextEvent('編輯', { messageId: 'm-help' }));
     expect(first).toHaveLength(1);
     expect(textOf(first)).toContain('活動目前資訊：');
-    const second = await h.handleEvent(groupTextEvent('編輯', { messageId: 'm-help' }));
+    const second = await handleMessages(h, groupTextEvent('編輯', { messageId: 'm-help' }));
     expect(second).toEqual([]);
   });
 
   it('[D-015 AC-8] `編輯 日期 2026-13-99`（invalid(edit_event)）：有回覆且已消費 message.id', async () => {
     await seed(t);
     const h = makeHandler(t, profile);
-    const first = await h.handleEvent(groupTextEvent('編輯 日期 2026-13-99', { messageId: 'm-inv' }));
+    const first = await handleMessages(h, groupTextEvent('編輯 日期 2026-13-99', { messageId: 'm-inv' }));
     expect(first).toHaveLength(1);
     expect(textOf(first)).toContain('日期格式不正確，請輸入「編輯 日期 YYYY/MM/DD」');
     // 舊寫法（invalid → return []）會在這裡「回了話卻沒 mark」→ 重送再回一次。
-    const second = await h.handleEvent(groupTextEvent('編輯 日期 2026-13-99', { messageId: 'm-inv' }));
+    const second = await handleMessages(h, groupTextEvent('編輯 日期 2026-13-99', { messageId: 'm-inv' }));
     expect(second).toEqual([]);
   });
 
@@ -140,7 +142,7 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
     const ev = await seed(t);
     const h = makeHandler(t, profile);
     const long = 'ㄅ'.repeat(41);
-    const msgs = await h.handleEvent(groupTextEvent(`編輯 場地 ${long}`, { messageId: 'm-loc' }));
+    const msgs = await handleMessages(h, groupTextEvent(`編輯 場地 ${long}`, { messageId: 'm-loc' }));
     expect(textOf(msgs)).toBe('場地名稱請控制在 40 字以內（你輸入了 41 字）。');
     expect((await t.events.getById(ev.id))?.location).toBe('東方場地');
   });
@@ -148,7 +150,7 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
   it('[D-015 AC-7] `編輯 人數 12` → 導向文案（不落 help）', async () => {
     await seed(t);
     const h = makeHandler(t, profile);
-    const msgs = await h.handleEvent(groupTextEvent('編輯 人數 12', { messageId: 'm-cap' }));
+    const msgs = await handleMessages(h, groupTextEvent('編輯 人數 12', { messageId: 'm-cap' }));
     expect(textOf(msgs)).toBe(
       '人數不能直接編輯。要增加名額請輸入「加開 N」（例：加開 2）；縮減名額目前不支援。',
     );
@@ -157,7 +159,7 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
 
   it('[D-015 AC-5] 無活動時 `編輯 場地 X` → 沿用「目前沒有進行中的活動。」', async () => {
     const h = makeHandler(t, profile);
-    const msgs = await h.handleEvent(groupTextEvent('編輯 場地 X', { messageId: 'm-na' }));
+    const msgs = await handleMessages(h, groupTextEvent('編輯 場地 X', { messageId: 'm-na' }));
     expect(textOf(msgs)).toBe('目前沒有進行中的活動。');
   });
 
@@ -167,16 +169,16 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
     const h = makeHandler(t, profile);
 
     // A 兩列自報名、B 代報一列（owner=B）→ 去重後 2 個 owner，正取滿 3；C 候補。
-    await h.handleEvent(groupTextEvent('+2', { userId: 'U-A', messageId: 'r1' }));
-    await h.handleEvent(groupTextEvent('+1 陳大哥', { userId: 'U-B', messageId: 'r2' }));
-    await h.handleEvent(groupTextEvent('+1', { userId: 'U-C', messageId: 'r3' }));
+    await handleMessages(h, groupTextEvent('+2', { userId: 'U-A', messageId: 'r1' }));
+    await handleMessages(h, groupTextEvent('+1 陳大哥', { userId: 'U-B', messageId: 'r2' }));
+    await handleMessages(h, groupTextEvent('+1', { userId: 'U-C', messageId: 'r3' }));
     // 顯示名快照：A/B/C 依序（profile stub 對每次呼叫回同一名字，改為逐次指定）。
     await t.users.upsert('U-A', '阿明');
     await t.users.upsert('U-B', '小華');
     await t.users.upsert('U-C', '候補仔');
 
     getProfileSpy.mockClear();
-    const msgs = await h.handleEvent(groupTextEvent('編輯 場地 新場地', { messageId: 'm-ok' }));
+    const msgs = await handleMessages(h, groupTextEvent('編輯 場地 新場地', { messageId: 'm-ok' }));
     expect(msgs).toHaveLength(1);
     const m = msgs[0];
     expect(m?.type).toBe('textV2');
@@ -210,9 +212,9 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
 
     // 先撐到「恰好上限」人（各自 owner，皆為正取）。
     for (let i = 0; i < MAX_MENTIONS_PER_MESSAGE; i += 1) {
-      await h.handleEvent(groupTextEvent('+1', { userId: `U-${i}`, messageId: `s${i}` }));
+      await handleMessages(h, groupTextEvent('+1', { userId: `U-${i}`, messageId: `s${i}` }));
     }
-    const atLimit = await h.handleEvent(groupTextEvent('編輯 場地 場地A', { messageId: 'm-at' }));
+    const atLimit = await handleMessages(h, groupTextEvent('編輯 場地 場地A', { messageId: 'm-at' }));
     expect(atLimit).toHaveLength(1);
     expect(atLimit[0]?.type).toBe('textV2');
     if (atLimit[0]?.type === 'textV2') {
@@ -221,8 +223,8 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
     }
 
     // 再加一人 → 上限 + 1 → overflow。
-    await h.handleEvent(groupTextEvent('+1', { userId: 'U-extra', messageId: 's-extra' }));
-    const over = await h.handleEvent(groupTextEvent('編輯 場地 場地B', { messageId: 'm-over' }));
+    await handleMessages(h, groupTextEvent('+1', { userId: 'U-extra', messageId: 's-extra' }));
+    const over = await handleMessages(h, groupTextEvent('編輯 場地 場地B', { messageId: 'm-over' }));
     expect(over).toHaveLength(1); // 不拆多則
     expect(over[0]?.type).toBe('text'); // 無 mention → 退回純 TextMessage
     expect(textOf(over)).toBe('已更新場地：場地A → 場地B\n活動資訊已更新，已報名的各位請確認。');
@@ -232,7 +234,7 @@ describe('webhook handler — 編輯活動資訊（D-015）', () => {
   it('[D-015 AC-10] `編輯` 的 help 依 price_mode 給對應費用範例（split 不得示範 per_person 寫法）', async () => {
     await seed(t, { date: '2999-08-15', time: '07:30', priceMode: 'split_venue' });
     const h = makeHandler(t, profile);
-    const msgs = await h.handleEvent(groupTextEvent('編輯', { messageId: 'm-h2' }));
+    const msgs = await handleMessages(h, groupTextEvent('編輯', { messageId: 'm-h2' }));
     const text = textOf(msgs);
     expect(text).toContain('編輯 費用 場地費4000');
     expect(text).not.toContain('\n編輯 費用 2500');

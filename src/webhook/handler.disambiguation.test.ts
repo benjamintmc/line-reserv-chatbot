@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { handleMessages } from './__tests__/handle-messages';
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { createTestDb, type TestDb } from '../db/__tests__/test-db';
 import type { EventRow, EventStatus } from '../db/schema';
@@ -55,6 +56,7 @@ function makeHandler(
   opts: { service?: RegistrationService; displayName?: string } = {},
 ): WebhookHandler {
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events,
     groups: t.groups,
     grouping: new GroupingService({
@@ -118,11 +120,11 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const handler = makeHandler(t);
 
     // (a) 無 selector、無引言。
-    await handler.handleEvent(groupTextEvent('+1', { messageId: 'm1' }));
+    await handleMessages(handler, groupTextEvent('+1', { messageId: 'm1' }));
     // (b) selector 存在但與該場地完全不符 → resolveTargetEvent 回 single，**不驗證** selector 內容。
-    await handler.handleEvent(groupTextEvent('@隨便打的文字 +1', { messageId: 'm2' }));
-    // (c) 引用一則與該活動無關的訊息（機制 A 屬 T-033b，本批 quote 恆解出 undefined ＝未引言）。
-    await handler.handleEvent(
+    await handleMessages(handler, groupTextEvent('@隨便打的文字 +1', { messageId: 'm2' }));
+    // (c) 引用一則查無映射的訊息（T-033b 後 quote 已生效，但查無 → undefined ＝未引言）。
+    await handleMessages(handler, 
       groupTextEvent('+1', { messageId: 'm3', quotedMessageId: 'unrelated-bot-message' }),
     );
 
@@ -134,7 +136,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const b = await mkEvent(t, { location: '東方球場', at: T_0920_0730 });
     const handler = makeHandler(t);
 
-    await handler.handleEvent(groupTextEvent('@旭陽 +1', { messageId: 'm1' }));
+    await handleMessages(handler, groupTextEvent('@旭陽 +1', { messageId: 'm1' }));
 
     expect(await t.registrations.countConfirmed(a.id)).toBe(1);
     expect(await t.registrations.countConfirmed(b.id)).toBe(0);
@@ -145,7 +147,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const sep = await mkEvent(t, { location: '旭陽球場', at: T_0920_0730 });
     const handler = makeHandler(t);
 
-    await handler.handleEvent(groupTextEvent('@旭陽 8/15 +1', { messageId: 'm1' }));
+    await handleMessages(handler, groupTextEvent('@旭陽 8/15 +1', { messageId: 'm1' }));
 
     expect(await t.registrations.countConfirmed(aug.id)).toBe(1);
     expect(await t.registrations.countConfirmed(sep.id)).toBe(0);
@@ -157,13 +159,13 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const handler = makeHandler(t);
 
     // (a) 只給場地+日期 → 命中 2 場 → too_many，不報名。
-    const r1 = await handler.handleEvent(groupTextEvent('@旭陽 8/15 +1', { messageId: 'm1' }));
+    const r1 = await handleMessages(handler, groupTextEvent('@旭陽 8/15 +1', { messageId: 'm1' }));
     expect(textOf(r1)).toBe('有超過一場 旭陽 8/15 的球敘，請修正再試');
     expect(await t.registrations.countConfirmed(early.id)).toBe(0);
     expect(await t.registrations.countConfirmed(late.id)).toBe(0);
 
     // (b) 補上時間 → 命中恰一場。
-    await handler.handleEvent(groupTextEvent('@旭陽 8/15 07:30 +1', { messageId: 'm2' }));
+    await handleMessages(handler, groupTextEvent('@旭陽 8/15 07:30 +1', { messageId: 'm2' }));
     expect(await t.registrations.countConfirmed(early.id)).toBe(1);
     expect(await t.registrations.countConfirmed(late.id)).toBe(0);
   });
@@ -174,7 +176,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const b = await mkEvent(t, { location: '東方球場', at: T_0920_0730 });
     const handler = makeHandler(t);
 
-    const msgs = await handler.handleEvent(groupTextEvent('@不存在的場地 +1', { messageId: 'm1' }));
+    const msgs = await handleMessages(handler, groupTextEvent('@不存在的場地 +1', { messageId: 'm1' }));
 
     expect(textOf(msgs)).toBe('找不到符合 不存在的場地 的球敘，請確認後再試');
     expect(await t.registrations.countConfirmed(a.id)).toBe(0);
@@ -188,7 +190,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const c = await mkEvent(t, { location: '大溪球場', at: T_0920_0730 });
     const handler = makeHandler(t);
 
-    const msgs = await handler.handleEvent(groupTextEvent('@球場 +1', { messageId: 'm1' }));
+    const msgs = await handleMessages(handler, groupTextEvent('@球場 +1', { messageId: 'm1' }));
 
     expect(textOf(msgs)).toBe('有超過一場 球場 的球敘，請修正再試');
     for (const e of [a, b, c]) expect(await t.registrations.countConfirmed(e.id)).toBe(0);
@@ -202,7 +204,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const signupSpy = vi.spyOn(service, 'signup');
     const handler = makeHandler(t, { service });
 
-    const msgs = await handler.handleEvent(groupTextEvent('+1', { messageId: 'm1' }));
+    const msgs = await handleMessages(handler, groupTextEvent('+1', { messageId: 'm1' }));
 
     expect(textOf(msgs)).toBe('群組內有多場球敘進行中，請回覆或標註 @場地/@時間 以指定要操作的球敘');
     expect(signupSpy).not.toHaveBeenCalled();
@@ -224,7 +226,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     expect(await t.registrations.countConfirmed(a.id)).toBe(1);
 
     const handler = makeHandler(t);
-    await handler.handleEvent(groupTextEvent('@旭陽\n+1\n-1 陳先生', { messageId: 'm1' }));
+    await handleMessages(handler, groupTextEvent('@旭陽\n+1\n-1 陳先生', { messageId: 'm1' }));
 
     // 旭陽：+1（王小明）與 -1 陳先生 各作用一次 → 仍 1 筆有效正取，且是王小明。
     const confirmed = await t.registrations.listConfirmed(a.id);
@@ -249,13 +251,13 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const handler = makeHandler(t);
 
     // 啟動分組（多場並行 → `分組` 屬 NEEDS_EVENT_SET，需 @selector 指定）。
-    const started = await handler.handleEvent(
+    const started = await handleMessages(handler, 
       groupTextEvent('@旭陽 分組 1場 2輪', { userId: 'U-a', messageId: 'm1' }),
     );
     expect(textOf(started)).toContain('第 1 輪');
 
     // `下一輪`：**無 selector、無引言**，仍須正常推進（不落入 ambiguous）。
-    const next = await handler.handleEvent(groupTextEvent('下一輪', { userId: 'U-a', messageId: 'm2' }));
+    const next = await handleMessages(handler, groupTextEvent('下一輪', { userId: 'U-a', messageId: 'm2' }));
     expect(textOf(next)).toContain('第 2 輪');
     expect(textOf(next)).not.toContain('群組內有多場球敘進行中');
   });
@@ -265,7 +267,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     const b = await mkEvent(t, { location: '東方球場', at: T_0920_0730, hostLineId: 'U-b' });
     const handler = makeHandler(t);
 
-    const msgs = await handler.handleEvent(
+    const msgs = await handleMessages(handler, 
       groupTextEvent('@東方 取消活動', { userId: 'U-a', messageId: 'm1' }),
     );
 
@@ -286,7 +288,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     expect(closed.id).toBeGreaterThan(open.id);
     const handler = makeHandler(t);
 
-    const msgs = await handler.handleEvent(groupTextEvent('名單', { messageId: 'm1' }));
+    const msgs = await handleMessages(handler, groupTextEvent('名單', { messageId: 'm1' }));
 
     // candidates = [旭陽]（closed 不在 active 集合）→ single → 顯示旭陽的即時名單。
     expect(textOf(msgs)).toContain('[旭陽球場 球敘]');
@@ -298,7 +300,7 @@ describe('T-033a 全鏈路消歧義（dispatch → service）', () => {
     await mkEvent(t, { location: '東方球場', at: T_0920_0730, status: 'closed' });
     const handler = makeHandler(t);
 
-    const msgs = await handler.handleEvent(groupTextEvent('名單', { messageId: 'm1' }));
+    const msgs = await handleMessages(handler, groupTextEvent('名單', { messageId: 'm1' }));
 
     expect(textOf(msgs)).toContain('[東方球場 球敘]（報名已截止）');
   });

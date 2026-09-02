@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { handleMessages } from './__tests__/handle-messages';
 import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
@@ -59,6 +60,7 @@ function makeHandler(
 ): WebhookHandler {
   const service = opts.service ?? makeService(t);
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
@@ -90,7 +92,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const profile = profileReturning('任何人');
     const handler = makeHandler(t, { service, profile });
 
-    const out = await handler.handleEvent(groupTextEvent('今天天氣真好', { messageId: 'mx' }));
+    const out = await handleMessages(handler, groupTextEvent('今天天氣真好', { messageId: 'mx' }));
     expect(out).toEqual([]);
     expect(profile.getGroupMemberProfile).not.toHaveBeenCalled();
     expect(signupSpy).not.toHaveBeenCalled();
@@ -103,7 +105,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const signupSpy = vi.spyOn(service, 'signup');
     const handler = makeHandler(t, { service, profile: profileReturning('X') });
 
-    const out = await handler.handleEvent(groupTextEvent('+99', { messageId: 'mv' }));
+    const out = await handleMessages(handler, groupTextEvent('+99', { messageId: 'mv' }));
     expect(out).toEqual([]);
     expect(signupSpy).not.toHaveBeenCalled();
     expect(await t.processed.has('mv')).toBe(false);
@@ -114,7 +116,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const profile = profileReturning('群組顯示名');
     const handler = makeHandler(t, { profile });
 
-    await handler.handleEvent(groupTextEvent('+1', { userId: 'U-new', messageId: 'm1' }));
+    await handleMessages(handler, groupTextEvent('+1', { userId: 'U-new', messageId: 'm1' }));
     expect(profile.getGroupMemberProfile).toHaveBeenCalledWith('G', 'U-new');
     // 快照存入 registrations（display_name）與 users。
     const confirmed = await t.registrations.listConfirmed(event.id);
@@ -130,6 +132,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
       getGroupMemberProfile: vi.fn().mockRejectedValue(new Error('404 not friend')),
     };
     const handler = createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
@@ -144,11 +147,11 @@ describe('webhook handler（D-003 §6 分派）', () => {
     // 既有快照存在 → 用之。
     await t.users.upsert('U-known', '舊名快照');
     const signupSpy = vi.spyOn(service, 'signup');
-    await handler.handleEvent(groupTextEvent('+1', { userId: 'U-known', messageId: 'm1' }));
+    await handleMessages(handler, groupTextEvent('+1', { userId: 'U-known', messageId: 'm1' }));
     expect(signupSpy.mock.calls[0]![0].executorDisplayName).toBe('舊名快照');
 
     // 無既有快照 → 「使用者」。
-    await handler.handleEvent(groupTextEvent('+1', { userId: 'U-nobody', messageId: 'm2' }));
+    await handleMessages(handler, groupTextEvent('+1', { userId: 'U-nobody', messageId: 'm2' }));
     expect(signupSpy.mock.calls[1]![0].executorDisplayName).toBe('使用者');
   });
 
@@ -157,10 +160,10 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const handler = makeHandler(t, { profile: profileReturning('報名者') });
 
     // A 佔滿唯一正取，W 進候補。
-    await handler.handleEvent(groupTextEvent('+1', { userId: 'U-a', messageId: 'ma' }));
-    await handler.handleEvent(groupTextEvent('+1', { userId: 'U-w', messageId: 'mw' }));
+    await handleMessages(handler, groupTextEvent('+1', { userId: 'U-a', messageId: 'ma' }));
+    await handleMessages(handler, groupTextEvent('+1', { userId: 'U-w', messageId: 'mw' }));
     // A 取消 → 釋出、W 遞補。
-    const out = await handler.handleEvent(groupTextEvent('-1', { userId: 'U-a', messageId: 'mc' }));
+    const out = await handleMessages(handler, groupTextEvent('-1', { userId: 'U-a', messageId: 'mc' }));
 
     expect(out).toHaveLength(2); // 取消名單 + 遞補通知
     const notice = out[1]!;
@@ -177,14 +180,14 @@ describe('webhook handler（D-003 §6 分派）', () => {
     const handler = makeHandler(t, { profile: profileReturning('X') });
     const sticker = { type: 'message', message: { type: 'sticker', id: '1' }, source: { type: 'group', groupId: 'G', userId: 'U' }, replyToken: 'rt' } as unknown as WebhookEvent;
     const oneToOne = { type: 'message', message: { type: 'text', id: '2', text: '+1' }, source: { type: 'user', userId: 'U' }, replyToken: 'rt' } as unknown as WebhookEvent;
-    expect(await handler.handleEvent(sticker)).toEqual([]);
-    expect(await handler.handleEvent(oneToOne)).toEqual([]);
+    expect(await handleMessages(handler, sticker)).toEqual([]);
+    expect(await handleMessages(handler, oneToOne)).toEqual([]);
   });
 
   it('signup 正常回覆為單一文字訊息（含活動摘要與名單）', async () => {
     await seedEvent(t, { capacity: 16, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('王小明') });
-    const out = await handler.handleEvent(groupTextEvent('+3', { userId: 'U-wang', messageId: 'm1' }));
+    const out = await handleMessages(handler, groupTextEvent('+3', { userId: 'U-wang', messageId: 'm1' }));
     expect(out).toHaveLength(1);
     const msg = out[0]!;
     expect(msg.type).toBe('text');
@@ -196,8 +199,8 @@ describe('webhook handler（D-003 §6 分派）', () => {
   it('list 重送（相同 message_id）→ 第二次不回覆（唯讀去重）', async () => {
     await seedEvent(t, { capacity: 4, groupId: 'G' });
     const handler = makeHandler(t, { profile: profileReturning('X') });
-    const first = await handler.handleEvent(groupTextEvent('名單', { messageId: 'ml' }));
-    const second = await handler.handleEvent(groupTextEvent('名單', { messageId: 'ml' }));
+    const first = await handleMessages(handler, groupTextEvent('名單', { messageId: 'ml' }));
+    const second = await handleMessages(handler, groupTextEvent('名單', { messageId: 'ml' }));
     expect(first).toHaveLength(1);
     expect(second).toEqual([]);
   });
@@ -214,13 +217,13 @@ describe('webhook handler（D-003 §6 分派）', () => {
       });
     }
     const handler = makeHandler(t, { profile: profileReturning('主辦人') });
-    const first = await handler.handleEvent(
+    const first = await handleMessages(handler, 
       groupTextEvent('分組', { userId: 'U-host', messageId: 'gp' }),
     );
     expect(first).toHaveLength(1);
     expect((first[0] as messagingApi.TextMessage).text).toContain('第 1 組：');
 
-    const second = await handler.handleEvent(
+    const second = await handleMessages(handler, 
       groupTextEvent('分組', { userId: 'U-host', messageId: 'gp' }),
     );
     expect(second).toEqual([]); // 重送不再回覆（避免第二份不同分組）
@@ -238,12 +241,12 @@ describe('webhook handler（D-003 §6 分派）', () => {
       });
     }
     const handler = makeHandler(t, { profile: profileReturning('主辦人') });
-    const started = await handler.handleEvent(
+    const started = await handleMessages(handler, 
       groupTextEvent('分組 2場', { userId: 'U-host', messageId: 'gr1' }),
     );
     expect((started[0] as messagingApi.TextMessage).text).toContain('第 1 輪');
 
-    const crossOut = await handler.handleEvent(
+    const crossOut = await handleMessages(handler, 
       groupTextEvent('下一輪', { userId: 'U-host', messageId: 'gr2', groupId: 'G-B' }),
     );
     const crossText = (crossOut[0] as messagingApi.TextMessage).text;
@@ -253,7 +256,7 @@ describe('webhook handler（D-003 §6 分派）', () => {
     }
 
     // 回 A 群 `下一輪` → 正常第 2 輪。
-    const aOut = await handler.handleEvent(
+    const aOut = await handleMessages(handler, 
       groupTextEvent('下一輪', { userId: 'U-host', messageId: 'gr3' }),
     );
     expect((aOut[0] as messagingApi.TextMessage).text).toContain('第 2 輪');

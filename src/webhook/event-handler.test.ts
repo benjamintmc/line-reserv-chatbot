@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import type { WebhookEvent } from '@line/bot-sdk';
+import { handleMessages } from './__tests__/handle-messages';
+import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
 import { EventService } from '../domain/event-service';
@@ -59,6 +60,7 @@ function makeHandler(t: TestDb, superAdminUserIds: string[] = [HOST]): WebhookHa
     logError: () => {},
   });
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
@@ -70,7 +72,7 @@ function makeHandler(t: TestDb, superAdminUserIds: string[] = [HOST]): WebhookHa
   });
 }
 
-function textOf(msgs: Awaited<ReturnType<WebhookHandler['handleEvent']>>): string {
+function textOf(msgs: messagingApi.Message[]): string {
   const m = msgs[0];
   if (m === undefined || m.type !== 'text') return '';
   return m.text;
@@ -87,7 +89,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
 
   it('[D-004 AC-2] 白名單 host「開團 缺欄位」→ 格式提示 (K′)、不寫 conversation、不 INSERT', async () => {
     const handler = makeHandler(t);
-    const out = await handler.handleEvent(groupTextEvent('開團 只有一個參數', { messageId: 'm1' }));
+    const out = await handleMessages(handler, groupTextEvent('開團 只有一個參數', { messageId: 'm1' }));
     expect(textOf(out)).toContain('格式：開團');
     expect(await t.conversations.get(G, HOST)).toBeUndefined();
     expect((await t.events.listActiveByGroup(G)).at(-1)).toBeUndefined();
@@ -96,26 +98,26 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
 
   it('[D-004 AC-2 errata(2026-07-31 D-006 #7)] 非 super-admin「開團 缺欄位」→ 格式提示 (K′)（開團全開，無非授權分支）', async () => {
     const handler = makeHandler(t, []); // 無 super-admin：開團仍全開
-    const out = await handler.handleEvent(groupTextEvent('開團 只有一個參數', { userId: 'U-bad', messageId: 'm1' }));
+    const out = await handleMessages(handler, groupTextEvent('開團 只有一個參數', { userId: 'U-bad', messageId: 'm1' }));
     expect(textOf(out)).toContain('格式：開團');
   });
 
   it('[D-004 AC-15] mid-flow per-user 隔離：host 開團中，成員 +1 照走 D-003（不被當作答案）', async () => {
     const handler = makeHandler(t);
     // host 啟動逐步問答 → awaiting_date。
-    const start = await handler.handleEvent(groupTextEvent('開團', { userId: HOST, messageId: 'h0' }));
+    const start = await handleMessages(handler, groupTextEvent('開團', { userId: HOST, messageId: 'h0' }));
     expect(textOf(start)).toContain('請輸入活動日期');
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_date');
 
     // 成員 B（無 conversation）+1 → 走 signup 分派；此時無 open 活動 → 回定型句（D-003 處理）。
-    const bOut = await handler.handleEvent(groupTextEvent('+1', { userId: 'U-b', messageId: 'b0' }));
+    const bOut = await handleMessages(handler, groupTextEvent('+1', { userId: 'U-b', messageId: 'b0' }));
     expect(textOf(bOut)).toBe('目前沒有開放報名的活動。'); // D-017 補句號
     // host 的流程未被 B 的訊息影響。
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_date');
     expect(JSON.parse((await t.conversations.get(G, HOST))!.payload ?? '{}').date).toBeUndefined();
 
     // host 下一則才是 date 答案 → 前進（D-005 中性化：提問為「請輸入時間」）。
-    const dateOut = await handler.handleEvent(groupTextEvent('2999/08/15', { userId: HOST, messageId: 'h1' }));
+    const dateOut = await handleMessages(handler, groupTextEvent('2999/08/15', { userId: HOST, messageId: 'h1' }));
     expect(textOf(dateOut)).toContain('請輸入時間');
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_time');
   });
@@ -123,12 +125,12 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
   it('[D-004 AC-18 / D-005 AC-3] 開團（一行式→確認→open）後主辦佔第 1 位，成員 +2 可報名（3/16）', async () => {
     const handler = makeHandler(t);
     // 一行式 → 確認摘要 (B)。
-    const summary = await handler.handleEvent(
+    const summary = await handleMessages(handler, 
       groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { userId: HOST, messageId: 'o1' }),
     );
     expect(textOf(summary)).toContain('請確認開團資訊');
     // 確認 → 開團公告 (D)（走 conversation 攔截 → continueFlow confirm）。
-    const announce = await handler.handleEvent(groupTextEvent('確認', { userId: HOST, messageId: 'o2' }));
+    const announce = await handleMessages(handler, groupTextEvent('確認', { userId: HOST, messageId: 'o2' }));
     expect(textOf(announce)).toContain('開團成功');
     const event = (await t.events.listActiveByGroup(G)).at(-1);
     expect(event?.status).toBe('open');
@@ -136,22 +138,22 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(await t.registrations.countConfirmed(event!.id)).toBe(1);
 
     // 成員 +2 → D-003 signup 正常（主辦 1 + 成員 2 = 3）。
-    const signup = await handler.handleEvent(groupTextEvent('+2', { userId: 'U-m', messageId: 'o3' }));
+    const signup = await handleMessages(handler, groupTextEvent('+2', { userId: 'U-m', messageId: 'o3' }));
     expect(textOf(signup)).toContain('報名名單（3/16）');
     expect(await t.registrations.countConfirmed(event!.id)).toBe(3);
   });
 
   it('[D-004 AC-16] 無流程時 confirm/abort 經 handler → 空陣列', async () => {
     const handler = makeHandler(t);
-    expect(await handler.handleEvent(groupTextEvent('確認', { messageId: 'c' }))).toEqual([]);
-    expect(await handler.handleEvent(groupTextEvent('取消', { messageId: 'a' }))).toEqual([]);
+    expect(await handleMessages(handler, groupTextEvent('確認', { messageId: 'c' }))).toEqual([]);
+    expect(await handleMessages(handler, groupTextEvent('取消', { messageId: 'a' }))).toEqual([]);
   });
 
   it('[D-004 AC-8] 關閉報名經 handler → (E) 回覆', async () => {
     const handler = makeHandler(t);
-    await handler.handleEvent(groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { messageId: 'o1' }));
-    await handler.handleEvent(groupTextEvent('確認', { messageId: 'o2' }));
-    const out = await handler.handleEvent(groupTextEvent('關閉報名', { messageId: 'o3' }));
+    await handleMessages(handler, groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { messageId: 'o1' }));
+    await handleMessages(handler, groupTextEvent('確認', { messageId: 'o2' }));
+    const out = await handleMessages(handler, groupTextEvent('關閉報名', { messageId: 'o3' }));
     expect(textOf(out)).toContain('報名已截止');
   });
   // ── D-004 errata（跨群語意，2026-08-18；使用者回報之 bug）─────────────────
@@ -162,12 +164,12 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     await seedEvent(t, { capacity: 16, groupId: 'Gid-BBB', hostLineId: 'U-other-host' });
 
     // A 群（G）啟動逐步問答 → awaiting_date。
-    const start = await handler.handleEvent(groupTextEvent('開團', { userId: HOST, messageId: 'a0' }));
+    const start = await handleMessages(handler, groupTextEvent('開團', { userId: HOST, messageId: 'a0' }));
     expect(textOf(start)).toContain('請輸入活動日期');
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_date');
 
     // 同一人在 B 群 +1 → 走 D-003 signup（非流程答案）。
-    const bOut = await handler.handleEvent(
+    const bOut = await handleMessages(handler, 
       groupTextEvent('+1', { userId: HOST, messageId: 'b0', groupId: 'Gid-BBB' }),
     );
     expect(textOf(bOut)).toContain('報名名單（');
@@ -175,12 +177,12 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(await t.registrations.countConfirmed(eventB!.id)).toBe(1);
 
     // B 群「名單」照常唯讀查詢；B 群雜訊靜默不回覆。
-    const listOut = await handler.handleEvent(
+    const listOut = await handleMessages(handler, 
       groupTextEvent('名單', { userId: HOST, messageId: 'b1', groupId: 'Gid-BBB' }),
     );
     expect(textOf(listOut)).toContain('報名名單（');
     expect(
-      await handler.handleEvent(groupTextEvent('今天天氣真好', { userId: HOST, messageId: 'b2', groupId: 'Gid-BBB' })),
+      await handleMessages(handler, groupTextEvent('今天天氣真好', { userId: HOST, messageId: 'b2', groupId: 'Gid-BBB' })),
     ).toEqual([]);
 
     // A 群流程完全未被 B 群訊息破壞（state 未前進、draft 未被誤填）。
@@ -190,18 +192,18 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(JSON.parse(conv!.payload ?? '{}').date).toBeUndefined();
 
     // A 群下一則才是答案 → 正常前進。
-    const dateOut = await handler.handleEvent(groupTextEvent('2999/08/15', { userId: HOST, messageId: 'a1' }));
+    const dateOut = await handleMessages(handler, groupTextEvent('2999/08/15', { userId: HOST, messageId: 'a1' }));
     expect(textOf(dateOut)).toContain('請輸入時間');
   });
 
   it('[D-004 errata 跨群] A 群 awaiting_confirm 時，B 群輸入「確認」→ 不建立任何活動、A 群流程保留', async () => {
     const handler = makeHandler(t);
-    await handler.handleEvent(
+    await handleMessages(handler, 
       groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { userId: HOST, messageId: 'a0' }),
     );
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
 
-    const bOut = await handler.handleEvent(
+    const bOut = await handleMessages(handler, 
       groupTextEvent('確認', { userId: HOST, messageId: 'b0', groupId: 'Gid-BBB' }),
     );
     expect(bOut).toEqual([]); // 別群的「確認」→ noop、不回覆
@@ -210,17 +212,17 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm'); // A 群流程保留
 
     // 回 A 群「確認」→ 正常建立於 A 群。
-    const aOut = await handler.handleEvent(groupTextEvent('確認', { userId: HOST, messageId: 'a1' }));
+    const aOut = await handleMessages(handler, groupTextEvent('確認', { userId: HOST, messageId: 'a1' }));
     expect(textOf(aOut)).toContain('開團成功');
     expect(((await t.events.listActiveByGroup(G)).at(-1))?.group_id).toBe(G);
   });
 
   it('[D-004 errata 跨群] A 群流程進行中，B 群輸入「取消」→ 不放棄 A 群流程', async () => {
     const handler = makeHandler(t);
-    await handler.handleEvent(groupTextEvent('開團', { userId: HOST, messageId: 'a0' }));
+    await handleMessages(handler, groupTextEvent('開團', { userId: HOST, messageId: 'a0' }));
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_date');
 
-    const bOut = await handler.handleEvent(
+    const bOut = await handleMessages(handler, 
       groupTextEvent('取消', { userId: HOST, messageId: 'b0', groupId: 'Gid-BBB' }),
     );
     expect(bOut).toEqual([]); // 別群的「取消」→ 靜默 noop
@@ -228,7 +230,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect(await t.processed.has('b0')).toBe(false); // 不 mark
 
     // A 群「取消」才真的放棄。
-    const aOut = await handler.handleEvent(groupTextEvent('取消', { userId: HOST, messageId: 'a1' }));
+    const aOut = await handleMessages(handler, groupTextEvent('取消', { userId: HOST, messageId: 'a1' }));
     expect(textOf(aOut)).toContain('已取消開團');
     expect(await t.conversations.get(G, HOST)).toBeUndefined();
   });
@@ -239,14 +241,14 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
   it('[D-013 AC-1] A 群 awaiting_confirm 時 B 群「開團」→ 兩列並存、無任何放棄告知、A 群列原封不動', async () => {
     const handler = makeHandler(t);
     // A 群一行式 → awaiting_confirm（draft 含場地/人數/費用）。
-    await handler.handleEvent(
+    await handleMessages(handler, 
       groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { userId: HOST, messageId: 'a0' }),
     );
     const before = await t.conversations.get(G, HOST);
     expect(before?.state).toBe('awaiting_confirm');
 
     // B 群開新團 → 新流程照常開始，且**不出現任何放棄/結束告知**。
-    const bOut = await handler.handleEvent(
+    const bOut = await handleMessages(handler, 
       groupTextEvent('開團', { userId: HOST, messageId: 'b0', groupId: 'Gid-BBB' }),
     );
     const txt = textOf(bOut);
@@ -266,14 +268,14 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
     expect((await t.conversations.get('Gid-BBB', HOST))?.state).toBe('awaiting_date');
 
     // B 群作答只推進 B 群那一列；A 群仍停在 awaiting_confirm。
-    await handler.handleEvent(
+    await handleMessages(handler, 
       groupTextEvent('2999/09/20', { userId: HOST, messageId: 'b1', groupId: 'Gid-BBB' }),
     );
     expect((await t.conversations.get('Gid-BBB', HOST))?.state).toBe('awaiting_time');
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
 
     // 回 A 群作答（`確認`）正常前進、以 A 群 draft 建立於 A 群。
-    const aOut = await handler.handleEvent(groupTextEvent('確認', { userId: HOST, messageId: 'a1' }));
+    const aOut = await handleMessages(handler, groupTextEvent('確認', { userId: HOST, messageId: 'a1' }));
     expect(textOf(aOut)).toContain('開團成功');
     expect(((await t.events.listActiveByGroup(G)).at(-1))?.location).toBe('東方球場');
     expect((await t.events.listActiveByGroup('Gid-BBB')).at(-1)).toBeUndefined();
@@ -293,14 +295,14 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
       });
     }
     // A 群啟動多輪分組 session。
-    const started = await handler.handleEvent(
+    const started = await handleMessages(handler, 
       groupTextEvent('分組 2場', { userId: HOST, messageId: 'g1' }),
     );
     expect(textOf(started)).toContain('第 1 輪');
     expect((await t.conversations.get(G, HOST))?.state).toBe('grouping');
 
     // B 群 `下一輪` → 查詢鍵為 (G-B, HOST) ⇒ 結構上撈不到 A 群 session。
-    const cross = await handler.handleEvent(
+    const cross = await handleMessages(handler, 
       groupTextEvent('下一輪', { userId: HOST, messageId: 'g2', groupId: 'Gid-BBB' }),
     );
     const crossTxt = textOf(cross);
@@ -310,16 +312,16 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
 
     // B 群 `確認` / `取消` 對 A 群 session 零影響（皆 noop、不回覆）。
     expect(
-      await handler.handleEvent(groupTextEvent('確認', { userId: HOST, messageId: 'g3', groupId: 'Gid-BBB' })),
+      await handleMessages(handler, groupTextEvent('確認', { userId: HOST, messageId: 'g3', groupId: 'Gid-BBB' })),
     ).toEqual([]);
     expect(
-      await handler.handleEvent(groupTextEvent('取消', { userId: HOST, messageId: 'g4', groupId: 'Gid-BBB' })),
+      await handleMessages(handler, groupTextEvent('取消', { userId: HOST, messageId: 'g4', groupId: 'Gid-BBB' })),
     ).toEqual([]);
     const conv = await t.conversations.get(G, HOST);
     expect(conv?.state).toBe('grouping');
 
     // 回 A 群 `下一輪` → 正常第 2 輪。
-    const next = await handler.handleEvent(groupTextEvent('下一輪', { userId: HOST, messageId: 'g5' }));
+    const next = await handleMessages(handler, groupTextEvent('下一輪', { userId: HOST, messageId: 'g5' }));
     expect(textOf(next)).toContain('第 2 輪');
   });
 
@@ -333,7 +335,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
       payload: JSON.stringify({ mode: 'doubles', round: 1, labels: ['甲甲', '乙乙', '丙丙', '丁丁'] }),
     });
 
-    const out = await handler.handleEvent(groupTextEvent('開團', { userId: HOST, messageId: 'k0' }));
+    const out = await handleMessages(handler, groupTextEvent('開團', { userId: HOST, messageId: 'k0' }));
     const txt = textOf(out);
     expect(txt).toContain('已結束你先前未完成的分組。');
     expect(txt).toContain('請輸入活動日期');
@@ -345,7 +347,7 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
 
   it('[D-004 errata N2] 無前一段流程時「開團」→ 不附放棄告知（不擾民）', async () => {
     const handler = makeHandler(t);
-    const out = await handler.handleEvent(groupTextEvent('開團', { userId: HOST, messageId: 'n0' }));
+    const out = await handleMessages(handler, groupTextEvent('開團', { userId: HOST, messageId: 'n0' }));
     expect(textOf(out)).toContain('請輸入活動日期');
     expect(textOf(out)).not.toContain('已放棄');
     expect(textOf(out)).not.toContain('已結束');

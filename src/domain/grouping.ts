@@ -38,6 +38,14 @@ export interface Round {
  * 歷史以索引對（`"i|j"`，i<j）記錄；sit-out 與連續出賽以索引陣列累計。
  */
 export interface GroupingState {
+  /**
+   * D-029 §5.5：本 session 綁定的活動 id（消歧義解出，`startRounds` 寫入、`nextRound` 原樣沿用）。
+   *
+   * 唯一用途是讓 `分組`／`下一輪` 的回覆能登記進 `message_event_map`（可被 quote）。
+   * **不參與任何分組運算**，也不代表 `下一輪` 會重跑消歧義（G11：`下一輪` 的目標活動
+   * 完全由既有 session 決定）。
+   */
+  eventId: number;
   mode: GroupMode;
   courts: number; // 有效場地數 M
   courtSize: number; // 每場人數（雙打 4／單打 2）
@@ -260,6 +268,8 @@ export interface StartOptions {
   courts?: number; // 未帶 → defaultCourts
   rounds?: number | null; // 未帶/null → 不設上限
   mode: GroupMode;
+  /** D-029 §5.5：session 綁定的活動 id（原樣寫進 `GroupingState.eventId`，不參與運算）。 */
+  eventId: number;
 }
 
 /** 啟動策略B session 並產第 1 輪（§1）。N < courtSize → insufficient。 */
@@ -275,6 +285,7 @@ export function startSession(
   if (effectiveCourts < 1) return { kind: 'insufficient' };
 
   const state: GroupingState = {
+    eventId: opts.eventId,
     mode: opts.mode,
     courts: effectiveCourts,
     courtSize,

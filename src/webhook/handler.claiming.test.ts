@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import type { WebhookEvent } from '@line/bot-sdk';
+import { handleMessages } from './__tests__/handle-messages';
+import type { WebhookEvent, messagingApi } from '@line/bot-sdk';
 import { createTestDb, type TestDb } from '../db/__tests__/test-db';
 import { RegistrationService } from '../domain/registration-service';
 import { EventService } from '../domain/event-service';
@@ -59,6 +60,7 @@ function makeHandler(t: TestDb, profile: GroupProfileClient, superAdmins: string
     logError: () => {},
   });
   return createWebhookHandler({
+    messageEventMap: t.messageEventMap, // D-025 §4.1：quote 查表來源（必填）
     events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
@@ -70,7 +72,7 @@ function makeHandler(t: TestDb, profile: GroupProfileClient, superAdmins: string
   });
 }
 
-function textOf(msgs: Awaited<ReturnType<WebhookHandler['handleEvent']>>): string {
+function textOf(msgs: messagingApi.Message[]): string {
   const m = msgs[0];
   if (m === undefined || m.type !== 'text') return '';
   return m.text;
@@ -88,7 +90,7 @@ describe('webhook handler 授權簡化（D-006）', () => {
   it('[D-006 AC-9] 我的ID → (MyID) 含傳訊人自身 userId、不 mark、無 DB 副作用（不呼叫 profile）', async () => {
     const profile = profileReturning('任何人');
     const handler = makeHandler(t, profile);
-    const out = await handler.handleEvent(groupTextEvent('我的ID', { userId: 'U-me', messageId: 'mid9' }));
+    const out = await handleMessages(handler, groupTextEvent('我的ID', { userId: 'U-me', messageId: 'mid9' }));
     expect(out).toHaveLength(1);
     expect(textOf(out)).toBe(formatMyId('U-me').text);
     expect(textOf(out)).toContain('你的 LINE 使用者 ID');
@@ -101,7 +103,7 @@ describe('webhook handler 授權簡化（D-006）', () => {
 
   it('[D-006 AC-9] 小寫「我的id」亦回 (MyID)', async () => {
     const handler = makeHandler(t, profileReturning('X'));
-    const out = await handler.handleEvent(groupTextEvent('我的id', { userId: 'U-abc', messageId: 'mid9b' }));
+    const out = await handleMessages(handler, groupTextEvent('我的id', { userId: 'U-abc', messageId: 'mid9b' }));
     expect(textOf(out)).toContain('U-abc');
   });
 
@@ -109,17 +111,17 @@ describe('webhook handler 授權簡化（D-006）', () => {
     // 無 super-admin：驗證開團全開下完整銜接 M2。
     const handler = makeHandler(t, profileReturning('主辦人'), []);
     const X = 'U-plain'; // 一般成員（非 super-admin）
-    const summary = await handler.handleEvent(
+    const summary = await handleMessages(handler, 
       groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { userId: X, messageId: 'o1' }),
     );
     expect(textOf(summary)).toContain('請確認開團資訊');
-    const announce = await handler.handleEvent(groupTextEvent('確認', { userId: X, messageId: 'o2' }));
+    const announce = await handleMessages(handler, groupTextEvent('確認', { userId: X, messageId: 'o2' }));
     expect(textOf(announce)).toContain('開團成功');
     const event = (await t.events.listActiveByGroup(G)).at(-1);
     expect(event?.status).toBe('open');
     expect(await t.registrations.countConfirmed(event!.id)).toBe(1); // 主辦自動第 1 正取
 
-    const signup = await handler.handleEvent(groupTextEvent('+2', { userId: 'U-m', messageId: 'o3' }));
+    const signup = await handleMessages(handler, groupTextEvent('+2', { userId: 'U-m', messageId: 'o3' }));
     expect(textOf(signup)).toContain('報名名單（3/16）');
     expect(await t.registrations.countConfirmed(event!.id)).toBe(3);
   });

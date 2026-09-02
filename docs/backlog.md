@@ -77,3 +77,14 @@
   ⑤**〔文案一致性，需先改設計文件〕per_person 在使用者可見文案中有三種說法**：`每人費用`（`feeLabel`／`已更新每人費用`／`feeLine`）、`每人固定`（新 `bad_fee`）、`每人固定費用`（D-005 開團問答）。**為什麼現在不做**：三者皆為使用者已核可的釘死值，動它要先出 D-005／D-019 errata。**動工前**：決定統一用詞（建議「每人費用」）並盤點所有落點。
   ⑥**〔產品面風險，待使用者裁決是否另開案〕split_venue 活動輸入裸數字會靜默切換模式**：主辦打 `編輯 費用 4000`（未寫「場地費」）會把場地費均攤改成每人 4000 元。屬 D-019 明文採納的語法決議，且回覆句明示「場地費 3000 元 → 每人費用 4000 元」可自我修正，故不阻塞。**為什麼現在不做**：要改就是改 D-019 已核可的語法決議，屬需求變更而非缺陷修復。
   ⑦**〔R0〕D-019 補 errata ×2**（落點由 architect-reviewer 指定，**擁有者是 architect，orchestrator 不得代筆**）：**(a)** §一.3 `feeLabel` 後加註「export 自 `event-formatter`；domain→formatter 執行期單向依賴為刻意接受；`event-formatter` 對 `event-service` 必須維持 `import type`，一旦需要 value import 即須把 `feeLabel` 抽到共用模組」**(b)** AC-7 後半句改記實際做法（舊原語已整個移除，非以 `not.toHaveBeenCalled()` 斷言）。
+
+- **（T-033b 衍生，2026-09-02，2 條）** 皆不阻塞 T-033b 結案。
+  ①**〔R1，architect-reviewer N1〕`handler.ts` 抽出 `src/webhook/event-resolution.ts`**：
+  消歧義管線（`needsEventResolution`／`resolveQuotedEventInGroup`／`resolveQuotedEvent`／
+  `resolveEventForCommand`）已約 110 行，`handler.ts` 全檔 1300 行。
+  **為什麼 T-033b 不順手做**：R2 的 diff 可審性優先——本批已動 14 個 render 分支 + 回傳型別，
+  再疊一次搬檔會讓 reviewer 難以分辨「搬移」與「改行為」。**動工前**：確認 T-033c 不會再動這段
+  （D-027／D-028 只碰開團側），否則排在 T-033c 之後做。
+  ②**〔R0〕`renderCreateEntry / already_active` 目前刻意不附 `relatedEventId`**（D-029 errata E1）。
+  **T-033c 把它改名為 `duplicate_event` 時必須同批補上 `result.event.id`**，否則 §5.3 表列的
+  「既存衝突活動」錨點永久缺席（漏登映射會使 quote 靜默失效，正是 G4 要防的事）。

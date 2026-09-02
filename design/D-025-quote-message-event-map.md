@@ -1,7 +1,6 @@
 # D-025: 機制 A — quote-reply → `message_event_map`（含跨群校驗 B1）
 
 - 狀態：**APPROVED（繼承 D-020，2026-09-01）**——設計內容自 D-020 §4.1 **逐字**切出，未改動任何已核可決定。
-- AC 覆蓋：**待動工豁免**（**T-033b** 尚未動工；**動工時必須移除本行**，否則本檔 5 條 AC 不受檢＝假綠）。
 - 風險等級：**R2（高）**——G14／AC-28 為跨群資訊外洩的防禦深度（architect-reviewer B1 blocker 的修復），屬授權/隔離類。
 - 來源：D-020 §4.1；內文所有 `§x` 皆指 **D-020 的舊章節編號**（轉址表見 umbrella `D-020`）。相依：D-021（表由 0006 建立）、D-026（`resolveQuotedEventInGroup` 的插入點）。同屬 T-033b：D-029。
 
@@ -84,3 +83,27 @@
   （`undefined`），行為等同「群組 X 有 2 場、無引言、無 selector」→ 回既有 `ambiguous` 提示
   （「群組內有多場球敘進行中...」），**訊息內容不含群組 Y 任一活動的場地／時間／id**；不呼叫
   任何 service、不誤判定到群組 Y 的活動、不 markProcessed。
+
+## 四、errata（T-033b 動工時追加，2026-09-02）
+
+> 落筆者：orchestrator（裁決／實作紀錄，比照 D-007／D-021 前例）；設計主體未改。
+
+### E1（architect-reviewer 5b 要求落檔）：`close`／`cancel` 於 quote 上線後的交易外結果會變
+
+T-033a 期間 quote 恆解出 `undefined`，故 `close`／`cancel`／`edit` 拿到的 `eventId` 必然來自
+`listActiveByGroup` ⇒ `status ∈ {draft, open}`。**T-033b 之後 quote 可指向已 `closed`／`cancelled`
+的活動**（§4.3 明定 `quotedEventId` 不過濾「是否仍在候選集合內」，該場能不能做這件事交給各指令
+自身的狀態判斷）。連帶效果：
+
+- 非授權者引用一場**已關閉**活動下 `關閉報名`／`取消活動` → 交易外授權判定先跑，回
+  `not_authorized` 而**非** `no_active`（交易內重讀仍會正確地判 `no_active`／`already_closed`）。
+- 這是**規範中的行為**，不是回歸：授權失敗優先於狀態失敗，兩者都不洩漏活動內容。
+  日後若要改為「狀態先判」，須另立設計並同步 D-021 §5.1。
+
+### E2：`message_event_map` 的讀取點（G14 窮舉，T-033b 落地後複驗）
+
+生產碼**只有一處**讀取：`handler.ts` 的 `resolveQuotedEvent` → 立即交給
+`resolveQuotedEventInGroup` 以 `events.getById` 比對 `group_id`。repository 的 `getEventId`
+無其他呼叫端。**新增讀取點時必須經過 `resolveQuotedEventInGroup`**，不得把
+`getEventId` 的結果直接交給 service 或 `resolveTargetEvent`（`conversation_states` 前例：
+寫入有存 `group_id`、5 個讀取點全沒用）。

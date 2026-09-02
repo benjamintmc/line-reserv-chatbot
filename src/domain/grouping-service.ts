@@ -95,7 +95,17 @@ export type NextRoundResult =
   | { kind: 'no_session' }
   | { kind: 'duplicate' }
   | { kind: 'exhausted' }
-  | { kind: 'round'; round: Round; mode: GroupMode };
+  /**
+   * D-029 §5.3：`eventId` 取自 session（`GroupingState.eventId`），供 handler 附
+   * `relatedEventId`。`下一輪` **不**因此參與消歧義（G11）——它只是把「這輪屬於哪一場」
+   * 如實回報給接線層。
+   *
+   * **選填**：T-033b 上線前建立、尚未結束的 grouping session，其 payload 沒有 `eventId`
+   * 欄位（見 `nextRound` 的相容處理）。這類 session 的 `下一輪` 回覆不登記映射即可
+   * （最多是那幾則舊訊息不能被 quote），**不得**因此改判 `no_session` 而把使用者的
+   * 分組流程打斷。
+   */
+  | { kind: 'round'; round: Round; mode: GroupMode; eventId?: number };
 
 export class GroupingService {
   private readonly events: EventReader;
@@ -163,7 +173,8 @@ export class GroupingService {
     const labels = await this.loadLabels(active.id);
     const started = startSession(
       labels,
-      { courts: input.courts, rounds: input.rounds ?? null, mode: input.mode },
+      // D-029 §5.5：session 綁定消歧義解出的那一場（`active.id`＝鎖前唯讀重讀的權威 id）。
+      { courts: input.courts, rounds: input.rounds ?? null, mode: input.mode, eventId: active.id },
       this.rng,
     );
     if (started.kind === 'insufficient') return { kind: 'insufficient' };
@@ -197,6 +208,8 @@ export class GroupingService {
       return { kind: 'no_session' };
     }
     if (conv.group_id !== input.groupId) return { kind: 'no_session' }; // B1：跨群不得讀他群 session
+    // 舊 payload 相容（T-033b）：跨版本存活的 session 沒有 `eventId`，故 `as GroupingState`
+    // 對該欄位是張空頭支票——只在確實是數字時才往下傳（見 NextRoundResult 的說明）。
     const state = JSON.parse(conv.payload) as GroupingState;
     const advanced = nextRoundPure(state, this.rng);
     if (advanced.kind === 'exhausted') return { kind: 'exhausted' };
@@ -209,7 +222,13 @@ export class GroupingService {
         state: GROUPING_STATE,
         payload: JSON.stringify(advanced.state),
       });
-      return { kind: 'round', round: advanced.round, mode: advanced.state.mode };
+      const eventId: unknown = advanced.state.eventId;
+      return {
+        kind: 'round',
+        round: advanced.round,
+        mode: advanced.state.mode,
+        ...(typeof eventId === 'number' ? { eventId } : {}),
+      };
     });
   }
 }

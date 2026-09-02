@@ -46,6 +46,7 @@ type EditOk = Extract<EditEventResult, { kind: 'ok' }>;
 function ok(over: Partial<EditOk> = {}): EditOk {
   return {
     kind: 'ok',
+    eventId: 1,
     field: 'location',
     before: '舊場地',
     after: '新場地',
