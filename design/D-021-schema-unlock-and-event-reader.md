@@ -1,7 +1,6 @@
 # D-021: Schema 解鎖與 `EventReader` 讀取路徑（0006 migration + service 佈線）
 
 - 狀態：**APPROVED（繼承 D-020，2026-09-01）**——設計內容自 D-020 §1／§2／§5.1 **逐字**切出，未改動任何已核可決定。
-- AC 覆蓋：**待動工豁免**（**T-033a** 尚未動工；**動工時必須移除本行**，否則本檔 2 條 AC 不受檢＝假綠）。
 - 風險等級：**R2（高）**——資料 migration + `src/domain/event-service.ts`／`registration-service.ts`（CLAUDE.md §4.5 高風險模組）。
 - 來源：D-020 §1／§2／§5.1；內文所有 `§x` 皆指 **D-020 的舊章節編號**（逐字保留，轉址表見 umbrella `D-020`）。同屬 T-033a 的並行文件：D-022、D-023、D-024、D-026。
 
