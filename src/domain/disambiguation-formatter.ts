@@ -21,10 +21,15 @@ function text(s: string): MessageDescriptor {
  * `TargetResolution.selectorRaw` 仍保存原始未截斷值，供測試／除錯用。
  * 上限取 20（比照既有 `MAX_PROXY_NAME_LEN=20`／`MAX_LOCATION_LEN=40` 量級中較嚴格者）：
  * 超過 `max` 字元 → 取前 `max` 字元 + `…`；`<= max` 原樣顯示、不加 `…`（邊界零截斷）。
+ *
+ * **以 code point 計數與切片**（`[...s]`），非 UTF-16 code unit：`selectorRaw` 含 emoji 或
+ * 罕用字（surrogate pair）時，`String.prototype.slice` 會在邊界切半個字元、回覆出現亂碼方塊。
+ * 邊界語意不變（長度 = `max` 不截斷、> `max` 截斷為前 `max` 個 code point + `…`）。
  */
 export function truncateForDisplay(s: string, max = 20): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max)}…`;
+  const codePoints = [...s];
+  if (codePoints.length <= max) return s;
+  return `${codePoints.slice(0, max).join('')}…`;
 }
 
 /**

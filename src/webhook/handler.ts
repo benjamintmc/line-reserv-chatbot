@@ -736,7 +736,11 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
    * D-026 §5.2 步驟 4：解出這則訊息要作用在哪一場活動。
    *
    * `ambiguous`/`conflict`/`not_found`/`too_many` 一律**直接回覆、不呼叫任何 service、
-   * 不 markProcessed**——這些是純判斷、無副作用的拒絕，比照既有「非授權早退不 mark」的精神。
+   * 不 markProcessed**——這些是純判斷、零 DB 副作用的早退拒絕，屬 `CLAUDE.md` §4 去重政策的
+   * **具名例外 (b) 類**（授權依據見 `design/D-026` 的 errata，2026-09-02 使用者裁決）。
+   * 同型先例：`closeEvent`／`cancelEvent` 的 `not_authorized` 於 `event-service.ts:601-603`
+   * early-return，早於 `this.tx` 內的 `markProcessed`。
+   * 已知代價（接受，非缺陷）：LINE 重送時使用者會重複收到同一則提示。
    */
   async function resolveEventForCommand(
     groupId: string,

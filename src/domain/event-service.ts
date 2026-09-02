@@ -591,8 +591,8 @@ export class EventService {
     //
     // D-021 §5.1：查詢方式由 `findActiveByGroup(groupId)` 換成 `getById(eventId)`（eventId 由
     // handler 消歧義解出）；`undefined` = 候選數 0 → 沿用既有「查無 active」分支。
-    // **雙層授權模式維持不變**：交易外 early-return 授權檢查 + 交易內 `FOR UPDATE` 權威重讀，
-    // 兩次查詢都保留，不得因為改成 getById 就合併成一次（TOCTOU 防護）。
+    // **雙層授權模式維持不變**：交易外 early-return 授權檢查 + 交易內權威重讀（`getById`，走 `TransactionRunner`，**無列鎖**；D-021 errata 2026-09-02）。
+    // 兩次查詢都保留、不得合併——交易內重讀可看到同交易前段寫入並縮短 TOCTOU 窗口，但**不是** `FOR UPDATE` 等級的併發保證。
     const eventId = input.eventId;
     if (eventId === undefined) return { kind: 'no_active' };
     const active0 = await this.events.getById(eventId);
@@ -604,7 +604,7 @@ export class EventService {
 
     return this.tx<CloseResult>(async (repos) => {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
-      const active = await repos.events.getById(eventId); // 交易內權威重讀（D-004 §5.2）
+      const active = await repos.events.getById(eventId); // 交易內權威重讀（無列鎖，D-004 §5.2）
       if (active === undefined) return { kind: 'no_active' };
       if (isExpired(active, nowIso())) return { kind: 'no_active' }; // 交易內重檢（OP-7）
       if (active.status === 'closed') return { kind: 'already_closed' }; // D-008：不可達（防禦保留）
@@ -635,8 +635,8 @@ export class EventService {
   async cancelEvent(input: LifecycleInput): Promise<CancelResult> {
     // D-006 §2：授權於進交易前判定（不 mark、無 DB 變更，G2）。
     // D-008 OP-7：過期 open → no_active、不 flip。
-    // D-021 §5.1：同 closeEvent——改讀 `getById(eventId)`，雙層（交易外 + 交易內 FOR UPDATE）
-    // 兩次查詢皆保留，不得合併（TOCTOU 防護）。
+    // D-021 §5.1：同 closeEvent——改讀 `getById(eventId)`，雙層 = 交易外 early-return + 交易內權威重讀
+    // （`getById`，走 `TransactionRunner`，**無列鎖**；D-021 errata 2026-09-02）；兩次查詢皆保留、不得合併（縮短 TOCTOU 窗口）。
     const eventId = input.eventId;
     if (eventId === undefined) return { kind: 'no_active' };
     const active0 = await this.events.getById(eventId);
@@ -648,7 +648,7 @@ export class EventService {
 
     return this.tx<CancelResult>(async (repos) => {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
-      const active = await repos.events.getById(eventId); // 交易內權威重讀
+      const active = await repos.events.getById(eventId); // 交易內權威重讀（無列鎖）
       if (active === undefined) return { kind: 'no_active' };
       if (isExpired(active, nowIso())) return { kind: 'no_active' }; // 交易內重檢（OP-7）
       // open 可取消；draft 未物化（closed 不在 active 候選集合內，此處為防禦）。

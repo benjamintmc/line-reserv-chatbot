@@ -115,6 +115,37 @@ describe('D-024 顯示截斷 truncateForDisplay', () => {
     const r = resolveTargetEvent([A, C], undefined, len25, NOW);
     expect(r.kind === 'not_found' && r.selectorRaw).toBe(len25);
   });
+
+  it('[D-024 AC-30] surrogate pair 落在截斷邊界：以 code point 切片，不得切出半個字元', () => {
+    // 邊界正好落在 surrogate pair 中間：19 個 BMP 字 + 1 個非 BMP emoji（第 20 個 code point）+ 1 個尾字。
+    // 舊實作以 UTF-16 code unit 計數，`s.slice(0, 20)` 會切在 emoji 的 high surrogate 之後，
+    // 留下孤子代理（lone surrogate）→ LINE 回覆出現亂碼方塊。
+    const EMOJI = '🏌';
+    const s21 = `${'あ'.repeat(19)}${EMOJI}x`; // 21 code points / 22 UTF-16 code units
+    expect(s21.length).toBe(22);
+    expect([...s21].length).toBe(21);
+
+    /** 孤子代理偵測：Array.from 以 code point 迭代，被切半的代理會以單一 code unit 落在 U+D800–U+DFFF。 */
+    const hasLoneSurrogate = (t: string): boolean =>
+      Array.from(t).some(
+        (ch) => ch.length === 1 && ch.charCodeAt(0) >= 0xd800 && ch.charCodeAt(0) <= 0xdfff,
+      );
+    expect(hasLoneSurrogate(s21)).toBe(false); // 前提：輸入本身是健全的
+
+    // 1) 截斷結果 = 前 20 個 **code point** + …，emoji 完整保留。
+    expect(truncateForDisplay(s21)).toBe(`${'あ'.repeat(19)}${EMOJI}…`);
+    // 2) 截斷後及套入兩則釘死文案後，輸出皆不得含孤子代理。
+    expect(hasLoneSurrogate(truncateForDisplay(s21))).toBe(false);
+    expect(hasLoneSurrogate(formatEventNotFound(s21).text)).toBe(false);
+    expect(hasLoneSurrogate(formatEventTooMany(s21).text)).toBe(false);
+    // 3) 邊界語意不變（改以 code point 計）：20 個 emoji 原樣不截斷；21 個 → 前 20 個 + …。
+    expect(truncateForDisplay(EMOJI.repeat(20))).toBe(EMOJI.repeat(20));
+    expect(truncateForDisplay(EMOJI.repeat(21))).toBe(`${EMOJI.repeat(20)}…`);
+    // 4) 釘死文案走同一條截斷（`{xxx}` 前後各一個半形空格，D-024 errata 2026-09-02）。
+    expect(formatEventNotFound(s21).text).toBe(
+      `找不到符合 ${'あ'.repeat(19)}${EMOJI}… 的球敘，請確認後再試`,
+    );
+  });
 });
 
 describe('D-024 純函式性', () => {
