@@ -6,8 +6,11 @@ import { formatAlreadyActiveEntry, formatGroupCapacityReached } from './event-fo
 import type { EventRow } from '../db/schema';
 
 // D-027 開團查重（場地+時間）＋ D-028 同群 open 上限 3 場（T-033c，兩份同批落地）。
-// 對真 PG（PG-only）。日期一律用遠未來（2999），避免「過期」相位干擾查重/上限的判定本身
+// 對真 PG（PG-only）。**未過期**情境一律用遠未來（2999），避免相位干擾查重/上限的判定本身
 // ——AC 原文舉例寫 2026-08-15，該日期在本測試撰寫時已過去，改用遠未來不減斷言力。
+// **過期相位另有獨立四條**（見檔末 `[D-028 AC-27]` 過期段）：上限與查重的計數集合是「**未過期**
+// 的 active」，過期候選不計入、且於 `確認` 交易第一步被 flip 為 done（使用者裁決 2026-09-02）。
+// 這四條同時是「3 場過期 open 使群組永久鎖死」的回歸鎖。
 
 const G = 'G-1';
 const HOST = 'U-host';
@@ -259,5 +262,88 @@ describe('D-027 開團查重 / D-028 同群 open 上限', () => {
     // 上限並未「記住這是第幾場」：回到 3 場後再開仍被擋。
     expect((await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: nextMid() })).kind)
       .toBe('group_open_limit');
+  });
+  // ── D-028 AC-27（過期相位）：上限只數未過期候選 + `確認` 交易內 flip 全部過期候選 ──────
+  //
+  // 使用者裁決（2026-09-02）：①過期活動不計入上限；②flip 全部過期候選（非只最新一場）。
+  // 若把過期候選計入上限，3 場過期 open 會讓兩個入口都在 `確認` 之前擋下 ⇒ 唯一的 flip 點
+  // （`confirm` 交易內）永不可達＝**該群組再也開不了團**。以下四條即該死鎖的回歸鎖。
+  const PAST_A = '2000-01-01T00:00:00Z';
+  const PAST_B = '2000-02-01T00:00:00Z';
+  const PAST_C = '2000-03-01T00:00:00Z';
+
+  it('[D-028 AC-27] 過期不計入上限：3 場全過期 open → 一行式與逐步問答兩個入口皆放行（死鎖回歸鎖）', async () => {
+    const svc = makeSvc(t);
+    await seedOpen(t, '東方球場', PAST_A);
+    await seedOpen(t, '林口高球場', PAST_B);
+    await seedOpen(t, '大屯高球場', PAST_C);
+    expect((await t.events.listActiveByGroup(G)).length).toBe(3); // 三場仍是 open（入口不 flip）
+
+    // (a) 逐步問答入口：不得回 group_open_limit。
+    const start = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    expect(start.kind).toBe('flow_started');
+    await svc.abort({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+
+    // (b) 一行式入口：同樣放行；且入口**不 flip**（三場仍為 open，D-008 §1b）。
+    const oneline = await svc.handleOneline({
+      groupId: G, executorLineUserId: HOST, messageId: nextMid(),
+      date: '2999-09-01', time: '08:00', location: '大溪高球場',
+      capacity: 10, price: 100, priceMode: 'per_person',
+    });
+    expect(oneline.kind).toBe('awaiting_confirm');
+    expect((await t.events.listActiveByGroup(G)).length).toBe(3);
+  });
+
+  it('[D-028 AC-27] 過期候選於 `確認` 交易內**全部** flip 為 done，新活動建立成功', async () => {
+    const svc = makeSvc(t);
+    const a = await seedOpen(t, '東方球場', PAST_A);
+    const b = await seedOpen(t, '林口高球場', PAST_B);
+    const c = await seedOpen(t, '大屯高球場', PAST_C);
+
+    await seedConfirmable(t, HOST, { date: '2999-09-01', time: '08:00', location: '大溪高球場' });
+    const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: nextMid(), hostDisplayName: '主辦人' });
+    expect(r.kind).toBe('created');
+
+    // **三場**過期候選皆 flip（不是只有最新一場）；候選集合只剩新建的那場。
+    for (const old of [a, b, c]) expect((await t.events.getById(old.id))?.status).toBe('done');
+    const actives = await t.events.listActiveByGroup(G);
+    expect(actives.length).toBe(1);
+    if (r.kind === 'created') expect(actives[0]!.id).toBe(r.event.id);
+  });
+
+  it('[D-028 AC-27] 混合相位：2 場未過期 + 1 場已過期 → 上限只數 2，開團放行', async () => {
+    const svc = makeSvc(t);
+    await seedOpen(t, '東方球場', '2999-08-14T23:30:00Z');
+    await seedOpen(t, '林口高球場', '2999-08-15T23:30:00Z');
+    const expired = await seedOpen(t, '大屯高球場', PAST_A);
+    expect((await t.events.listActiveByGroup(G)).length).toBe(3); // 原始候選 3 場
+
+    const start = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    expect(start.kind).toBe('flow_started');
+    await walkToConfirm(svc, ['2999/09/02', '08:00', '幸福高球場']);
+    const created = await svc.continueFlow({
+      groupId: G, executorLineUserId: HOST, messageId: nextMid(),
+      text: '確認', hostDisplayName: '主辦人',
+    });
+    expect(created.kind).toBe('created');
+    expect((await t.events.getById(expired.id))?.status).toBe('done'); // 過期那場已 flip
+    expect((await t.events.listActiveByGroup(G)).length).toBe(3); // 2 場未過期 + 1 場新建
+  });
+
+  it('[D-028 AC-27] 上限未被改鬆：3 場**未過期** open 仍回 group_open_limit（兩入口）', async () => {
+    const svc = makeSvc(t);
+    await seedOpen(t, '東方球場', '2999-08-14T23:30:00Z');
+    await seedOpen(t, '林口高球場', '2999-08-15T23:30:00Z');
+    await seedOpen(t, '大屯高球場', '2999-08-16T23:30:00Z');
+
+    expect((await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: nextMid() })).kind)
+      .toBe('group_open_limit');
+    const oneline = await svc.handleOneline({
+      groupId: G, executorLineUserId: HOST, messageId: nextMid(),
+      date: '2999-09-01', time: '08:00', location: '大溪高球場',
+      capacity: 10, price: 100, priceMode: 'per_person',
+    });
+    expect(oneline.kind).toBe('group_open_limit');
+    expect(await t.conversations.get(G, HOST)).toBeUndefined();
   });
 });

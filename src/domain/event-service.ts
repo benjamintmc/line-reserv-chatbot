@@ -17,8 +17,9 @@
 //   - 入口早退放寬為 `active && !isExpired`（過期 open 於入口放行、不 flip，§1b）。
 //     **D-027／D-028（T-033c）改寫**：「已有 active 就拒絕」的入口早退已移除；`確認` 交易內的
 //     判定改為「先上限（`group_open_limit`）、後查重（`duplicate_event`）」，見下。
-//   - `確認` 交易內、insert 新 open 前：過期 active → updateStatus('done') flip 釋放候選席次／
-//     索引槽，再 insert（原子，§1b/G1）。
+//   - `確認` 交易內、insert 新 open 前**第一步**：過期 active 逐一 updateStatus('done') flip，釋放
+//     候選席次／索引槽，再判上限/查重、insert（原子，§1b/G1）。**入口不 flip、但也不把過期候選
+//     計入上限或查重**（使用者裁決 2026-09-02）——否則 3 場過期 open 會使該群永遠開不了團。
 //   - `確認` 建立前以 taipeiToUtcIso 合併 draft.date/time → event_datetime（UTC，§3）。
 //   - close/cancel 遇過期 open → no_active（不 flip，OP-7/G5）；closed 已釋放 → 不在 active 候選集合內。
 //
@@ -84,7 +85,9 @@ export type AbandonedKind = 'grouping';
  *
  * **刻意不設 DB 唯一索引／CHECK**（D-028）：超出僅是「短暫多開幾場」，不損資料完整性；故上限
  * 一律由應用層 COUNT 把關。**永遠即時計算** `listActiveByGroup(groupId).length >= 此值`——
- * 不快取候選數、不記錄「這是第幾場」，故任一場被 `關閉報名`／`取消活動`／過期 flip 後即刻恢復。
+ * 不快取候選數、不記錄「這是第幾場」，故任一場被 `關閉報名`／`取消活動`／過期後即刻恢復。
+ * **計數集合為「未過期的 active」**（使用者裁決 2026-09-02）：過期 open 直到下次 `確認` 交易才
+ * 物理 flip 為 done，計入上限會造成入口死鎖（3 場過期 ⇒ 永遠擋在 `確認` 之前，flip 不可達）。
  */
 export const MAX_OPEN_EVENTS_PER_GROUP = 3;
 
@@ -393,8 +396,17 @@ export class EventService {
     // D-028 §3.5：**上限**檢查不需要任何欄位，故這是本設計唯一一處 `startCreation` 仍做的入口早退
     // ——否則使用者得答完五題才在 `確認` 被拒。達上限 → 不進入 `awaiting_date`、不寫
     // `conversation_states`（純查詢、零寫入副作用）。
-    const entryCandidates = await this.events.listActiveByGroup(input.groupId);
-    if (entryCandidates.length >= MAX_OPEN_EVENTS_PER_GROUP) {
+    //
+    // **上限只數「未過期」候選**（使用者裁決 2026-09-02）：`listActiveByGroup` 回的是 status ∈
+    // {draft,open}，**不含過期判定**；過期的 open 直到下次 `確認` 交易才會被 flip 為 done。若把
+    // 它們計入上限，3 場過期活動就會讓該群**再也開不了團**（兩個入口都在 `確認` 之前擋下 ⇒
+    // flip 永不可達＝死鎖），且回的還是「已有 3 場**進行中**」這種與事實不符的話。
+    // 入口**不 flip**（D-008 §1b：過期 open 於入口放行、不 flip，實際 flip 延至 `確認` 交易）。
+    const now = nowIso();
+    const live = (await this.events.listActiveByGroup(input.groupId)).filter(
+      (e) => !isExpired(e, now),
+    );
+    if (live.length >= MAX_OPEN_EVENTS_PER_GROUP) {
       return { kind: 'group_open_limit' };
     }
 
@@ -425,12 +437,19 @@ export class EventService {
     //
     // **固定順序：先上限、後查重**（D-028 §3.5 / G13）——「群組滿了」比「這場活動重複了」更根本；
     // 固定順序也讓邊界情況不會因判斷次序不同而給出不一致的訊息。兩者皆不寫 `conversation_states`。
-    const entryCandidates = await this.events.listActiveByGroup(input.groupId);
-    if (entryCandidates.length >= MAX_OPEN_EVENTS_PER_GROUP) {
+    //
+    // **上限與查重皆只看「未過期」候選**（使用者裁決 2026-09-02，理由同 `startCreation`）：對一場
+    // **已結束**的活動回 `duplicate_event`（「已有相同時間地點的球敘」）與把它計入上限是同一種
+    // 與事實不符的話。入口**不 flip**（D-008 §1b），flip 一律延至 `確認` 交易。
+    const now = nowIso();
+    const live = (await this.events.listActiveByGroup(input.groupId)).filter(
+      (e) => !isExpired(e, now),
+    );
+    if (live.length >= MAX_OPEN_EVENTS_PER_GROUP) {
       return { kind: 'group_open_limit' };
     }
     const proposedDatetime = taipeiToUtcIso(input.date, input.time);
-    const entryDup = entryCandidates.find(
+    const entryDup = live.find(
       (e) => e.location === input.location && e.event_datetime === proposedDatetime,
     );
     if (entryDup !== undefined) {
@@ -557,13 +576,29 @@ export class EventService {
 
         // 兩路徑（一行式／逐步問答）的最終匯流點＝**唯一權威判定**：於交易內重讀候選集合
         // （鎖內權威重讀，防入口查驗後、`確認` 前的 race window），比照 D-004 §4/§6 的兩層模式。
-        //
+        const candidates = await repos.events.listActiveByGroup(input.groupId);
+        const now = nowIso();
+
+        // (0) D-008 §1b：過期 active → flip done（釋放候選席次與索引槽），與新 open 的 INSERT 同
+        // 交易原子完成（G1）。多場並行後「唯一 active」的假設已不成立 ⇒ 逐一 flip **所有**過期
+        // 候選（使用者裁決 2026-09-02；不得再從候選集合取單一末列充當「那一場」，D-021 G1／
+        // errata E2）。**必須在上限與查重之前**：兩個入口只放行未過期候選，若 flip 排在上限之後，
+        // 過期活動會同時佔著席次又永遠等不到 flip（入口死鎖）。
+        for (const candidate of candidates) {
+          if (isExpired(candidate, now)) await repos.events.updateStatus(candidate.id, 'done');
+        }
+        // flip 後的權威候選集合（過期者已成 done ∉ {draft,open}）。
+        const live = candidates.filter((e) => !isExpired(e, now));
+
         // **固定順序：先上限（D-028）、後查重（D-027）**（G13，與 handleOneline 同序）。兩者皆
         // `conversation.delete(...)` 清落敗流程（沿用 nit-2 邏輯）、**不 INSERT**。
-        const candidates = await repos.events.listActiveByGroup(input.groupId);
-
+        //
+        // 註（去重政策）：這兩個拒絕分支位於**帶 `markProcessed` 的同一交易內**，且會一併提交上方
+        // flip 的寫入 ⇒ 走 CLAUDE.md §4 的**預設**政策（拒絕回覆一律消費 message.id），**不是**
+        // 例外 (b)；例外 (b) 只涵蓋兩個入口那種零寫入的早退。
+        //
         // (1) 上限：**應用層 COUNT**（D-028 刻意不設 DB 約束，故此分支不可能來自 DB catch）。
-        if (candidates.length >= MAX_OPEN_EVENTS_PER_GROUP) {
+        if (live.length >= MAX_OPEN_EVENTS_PER_GROUP) {
           await repos.conversations.delete(input.groupId, input.executorLineUserId);
           return { kind: 'group_open_limit' };
         }
@@ -572,20 +607,12 @@ export class EventService {
         const eventDatetime = taipeiToUtcIso(draft.date, draft.time);
 
         // (2) 查重：場地 + 時間皆相同才擋（D-027 §3；G7 的應用層快速失敗那一層）。
-        const dup = candidates.find(
+        const dup = live.find(
           (e) => e.location === draft.location && e.event_datetime === eventDatetime,
         );
         if (dup !== undefined) {
           await repos.conversations.delete(input.groupId, input.executorLineUserId);
           return { kind: 'duplicate_event' };
-        }
-
-        // D-008 §1b：過期 active → flip done（釋放候選席次與索引槽），與新 open 的 INSERT 同交易
-        // 原子完成（G1）。多場並行後「唯一 active」的假設已不成立 ⇒ 逐一 flip **所有**過期候選
-        // （不得再從候選集合取單一末列充當「那一場」，D-021 G1／errata E2）。
-        const now = nowIso();
-        for (const candidate of candidates) {
-          if (isExpired(candidate, now)) await repos.events.updateStatus(candidate.id, 'done');
         }
 
         // G8：host_user_id = 建立者（任一群成員，D-006 開團全開）的 user.id。
