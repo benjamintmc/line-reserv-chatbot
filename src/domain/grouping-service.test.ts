@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { createTestDb, seedEvent, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, seedEvent, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { GroupingService } from './grouping-service';
 import type { RandomFn } from './grouping';
 import type { GroupingState } from './grouping';
@@ -94,6 +94,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
 
     const res = await makeService(t).groupBalanced({
       groupId: G,
+      eventId: await activeEventId(t, G),
       executorLineUserId: HOST,
       messageId: 'g1',
     });
@@ -108,6 +109,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
   it('no_open_event：群組無 active event → no_open_event', async () => {
     const res = await makeService(t).groupBalanced({
       groupId: 'G-empty',
+      eventId: await activeEventId(t, 'G-empty'),
       executorLineUserId: HOST,
       messageId: 'g1',
     });
@@ -119,15 +121,16 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     await seedConfirmed(t, event.id, host.id, ['客A', '客B', '客C', '客D']);
     const res = await makeService(t).groupBalanced({
       groupId: G,
+      eventId: await activeEventId(t, G),
       executorLineUserId: 'U-other',
       messageId: 'g1',
     });
     expect(res.kind).toBe('not_authorized');
     // 排除 super-admin：非該場 host_user_id 一律拒（errata；service 已不知 admin 概念）。
-    const adminRes = await makeService(t).groupBalanced({ groupId: G, executorLineUserId: 'U-admin', messageId: 'g2' });
+    const adminRes = await makeService(t).groupBalanced({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-admin', messageId: 'g2' });
     expect(adminRes.kind).toBe('not_authorized');
     // host 通過（sanity）。
-    const hostRes = await makeService(t).groupBalanced({ groupId: G, executorLineUserId: HOST, messageId: 'g3' });
+    const hostRes = await makeService(t).groupBalanced({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'g3' });
     expect(hostRes.kind).toBe('balanced');
   });
 
@@ -138,6 +141,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
 
     const r1 = await svc.startRounds({
       groupId: G,
+      eventId: await activeEventId(t, G),
       executorLineUserId: HOST,
       messageId: 'g1',
       courts: 2,
@@ -165,6 +169,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
 
     const balanced = await svc.groupBalanced({
       groupId: G,
+      eventId: await activeEventId(t, G),
       executorLineUserId: HOST,
       messageId: 'g1',
     });
@@ -179,7 +184,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     const { host, event } = await seedEvent(t, { capacity: 8, groupId: G, hostLineId: HOST });
     await seedConfirmed(t, event.id, host.id, ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
     const svc = makeService(t);
-    await svc.startRounds({ groupId: G, executorLineUserId: HOST, messageId: 'dup', courts: 2, mode: 'doubles' });
+    await svc.startRounds({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'dup', courts: 2, mode: 'doubles' });
     const again = await svc.nextRound({ groupId: G, executorLineUserId: HOST, messageId: 'dup' });
     expect(again.kind).toBe('duplicate');
   });
@@ -191,6 +196,7 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
 
     const r1 = await svc.startRounds({
       groupId: G,
+      eventId: await activeEventId(t, G),
       executorLineUserId: HOST,
       messageId: 'g1',
       courts: 2,
@@ -219,11 +225,11 @@ describe('D-011 GroupingService（唯讀名單 + session 暫存）', () => {
     await seedConfirmed(t, event.id, host.id, ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
     const svc = makeService(t);
 
-    const first = await svc.groupBalanced({ groupId: G, executorLineUserId: HOST, messageId: 'm1' });
+    const first = await svc.groupBalanced({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'm1' });
     expect(first.kind).toBe('balanced');
     expect(await t.processed.has('m1')).toBe(true);
 
-    const resend = await svc.groupBalanced({ groupId: G, executorLineUserId: HOST, messageId: 'm1' });
+    const resend = await svc.groupBalanced({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'm1' });
     expect(resend.kind).toBe('duplicate'); // 重送不重骰、不回覆
     expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 策略A 仍不寫 session
   });

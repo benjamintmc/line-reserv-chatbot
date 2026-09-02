@@ -42,7 +42,7 @@ export function buildTxRepos(client: PoolClient): TxRepos {
 
 /**
  * DEFERRED 交易 runner（D-004；開團/生命週期，**不鎖 event**）。
- * `BEGIN → work(repos) → COMMIT`（或 ROLLBACK）。同群唯一由 `ux_events_active_group`
+ * `BEGIN → work(repos) → COMMIT`（或 ROLLBACK）。同群活動查重由 `ux_events_active_group_venue_time`
  * 於 INSERT 當下強制（撞約束 → 由呼叫端窄捕捉 23505 → already_active）。
  */
 export type TransactionRunner = <T>(work: (repos: TxRepos) => Promise<T>) => Promise<T>;

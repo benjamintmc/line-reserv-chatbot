@@ -59,6 +59,7 @@ function makeHandler(t: TestDb, profile: GroupProfileClient, superAdmins: string
     logError: () => {},
   });
   return createWebhookHandler({
+    events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: t.groups, // D-018：觀測依賴（必填）
     grouping: makeGroupingSvc(t),
     service,
@@ -114,7 +115,7 @@ describe('webhook handler 授權簡化（D-006）', () => {
     expect(textOf(summary)).toContain('請確認開團資訊');
     const announce = await handler.handleEvent(groupTextEvent('確認', { userId: X, messageId: 'o2' }));
     expect(textOf(announce)).toContain('開團成功');
-    const event = await t.events.findActiveByGroup(G);
+    const event = (await t.events.listActiveByGroup(G)).at(-1);
     expect(event?.status).toBe('open');
     expect(await t.registrations.countConfirmed(event!.id)).toBe(1); // 主辦自動第 1 正取
 

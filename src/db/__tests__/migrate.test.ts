@@ -43,7 +43,7 @@ describe('migrate runner + schema 約束（PG）', () => {
       client.release();
     }
     const count = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM schema_migrations');
-    expect(Number(count.rows[0]!.n)).toBe(5);
+    expect(Number(count.rows[0]!.n)).toBe(6); // 0001~0006
   });
 
   it('[D-007 AC-5] 建表等義：5 表 + schema_migrations 齊備、partial unique index 存在', async () => {
@@ -66,7 +66,9 @@ describe('migrate runner + schema 約束（PG）', () => {
     );
     const idxNames = new Set(idx.rows.map((r) => r.indexname));
     for (const expected of [
-      'ux_events_active_group',
+      // D-021 §1（0006）：舊 ux_events_active_group 已 DROP，改為場地+時間查重索引。
+      'ux_events_active_group_venue_time',
+      'ix_message_event_map_event',
       'ux_reg_event_seq',
       'ix_reg_active',
       'ix_reg_active_owner',
@@ -87,28 +89,39 @@ describe('migrate runner + schema 約束（PG）', () => {
     expect(colMap.get('event_datetime')).toBe('NO'); // NOT NULL
     expect(colMap.has('event_date')).toBe(false); // 已 drop
     expect(colMap.has('event_time')).toBe(false); // 已 drop
-    // ux_events_active_group 的 predicate 已移除 closed。
+    // active 部分唯一索引的 predicate 已移除 closed（0006 後索引名為 ux_events_active_group_venue_time）。
     const idxdef = await t.pool.query<{ indexdef: string }>(
-      `SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_events_active_group'`,
+      `SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_events_active_group_venue_time'`,
     );
     const def = idxdef.rows[0]!.indexdef;
     expect(def).toMatch(/status = ANY|draft.*open|status IN/); // 含 draft/open
     expect(def).not.toContain('closed'); // closed 已移除（釋放條件 a）
   });
 
-  it('[D-001 AC-9] 同 group 第二場 active（draft）被 ux_events_active_group 拒絕（PG 23505）', async () => {
-    const { host } = await seedEvent(t, { capacity: 4, groupId: 'G-dup' });
-    // 同 group 已有一場 open（active），再建一場 draft（亦 active）→ 唯一約束拒絕。
+  it('[D-001 AC-9] 同 group active 內「場地+時間」重複的第二場被 ux_events_active_group_venue_time 拒絕（PG 23505）', async () => {
+    const { host, event } = await seedEvent(t, { capacity: 4, groupId: 'G-dup' });
+    // D-021 §1（0006）：「同群至多一場 active」已解除；改為「同群 active 內場地+時間不得重複」。
+    // 同場地+同時間的第二場（draft 亦 active）→ 唯一約束拒絕。
     await expect(
       t.events.create({
         groupId: 'G-dup',
         hostUserId: host.id,
-        eventDatetime: '2026-09-01T00:00:00Z',
-        location: '大溪高球場',
+        eventDatetime: event.event_datetime,
+        location: event.location,
         capacity: 4,
         status: 'draft',
       }),
     ).rejects.toThrow(/unique/i);
+    // 反面：場地或時間不同 → 放行（同群多場並存，見 [D-021 AC-2]）。
+    const second = await t.events.create({
+      groupId: 'G-dup',
+      hostUserId: host.id,
+      eventDatetime: event.event_datetime,
+      location: '大溪高球場',
+      capacity: 4,
+      status: 'draft',
+    });
+    expect(second.id).toBeGreaterThan(event.id);
   });
 
   it('[D-001 AC-9 / D-008 AC-1] closed 已釋放：closed 旁可再開一場 open（不擋團）', async () => {
@@ -124,8 +137,8 @@ describe('migrate runner + schema 約束（PG）', () => {
       status: 'open',
     });
     expect(next.id).toBeGreaterThan(event.id);
-    // findActiveByGroup 只回 open（closed 不在集合）；顯示集 latest-by-id 取較新 open。
-    expect((await t.events.findActiveByGroup('G-closed'))?.id).toBe(next.id);
+    // listActiveByGroup 只回 open（closed 不在 active 集合）；顯示集 latest-by-id 取較新 open。
+    expect(((await t.events.listActiveByGroup('G-closed')).at(-1))?.id).toBe(next.id);
     expect((await t.events.findLatestDisplayable('G-closed'))?.id).toBe(next.id);
   });
 
@@ -141,7 +154,7 @@ describe('migrate runner + schema 約束（PG）', () => {
       status: 'open',
     });
     expect(next.id).toBeGreaterThan(event.id);
-    expect((await t.events.findActiveByGroup('G-reuse'))?.id).toBe(next.id);
+    expect(((await t.events.listActiveByGroup('G-reuse')).at(-1))?.id).toBe(next.id);
   });
 
   it('[D-001 AC-10] capacity=0 違反 CHECK 被拒', async () => {

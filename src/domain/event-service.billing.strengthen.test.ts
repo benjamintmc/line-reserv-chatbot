@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { createTestDb, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { EventService } from './event-service';
 import { RegistrationService } from './registration-service';
 import { formatClosed } from './event-formatter';
@@ -59,8 +59,8 @@ async function openSplit(evt: EventService, venueFee: number): Promise<number> {
   return r.event.id;
 }
 
-async function listText(reg: RegistrationService): Promise<string> {
-  const r = (await reg.getListView({ groupId: G, messageId: nextMid() })) as ListResult;
+async function listText(t: TestDb, reg: RegistrationService): Promise<string> {
+  const r = (await reg.getListView({ groupId: G, eventId: await activeEventId(t, G), messageId: nextMid() })) as ListResult;
   if (r.kind !== 'ok') throw new Error('list 非 ok');
   return formatList(r.view).text;
 }
@@ -78,13 +78,13 @@ describe('EventService 計費補強（D-005 結算凍結 / OP-1 主辦自移）'
     const { evt, reg } = makeServices(t);
     const eventId = await openSplit(evt, 3000);
     // 主辦(1) + 成員 +6 = 7。
-    await reg.signup({ groupId: G, executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 6 });
+    await reg.signup({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 6 });
     expect(await t.registrations.countConfirmed(eventId)).toBe(7);
     // 成員 -2 → 正取 5（soft-delete，實體列仍在但被過濾）。
-    await reg.cancel({ groupId: G, executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 2 });
+    await reg.cancel({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 2 });
     expect(await t.registrations.countConfirmed(eventId)).toBe(5);
 
-    const close = await evt.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    const close = await evt.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: nextMid() });
     expect(close.kind).toBe('ok');
     if (close.kind !== 'ok') return;
     // 分母為凍結後的 5（非 7），ceil(3000/5)=600。
@@ -101,10 +101,10 @@ describe('EventService 計費補強（D-005 結算凍結 / OP-1 主辦自移）'
     const eventId = await openSplit(evt, 3000);
     expect(await t.registrations.countConfirmed(eventId)).toBe(1);
     // 主辦以 -1 取消自己的第 1 正取（seq=1、owner=host）。
-    await reg.cancel({ groupId: G, executorLineUserId: HOST, executorDisplayName: '主辦人', messageId: nextMid(), count: 1 });
+    await reg.cancel({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, executorDisplayName: '主辦人', messageId: nextMid(), count: 1 });
     expect(await t.registrations.countConfirmed(eventId)).toBe(0);
     // 名單費用列以 max(,1) 保底 → 平均每人約 venue_fee 元，且仍標暫估；不得出現 NaN/Infinity。
-    const text = await listText(reg);
+    const text = await listText(t, reg);
     expect(text).toContain('平均每人約 3000 元（暫估，關閉報名後結算）');
     expect(text).not.toContain('NaN');
     expect(text).not.toContain('Infinity');
@@ -113,9 +113,9 @@ describe('EventService 計費補強（D-005 結算凍結 / OP-1 主辦自移）'
   it('[D-005 AC-15] 主辦自移後關閉（confirmedCount=0）：結算 ceil(3000/max(0,1))=3000、不 throw', async () => {
     const { evt, reg } = makeServices(t);
     const eventId = await openSplit(evt, 3000);
-    await reg.cancel({ groupId: G, executorLineUserId: HOST, executorDisplayName: '主辦人', messageId: nextMid(), count: 1 });
+    await reg.cancel({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, executorDisplayName: '主辦人', messageId: nextMid(), count: 1 });
     expect(await t.registrations.countConfirmed(eventId)).toBe(0);
-    const close = await evt.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    const close = await evt.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: nextMid() });
     expect(close.kind).toBe('ok');
     if (close.kind !== 'ok') return;
     expect(close.confirmedCount).toBe(0);

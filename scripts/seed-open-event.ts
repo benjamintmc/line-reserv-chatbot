@@ -67,7 +67,8 @@ async function main(): Promise<void> {
     const users = new UserRepository(pool);
     const events = new EventRepository(pool);
 
-    const existing = await events.findActiveByGroup(groupId);
+    // D-021 §2：`findActiveByGroup` 已移除（G1）；取候選集合末列（id 最大者）作等義判斷。
+    const existing = (await events.listActiveByGroup(groupId)).at(-1);
     if (existing !== undefined) {
       console.log('⚠️  此群組已有 active 活動，未重複建立。既有活動：');
       console.log(JSON.stringify(existing, null, 2));

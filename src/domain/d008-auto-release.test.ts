@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { createTestDb, FUTURE_ISO, PAST_ISO, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, FUTURE_ISO, PAST_ISO, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { EventRepository } from '../db/repositories/event-repository';
 import { EventService } from './event-service';
 import { RegistrationService } from './registration-service';
@@ -107,7 +107,7 @@ describe('D-008 單場名額自動釋放', () => {
     expect(await t.registrations.countConfirmed(r.event.id)).toBe(1);
     // 名單顯示新事件（live）。
     const reg = makeReg(t);
-    const list = await reg.getListView({ groupId: G, messageId: nextMid() });
+    const list = await reg.getListView({ groupId: G, eventId: await activeEventId(t, G), messageId: nextMid() });
     expect(list.kind).toBe('ok');
     if (list.kind === 'ok') {
       expect(list.phase).toBe('live');
@@ -133,9 +133,9 @@ describe('D-008 單場名額自動釋放', () => {
   it('[D-008 AC-4] 過期 open 的 +N/-N 被拒（event_ended、不進 runImmediate、無寫入、無 flip）', async () => {
     const ev = await createEvent(t, { eventDatetime: PAST_ISO, status: 'open' });
     const reg = makeReg(t);
-    const up = await reg.signup({ groupId: G, executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac4-up', count: 2 });
+    const up = await reg.signup({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac4-up', count: 2 });
     expect(up.kind).toBe('event_ended');
-    const down = await reg.cancel({ groupId: G, executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac4-dn', count: 1 });
+    const down = await reg.cancel({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac4-dn', count: 1 });
     expect(down.kind).toBe('event_ended');
     // 拒絕文案 pin。
     expect(formatEventEnded().text).toBe('這場活動已結束，無法再報名／取消。');
@@ -157,7 +157,7 @@ describe('D-008 單場名額自動釋放', () => {
       ),
     );
     const reg = makeReg(t);
-    const list = await reg.getListView({ groupId: G, messageId: nextMid() });
+    const list = await reg.getListView({ groupId: G, eventId: await activeEventId(t, G), messageId: nextMid() });
     expect(list.kind).toBe('ok');
     if (list.kind !== 'ok') return;
     expect(list.phase).toBe('ended');
@@ -188,7 +188,10 @@ describe('D-008 單場名額自動釋放', () => {
     ]);
     const kinds = [r1.kind, r2.kind].sort();
     expect(kinds).toEqual(['already_active', 'created']);
-    // 舊過期 open 已 flip done；結束後至多一場 {draft,open}。
+    // 舊過期 open 已 flip done；結束後仍只有一場 {draft,open}。
+    // D-021 §1（0006）後此斷言的依據已改變：不再是「同群至多一場」的 DB 硬限制，而是兩個
+    // confirm 的 draft 場地+時間完全相同 ⇒ 落敗者撞 ux_events_active_group_venue_time（23505）
+    // 而整批 ROLLBACK。語意（並行開團僅一成功）不變。
     expect((await t.events.getById(old.id))?.status).toBe('done');
     const active = await t.pool.query<{ n: string }>(
       "SELECT COUNT(*) AS n FROM events WHERE group_id = $1 AND status IN ('draft','open')",
@@ -205,10 +208,13 @@ describe('D-008 單場名額自動釋放', () => {
     const reg = makeReg(t);
     // findOpenEventForSignup（進交易前）讀到 live open（stale 快照）；
     // 鎖內 getById 模擬被並行 flip 為 done → re-check 見非 open → event_ended、不插槽。
+    // D-021 §5.1：交易外亦改用 getById（吃 eventId），故第一次呼叫回 live 值、其後才回 stale
+    //（此順序即「交易外 live / 鎖內 stale」的原始語意）。
     const spy = vi
       .spyOn(EventRepository.prototype, 'getById')
+      .mockResolvedValueOnce(ev)
       .mockResolvedValue({ ...ev, status: 'done' });
-    const r = await reg.signup({ groupId: G, executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9', count: 1 });
+    const r = await reg.signup({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9', count: 1 });
     spy.mockRestore();
     expect(r.kind).toBe('event_ended');
     expect(await t.registrations.countConfirmed(ev.id)).toBe(0); // 不插槽、無超賣
@@ -221,8 +227,9 @@ describe('D-008 單場名額自動釋放', () => {
     const reg = makeReg(t);
     const spy = vi
       .spyOn(EventRepository.prototype, 'getById')
+      .mockResolvedValueOnce(ev) // 交易外讀 live（D-021 §5.1：交易外亦走 getById）
       .mockResolvedValue({ ...ev, status: 'open', event_datetime: PAST_ISO });
-    const r = await reg.signup({ groupId: G, executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9b', count: 1 });
+    const r = await reg.signup({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9b', count: 1 });
     spy.mockRestore();
     expect(r.kind).toBe('event_ended');
     expect(await t.registrations.countConfirmed(ev.id)).toBe(0);
@@ -241,10 +248,12 @@ describe('D-008 單場名額自動釋放', () => {
     );
     const reg = makeReg(t);
     // 鎖內 getById 模擬被並行 flip 為 done → cancel re-check 見非 open → event_ended、不取消。
+    // D-021 §5.1：同上——第一次（交易外）回 live 值，其後（鎖內）才回 stale。
     const spy = vi
       .spyOn(EventRepository.prototype, 'getById')
+      .mockResolvedValueOnce(ev)
       .mockResolvedValue({ ...ev, status: 'done' });
-    const r = await reg.cancel({ groupId: G, executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9c', count: 1 });
+    const r = await reg.cancel({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-a', executorDisplayName: 'A', messageId: 'ac9c', count: 1 });
     spy.mockRestore();
     expect(r.kind).toBe('event_ended');
     // 該 confirmed 列未被取消 → 名單不變。
@@ -256,7 +265,7 @@ describe('D-008 單場名額自動釋放', () => {
     //（closed 後時間也可能流逝）須仍為 phase='closed'「報名已截止」，不得被誤分類為 'ended'「活動已結束」。
     await createEvent(t, { eventDatetime: PAST_ISO, status: 'closed' });
     const reg = makeReg(t);
-    const list = await reg.getListView({ groupId: G, messageId: nextMid() });
+    const list = await reg.getListView({ groupId: G, eventId: await activeEventId(t, G), messageId: nextMid() });
     expect(list.kind).toBe('ok');
     if (list.kind !== 'ok') return;
     expect(list.phase).toBe('closed'); // status 優先於過期，非 'ended'
@@ -295,12 +304,12 @@ describe('D-008 單場名額自動釋放', () => {
         4,
       ),
     );
-    const closed = await evt.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    const closed = await evt.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: nextMid() });
     expect(closed.kind).toBe('ok');
     if (closed.kind === 'ok') expect(closed.settledPerPerson).toBe(750);
 
     const reg = makeReg(t);
-    const list = await reg.getListView({ groupId: G, messageId: nextMid() });
+    const list = await reg.getListView({ groupId: G, eventId: await activeEventId(t, G), messageId: nextMid() });
     expect(list.kind).toBe('ok');
     if (list.kind !== 'ok') return;
     expect(list.phase).toBe('closed');
@@ -316,7 +325,7 @@ describe('D-008 單場名額自動釋放', () => {
     const evt = makeEvt(t);
     // #A：open → closed。
     const a = await createEvent(t, { eventDatetime: FUTURE_ISO, status: 'open' });
-    const closed = await evt.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    const closed = await evt.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: nextMid() });
     expect(closed.kind).toBe('ok');
     // #B：closed 已釋放 → 可再開 open。
     await seedConfirmable(t, HOST);
@@ -325,7 +334,7 @@ describe('D-008 單場名額自動釋放', () => {
     if (b.kind !== 'created') return;
 
     const reg = makeReg(t);
-    const list = await reg.getListView({ groupId: G, messageId: nextMid() });
+    const list = await reg.getListView({ groupId: G, eventId: await activeEventId(t, G), messageId: nextMid() });
     expect(list.kind).toBe('ok');
     if (list.kind === 'ok') {
       expect(list.phase).toBe('live');

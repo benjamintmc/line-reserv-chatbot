@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { createTestDb, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { taipeiToUtcIso } from '../db/time';
 import type { EventRow, PriceMode } from '../db/schema';
 import { UserRepository } from '../db/repositories/user-repository';
@@ -78,7 +78,8 @@ async function seed(t: TestDb, o: SeedOpts): Promise<EventRow> {
   });
 }
 
-function edit(
+async function edit(
+  t: TestDb,
   svc: EventService,
   groupId: string,
   request: EditEventRequest,
@@ -89,6 +90,8 @@ function edit(
     executorLineUserId: opts.executor ?? HOST,
     messageId: opts.messageId ?? nextMid(),
     request,
+    // D-021 §5.1：service 改吃 handler 解出的 eventId；此處補上 dispatch 那一步（單場＝唯一 active）。
+    eventId: await activeEventId(t, groupId),
   });
 }
 
@@ -138,8 +141,8 @@ describe('EventService.editEvent（D-015）', () => {
     const svc = makeService(t);
 
     const [r1, r2] = await Promise.all([
-      edit(svc, 'G', setField('date', '2999-09-01'), { messageId: nextMid() }),
-      edit(svc, 'G', setField('time', '06:00'), { messageId: nextMid() }),
+      edit(t, svc, 'G', setField('date', '2999-09-01'), { messageId: nextMid() }),
+      edit(t, svc, 'G', setField('time', '06:00'), { messageId: nextMid() }),
     ]);
     expect([r1.kind, r2.kind]).toEqual(['ok', 'ok']);
 
@@ -154,7 +157,7 @@ describe('EventService.editEvent（D-015）', () => {
     const ev = await seed(t, { groupId: 'G', date: '2026-08-15', time: '07:30' });
     const svc = makeService(t);
 
-    const r1 = await edit(svc, 'G', setField('date', '2026-09-01'));
+    const r1 = await edit(t, svc, 'G', setField('date', '2026-09-01'));
     expect(r1.kind).toBe('ok');
     if (r1.kind === 'ok') {
       expect(r1.before).toBe('2026-08-15 07:30');
@@ -164,7 +167,7 @@ describe('EventService.editEvent（D-015）', () => {
     expect(mid1?.event_datetime).toBe(taipeiToUtcIso('2026-09-01', '07:30'));
     expectOnlyChanged(ev, mid1!, 'event_datetime');
 
-    const r2 = await edit(svc, 'G', setField('time', '06:00'));
+    const r2 = await edit(t, svc, 'G', setField('time', '06:00'));
     expect(r2.kind).toBe('ok');
     if (r2.kind === 'ok') {
       expect(r2.before).toBe('2026-09-01 07:30');
@@ -182,23 +185,23 @@ describe('EventService.editEvent（D-015）', () => {
     const svc = makeService(t);
 
     // (a) 昨日
-    const r1 = await edit(svc, 'G', setField('date', '2026-08-14'));
+    const r1 = await edit(t, svc, 'G', setField('date', '2026-08-14'));
     expect(r1.kind).toBe('past_datetime');
     if (r1.kind === 'past_datetime') expect(r1.now).toBe('2026-08-15T00:00:00Z');
     expect((await t.events.getById(ev.id))?.event_datetime).toBe(ev.event_datetime);
 
     // (b) 今日已過時刻（現在台北 08:00，改成 07:00）
-    const r2 = await edit(svc, 'G', setField('time', '07:00'));
+    const r2 = await edit(t, svc, 'G', setField('time', '07:00'));
     expect(r2.kind).toBe('past_datetime');
     expect((await t.events.getById(ev.id))?.event_datetime).toBe(ev.event_datetime);
 
     // (c) 邊界：恰等於 now（台北 08:00）亦視為過去（`newIso <= now`）。
-    const r3 = await edit(svc, 'G', setField('time', '08:00'));
+    const r3 = await edit(t, svc, 'G', setField('time', '08:00'));
     expect(r3.kind).toBe('past_datetime');
     expect((await t.events.getById(ev.id))?.event_datetime).toBe(ev.event_datetime);
 
     // (d) 未來一分鐘 → 允許（證明不是把 time 編輯整條擋掉）。
-    const r4 = await edit(svc, 'G', setField('time', '08:01'));
+    const r4 = await edit(t, svc, 'G', setField('time', '08:01'));
     expect(r4.kind).toBe('ok');
     expect((await t.events.getById(ev.id))?.event_datetime).toBe(
       taipeiToUtcIso('2026-08-15', '08:01'),
@@ -211,7 +214,7 @@ describe('EventService.editEvent（D-015）', () => {
     const svc = makeService(t, [ADMIN]);
 
     const usersBefore = await t.pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM users');
-    const r = await edit(svc, 'G', setField('location', '新場地'), { executor: OUTSIDER });
+    const r = await edit(t, svc, 'G', setField('location', '新場地'), { executor: OUTSIDER });
     expect(r.kind).toBe('not_authorized');
 
     const after = await t.events.getById(ev.id);
@@ -226,8 +229,8 @@ describe('EventService.editEvent（D-015）', () => {
   it('[D-015 AC-4] host 與 super-admin 皆可成功', async () => {
     await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30' });
     const svc = makeService(t, [ADMIN]);
-    expect((await edit(svc, 'G', setField('location', 'L1'), { executor: HOST })).kind).toBe('ok');
-    expect((await edit(svc, 'G', setField('location', 'L2'), { executor: ADMIN })).kind).toBe('ok');
+    expect((await edit(t, svc, 'G', setField('location', 'L1'), { executor: HOST })).kind).toBe('ok');
+    expect((await edit(t, svc, 'G', setField('location', 'L2'), { executor: ADMIN })).kind).toBe('ok');
   });
 
   // ── AC-5 三種拒絕分流 ───────────────────────────────────────────────
@@ -236,24 +239,24 @@ describe('EventService.editEvent（D-015）', () => {
 
     // (a) closed（已離開 active 集 → 走 (B) 路徑，以 findLatestDisplayable 判別）
     const closed = await seed(t, { groupId: 'Gc', date: '2999-01-01', time: '07:30', status: 'closed' });
-    const rc = await edit(svc, 'Gc', setField('location', 'X'));
+    const rc = await edit(t, svc, 'Gc', setField('location', 'X'));
     expect(rc.kind).toBe('closed_not_editable');
     expect(changedColumns(closed, (await t.events.getById(closed.id))!)).toEqual([]);
 
     // (b) 過期 open
     const ended = await seed(t, { groupId: 'Ge', date: '2000-01-01', time: '07:30' });
-    const re = await edit(svc, 'Ge', setField('location', 'X'));
+    const re = await edit(t, svc, 'Ge', setField('location', 'X'));
     expect(re.kind).toBe('event_ended');
     expect(changedColumns(ended, (await t.events.getById(ended.id))!)).toEqual([]);
 
     // (c) cancelled（不在 active 也不在 displayable 集）
     const cancelled = await seed(t, { groupId: 'Gx', date: '2999-01-01', time: '07:30', status: 'cancelled' });
-    const rx = await edit(svc, 'Gx', setField('location', 'X'));
+    const rx = await edit(t, svc, 'Gx', setField('location', 'X'));
     expect(rx.kind).toBe('no_active');
     expect(changedColumns(cancelled, (await t.events.getById(cancelled.id))!)).toEqual([]);
 
     // (d) 完全無活動
-    expect((await edit(svc, 'G-none', setField('location', 'X'))).kind).toBe('no_active');
+    expect((await edit(t, svc, 'G-none', setField('location', 'X'))).kind).toBe('no_active');
   });
 
   // ── AC-3（D-019 版）費用同模式只改金額，零回歸 ───────────────────────
@@ -261,7 +264,7 @@ describe('EventService.editEvent（D-015）', () => {
     const ev = await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30', price: 2000 });
     const svc = makeService(t);
 
-    const r1 = await edit(svc, 'G', setField('fee', '2500'));
+    const r1 = await edit(t, svc, 'G', setField('fee', '2500'));
     expect(r1.kind).toBe('ok');
     if (r1.kind === 'ok') {
       expect(r1.before).toBe('2000');
@@ -275,7 +278,7 @@ describe('EventService.editEvent（D-015）', () => {
     expectOnlyChanged(ev, a1!, 'price_per_person');
 
     // `2500 元` 經 parser compact 為 `2500元`（F2）→ validatePrice 去尾綴後成立。
-    const r2 = await edit(svc, 'G', setField('fee', '3000元'));
+    const r2 = await edit(t, svc, 'G', setField('fee', '3000元'));
     expect(r2.kind).toBe('ok');
     const a2 = await t.events.getById(ev.id);
     expect(a2?.price_per_person).toBe(3000);
@@ -296,6 +299,7 @@ describe('EventService.editEvent（D-015）', () => {
     // 撐 3 位有效正取（K=3）→ ceil(4000/3)=1334。
     await reg.signup({
       groupId: 'G',
+      eventId: await activeEventId(t, 'G'),
       executorLineUserId: 'U-a',
       executorDisplayName: 'a',
       messageId: nextMid(),
@@ -303,7 +307,7 @@ describe('EventService.editEvent（D-015）', () => {
     });
 
     // parser 對 `編輯 費用 場地費 4000` 產出 compact 後的 `場地費4000`（F2）。
-    const r = await edit(svc, 'G', setField('fee', '場地費4000'));
+    const r = await edit(t, svc, 'G', setField('fee', '場地費4000'));
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') {
       expect(r.before).toBe('3000');
@@ -331,7 +335,7 @@ describe('EventService.editEvent（D-015）', () => {
         price: 2000,
       });
       const svc = makeService(t);
-      const r = await edit(svc, `G-${priceMode}`, setField('fee', 'abc'));
+      const r = await edit(t, svc, `G-${priceMode}`, setField('fee', 'abc'));
       expect(r.kind).toBe('bad_fee');
       expect(changedColumns(ev, (await t.events.getById(ev.id))!)).toEqual([]);
     }
@@ -346,7 +350,7 @@ describe('EventService.editEvent（D-015）', () => {
       venueFee: 3000,
     });
     const svc = makeService(t);
-    const r = await edit(svc, 'G', setField('fee', '場地費0'));
+    const r = await edit(t, svc, 'G', setField('fee', '場地費0'));
     expect(r.kind).toBe('bad_fee');
     expect(changedColumns(ev, (await t.events.getById(ev.id))!)).toEqual([]);
   });
@@ -357,13 +361,13 @@ describe('EventService.editEvent（D-015）', () => {
     const svc = makeService(t);
 
     const m = nextMid();
-    const r = await edit(svc, 'G', { kind: 'capacity' }, { messageId: m });
+    const r = await edit(t, svc, 'G', { kind: 'capacity' }, { messageId: m });
     expect(r.kind).toBe('capacity');
     const after = await t.events.getById(ev.id);
     expect(after?.capacity).toBe(16);
     expect(changedColumns(ev, after!)).toEqual([]); // 連 updated_at 都不該動（無 UPDATE）
     // 已消費 → 同 messageId 重送即 duplicate。
-    expect((await edit(svc, 'G', { kind: 'capacity' }, { messageId: m })).kind).toBe('duplicate');
+    expect((await edit(t, svc, 'G', { kind: 'capacity' }, { messageId: m })).kind).toBe('duplicate');
   });
 
   // ── AC-8 去重全分支 ─────────────────────────────────────────────────
@@ -428,10 +432,10 @@ describe('EventService.editEvent（D-015）', () => {
 
     for (const c of cases) {
       const m = `dedup-${c.name}`;
-      const first = await edit(svc, c.groupId, c.request, { executor: c.executor, messageId: m });
+      const first = await edit(t, svc, c.groupId, c.request, { executor: c.executor, messageId: m });
       expect(first.kind, `${c.name} 第一次`).toBe(c.expect);
       const snapshot = await t.events.findLatestDisplayable(c.groupId);
-      const second = await edit(svc, c.groupId, c.request, { executor: c.executor, messageId: m });
+      const second = await edit(t, svc, c.groupId, c.request, { executor: c.executor, messageId: m });
       expect(second.kind, `${c.name} 第二次`).toBe('duplicate');
       const after = await t.events.findLatestDisplayable(c.groupId);
       if (snapshot !== undefined && after !== undefined) {
@@ -446,7 +450,7 @@ describe('EventService.editEvent（D-015）', () => {
     const svc = makeService(t);
 
     const len40 = 'ㄅ'.repeat(40);
-    const r = await edit(svc, 'G', setField('location', len40));
+    const r = await edit(t, svc, 'G', setField('location', len40));
     expect(r.kind).toBe('ok');
     const after = await t.events.getById(ev.id);
     expect(after?.location).toBe(len40);
@@ -454,7 +458,7 @@ describe('EventService.editEvent（D-015）', () => {
 
     // 41 字在 parser 即成為 invalid(bad_location) → handler 轉 format_error（見 parse/handler 測試）；
     // domain 收到 format_error 一律不 UPDATE、不截斷。
-    const r2 = await edit(svc, 'G', { kind: 'format_error', field: 'location', detail: { len: 41 } });
+    const r2 = await edit(t, svc, 'G', { kind: 'format_error', field: 'location', detail: { len: 41 } });
     expect(r2.kind).toBe('format_error');
     if (r2.kind === 'format_error') expect(r2.detail).toEqual({ len: 41 });
     const after2 = await t.events.getById(ev.id);
@@ -469,14 +473,14 @@ describe('EventService.editEvent（D-015）', () => {
     const reg = makeRegService(t);
 
     // A：兩列自報名（+2）→ 去重後只算一個 owner。
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-A', executorDisplayName: 'A', messageId: nextMid(), count: 2 });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-A', executorDisplayName: 'A', messageId: nextMid(), count: 2 });
     // B：代報一位「陳大哥」→ owner 是 B（代報者本人），不得 tag 被代報者。
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-B', executorDisplayName: 'B', messageId: nextMid(), count: 1, proxyName: '陳大哥' });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-B', executorDisplayName: 'B', messageId: nextMid(), count: 1, proxyName: '陳大哥' });
     // C/D：候補（capacity=3 已滿）→ 不得入 tag。
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-C', executorDisplayName: 'C', messageId: nextMid(), count: 1 });
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-D', executorDisplayName: 'D', messageId: nextMid(), count: 1 });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-C', executorDisplayName: 'C', messageId: nextMid(), count: 1 });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-D', executorDisplayName: 'D', messageId: nextMid(), count: 1 });
 
-    const r = await edit(svc, 'G', setField('location', '新場地'));
+    const r = await edit(t, svc, 'G', setField('location', '新場地'));
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
 
@@ -497,7 +501,7 @@ describe('EventService.editEvent（D-015）', () => {
     const svc = makeService(t);
     const reg = makeRegService(t);
     for (const n of ['a', 'b', 'c', 'd']) {
-      await reg.signup({ groupId: 'G', executorLineUserId: `U-${n}`, executorDisplayName: n, messageId: nextMid(), count: 1 });
+      await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: `U-${n}`, executorDisplayName: n, messageId: nextMid(), count: 1 });
     }
 
     // editEvent 全程只有「鎖內」會碰 users（service 自身在交易外不查 users），
@@ -505,7 +509,7 @@ describe('EventService.editEvent（D-015）', () => {
     const byLineId = vi.spyOn(UserRepository.prototype, 'getByLineUserId');
     const byId = vi.spyOn(UserRepository.prototype, 'getById');
 
-    const r = await edit(svc, 'G', setField('location', '新場地'), { executor: HOST });
+    const r = await edit(t, svc, 'G', setField('location', '新場地'), { executor: HOST });
     expect(r.kind).toBe('ok');
     // seed() 直接建列（非走 `確認` 流程）故主辦未自動報名 → 4 位正取 owner。
     if (r.kind === 'ok') expect(r.tagOwnerIds.length).toBe(4);
@@ -518,7 +522,7 @@ describe('EventService.editEvent（D-015）', () => {
     await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30' });
     const svc = makeService(t, [ADMIN]);
     const byLineId = vi.spyOn(UserRepository.prototype, 'getByLineUserId');
-    const r = await edit(svc, 'G', setField('location', 'L'), { executor: ADMIN });
+    const r = await edit(t, svc, 'G', setField('location', 'L'), { executor: ADMIN });
     expect(r.kind).toBe('ok');
     expect(byLineId).toHaveBeenCalledTimes(0);
   });
@@ -539,7 +543,7 @@ describe('EventService.editEvent（D-015）', () => {
       setField('location', '別的場地'),
       setField('fee', '場地費5000'),
     ]) {
-      expect((await edit(svc, 'G', req)).kind).toBe('ok');
+      expect((await edit(t, svc, 'G', req)).kind).toBe('ok');
     }
     const after = await t.events.getById(ev.id);
     expect(after?.capacity).toBe(ev.capacity);
@@ -571,9 +575,9 @@ describe('EventService.editEvent（D-019 費用切換計費模式）', () => {
     const svc = makeService(t);
     const reg = makeRegService(t);
     // 撐 4 位正取（K=4，含主辦自動報名不算——seed 直接建列非走確認流程，故僅這 4 位）。
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'a', messageId: nextMid(), count: 4 });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-a', executorDisplayName: 'a', messageId: nextMid(), count: 4 });
 
-    const r = await edit(svc, 'G', setField('fee', '場地費4000'));
+    const r = await edit(t, svc, 'G', setField('fee', '場地費4000'));
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') {
       expect(r.feeModeSwitched).toBe(true);
@@ -602,7 +606,7 @@ describe('EventService.editEvent（D-019 費用切換計費模式）', () => {
     });
     const svc = makeService(t);
 
-    const r = await edit(svc, 'G', setField('fee', '2500'));
+    const r = await edit(t, svc, 'G', setField('fee', '2500'));
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') {
       expect(r.feeModeSwitched).toBe(true);
@@ -623,10 +627,10 @@ describe('EventService.editEvent（D-019 費用切換計費模式）', () => {
     await seed(t, { groupId: 'G', date: '2999-08-15', time: '07:30', capacity: 5, price: 2000 });
     const svc = makeService(t);
     const reg = makeRegService(t);
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-A', executorDisplayName: 'A', messageId: nextMid(), count: 2 });
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-B', executorDisplayName: 'B', messageId: nextMid(), count: 1, proxyName: '陳大哥' });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-A', executorDisplayName: 'A', messageId: nextMid(), count: 2 });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-B', executorDisplayName: 'B', messageId: nextMid(), count: 1, proxyName: '陳大哥' });
 
-    const r = await edit(svc, 'G', setField('fee', '場地費4000'));
+    const r = await edit(t, svc, 'G', setField('fee', '場地費4000'));
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
     const a = await t.users.getByLineUserId('U-A');
@@ -647,12 +651,12 @@ describe('EventService.editEvent（D-019 費用切換計費模式）', () => {
     });
     const svc = makeService(t);
     const reg = makeRegService(t);
-    await reg.signup({ groupId: 'G', executorLineUserId: 'U-a', executorDisplayName: 'a', messageId: nextMid(), count: 2 });
+    await reg.signup({ groupId: 'G', eventId: await activeEventId(t, 'G'), executorLineUserId: 'U-a', executorDisplayName: 'a', messageId: nextMid(), count: 2 });
     const regsBefore = await t.pool.query<{ id: number; event_id: number; owner_user_id: number; status: string }>(
       'SELECT id, event_id, owner_user_id, status FROM registrations ORDER BY id',
     );
 
-    const r = await edit(svc, 'G', setField('fee', '2500'));
+    const r = await edit(t, svc, 'G', setField('fee', '2500'));
     expect(r.kind).toBe('ok');
 
     const after = await t.events.getById(ev.id);
@@ -675,8 +679,8 @@ describe('EventService.editEvent（D-019 費用切換計費模式）', () => {
     const svc = makeService(t);
 
     const [r1, r2] = await Promise.all([
-      edit(svc, 'G', setField('fee', '場地費4000'), { messageId: nextMid() }),
-      edit(svc, 'G', setField('date', '2999-09-01'), { messageId: nextMid() }),
+      edit(t, svc, 'G', setField('fee', '場地費4000'), { messageId: nextMid() }),
+      edit(t, svc, 'G', setField('date', '2999-09-01'), { messageId: nextMid() }),
     ]);
     expect([r1.kind, r2.kind]).toEqual(['ok', 'ok']);
 
@@ -694,11 +698,11 @@ describe('EventService.editEvent（D-019 費用切換計費模式）', () => {
     const svc = makeService(t);
     const spy = vi.spyOn(EventRepository.prototype, 'updateBilling');
 
-    const r1 = await edit(svc, 'G-switch', setField('fee', '場地費4000'));
+    const r1 = await edit(t, svc, 'G-switch', setField('fee', '場地費4000'));
     expect(r1.kind).toBe('ok');
     expect(spy).toHaveBeenCalledTimes(1);
 
-    const r2 = await edit(svc, 'G-same', setField('fee', '3000'));
+    const r2 = await edit(t, svc, 'G-same', setField('fee', '3000'));
     expect(r2.kind).toBe('ok');
     expect(spy).toHaveBeenCalledTimes(2); // 累計：同模式改價同樣走 updateBilling，不另開分支
   });

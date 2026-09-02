@@ -2,7 +2,7 @@
 //
 // D-002 §6：對外統一出口——re-export parseCommand、型別與常數。
 
-export { parseCommand } from './parse';
+export { parseCommand, COMMAND_HEAD_KEYWORDS } from './parse';
 export type {
   ParsedCommand,
   InvalidCommandKind,
@@ -25,3 +25,6 @@ export {
   type ValidationResult,
 } from './validators';
 export { normalizeWhitelist } from './normalize';
+
+// D-024 §4.2：`@selector` 前綴切分（parseCommand 的**前置**純函式，不改 parseCommand 本身）。
+export { splitSelector, SELECTOR_STOP_KEYWORDS, type SelectorSplit } from './selector';

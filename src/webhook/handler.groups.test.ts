@@ -56,6 +56,7 @@ function makeHandler(
   opts: { groups?: GroupRepository; groupSummary?: GroupSummaryClient } = {},
 ): WebhookHandler {
   return createWebhookHandler({
+    events: t.events, // D-026 §5.2：dispatch 消歧義的候選集合來源
     groups: opts.groups ?? t.groups,
     groupSummary: opts.groupSummary,
     grouping: new GroupingService({

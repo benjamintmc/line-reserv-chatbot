@@ -22,6 +22,7 @@ describe('D-006 靜態審查（G3 / G4 / G5）', () => {
       '0003_merge_event_datetime.sql',
       '0004_conversation_scope_pk.sql',
       '0005_groups.sql',
+      '0006_multi_event_per_group.sql', // D-021 T-033a（解除同群單場限制 + message_event_map）
     ]);
   });
 

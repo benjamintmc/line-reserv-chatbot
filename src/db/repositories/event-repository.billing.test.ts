@@ -155,7 +155,8 @@ describe('migration 0002 backfill（D-005 §1.2 / AC-12 / G7 / G8）', () => {
     expect(row.rows[0]!.settled_per_person).toBeNull();
     expect(row.rows[0]!.price_per_person).toBe(2200); // 既有金額不動（零回歸）
 
-    // 4. ux_events_active_group 仍在（同群第二場 active 被拒）。
+    // 4. 0001 的 ux_events_active_group 仍在（本 describe 以獨立 schema 只套到 0002，
+    //    **未**套用 0006 ⇒ 舊索引在此 schema 內合法存在；同群第二場 active 被拒）。
     await expect(
       client.query(
         `INSERT INTO events (group_id, host_user_id, event_date, event_time, location, capacity, price_per_person, price_mode, venue_fee, status, created_at, updated_at)

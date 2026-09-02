@@ -24,20 +24,28 @@ export interface CreateEventInput {
 }
 
 /**
- * events 唯讀介面（N-new-2）：pool-bound 依賴只曝讀方法（getById/findActiveByGroup/findLatestDisplayable），
+ * events 唯讀介面（N-new-2）：pool-bound 依賴只曝讀方法（getById/listActiveByGroup/findLatestDisplayable），
  * 寫入（create/updateStatus/updateSettledPerPerson）僅存在於 client-bound `TxRepos.events`（交易內）。
+ *
+ * **D-021 G1（無單值介面殘留）**：不得保留 `findActiveByGroup` 或任何「回傳單一活動」當作預設
+ * 路徑的方法——「回傳單一列」的介面形狀本身就是「同群只有一場」假設的化身，留著（即使只是
+ * wrapper／deprecated 別名）就會被日後新代碼誤用而悄悄退回單場語意。
  */
 export interface EventReader {
   getById(id: number): Promise<EventRow | undefined>;
-  /** 擋團/生命週期：回 status ∈ {draft,open} 的最新一場（D-008：不回 closed）。 */
-  findActiveByGroup(groupId: string): Promise<EventRow | undefined>;
+  /**
+   * 取代 `findActiveByGroup`（D-021 §2）：回該群 status ∈ {draft,open} 的**全部**列，依 id **升冪**。
+   * 呼叫端一律「listActiveByGroup → 消歧義解出 eventId → getById(eventId) 權威重讀」。
+   */
+  listActiveByGroup(groupId: string): Promise<EventRow[]>;
   /** 顯示用：回 status ∈ {draft,open,closed} 的最新一場（latest by id），供 `名單`（D-008 §2/OP-4）。 */
   findLatestDisplayable(groupId: string): Promise<EventRow | undefined>;
 }
 
 /**
- * events 資料存取。同 group 至多一場 active 由 DB partial unique index
- * `ux_events_active_group` 強制（G3）；重複建立 active 會拋唯一約束錯誤（PG `23505`）。
+ * events 資料存取。**同群多場 active 已於 0006（D-021 §1）解鎖**——舊 `ux_events_active_group`
+ * 已 DROP，改由 `ux_events_active_group_venue_time`（同群 active 內場地+時間不得重複）把關；
+ * 撞該索引一樣拋唯一約束錯誤（PG `23505`，constraint 為**新**索引名，D-021 G8）。
  *
  * 註：狀態轉移合法性（D-001 §7 狀態機）為 domain 層（D-002/D-003）決策，
  * 本層 `updateStatus` 僅提供原子寫入原語，不校驗轉移合法性。
@@ -102,15 +110,21 @@ export class EventRepository implements EventReader {
     return res.rows[0];
   }
 
-  /** 查某 group 目前唯一的 active 活動（status ∈ {draft,open}；D-008：不含 closed）。 */
-  async findActiveByGroup(groupId: string): Promise<EventRow | undefined> {
+  /**
+   * 查某 group 目前**全部** active 活動（status ∈ {draft,open}；D-008：不含 closed），依 id 升冪。
+   *
+   * **`ORDER BY id ASC` 為 D-021 §2 釘死值，不得改為 `DESC`**：D-021 §1 過渡條文的開團側三處
+   * 以 `actives.at(-1)`（＝最新一場）取代舊 `findActiveByGroup` 的 `ORDER BY id DESC LIMIT 1`，
+   * 升冪是該取用的唯一正確性依據；改成降冪會讓它靜默取到最舊一場（`[D-021 AC-2]` 為保護網）。
+   */
+  async listActiveByGroup(groupId: string): Promise<EventRow[]> {
     const res = await this.q.query<EventRow>(
       `SELECT * FROM events
        WHERE group_id = $1 AND status = ANY($2)
-       ORDER BY id DESC LIMIT 1`,
+       ORDER BY id ASC`,
       [groupId, [...ACTIVE_EVENT_STATUSES]],
     );
-    return res.rows[0];
+    return res.rows;
   }
 
   /**

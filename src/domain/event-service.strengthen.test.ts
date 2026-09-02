@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { createTestDb, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { EventService } from './event-service';
 import { EventRepository } from '../db/repositories/event-repository';
 
@@ -50,10 +50,10 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     await t.cleanup();
   });
 
-  it('[D-004 AC-12] confirm 遇 23505 但命中其他 constraint（非 ux_events_active_group）→ 必須 re-throw，不吞成 already_active', async () => {
+  it('[D-004 AC-12] confirm 遇 23505 但命中其他 constraint（非 ux_events_active_group_venue_time）→ 必須 re-throw，不吞成 already_active', async () => {
     const svc = makeSvc(t);
     await seedAwaitingConfirm(t);
-    // 關鍵：code 命中 23505，但 constraint 指向 ux_users_line_user_id（非 ux_events_active_group）。
+    // 關鍵：code 命中 23505，但 constraint 指向 ux_users_line_user_id（非 ux_events_active_group_venue_time）。
     // 若窄捕捉退化為「只看 code」，此錯誤會被誤吞成 already_active。正確行為：向上拋。
     const boom = Object.assign(new Error('duplicate key value violates unique constraint "ux_users_line_user_id"'), {
       code: '23505',
@@ -71,12 +71,13 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     expect((await t.conversations.get(G, HOST))?.state).toBe('awaiting_confirm');
   });
 
-  it('[D-004 AC-12] confirm 撞 ux_events_active_group（23505 + constraint）→ 仍窄捕捉為 already_active', async () => {
+  it('[D-004 AC-12] confirm 撞 ux_events_active_group_venue_time（23505 + constraint）→ 仍窄捕捉為 already_active', async () => {
     const svc = makeSvc(t);
     await seedAwaitingConfirm(t);
+    // D-021 G8：窄捕捉比對**新**索引名（0006 已 DROP 舊的 ux_events_active_group）。
     const dup = Object.assign(
-      new Error('duplicate key value violates unique constraint "ux_events_active_group"'),
-      { code: '23505', constraint: 'ux_events_active_group' },
+      new Error('duplicate key value violates unique constraint "ux_events_active_group_venue_time"'),
+      { code: '23505', constraint: 'ux_events_active_group_venue_time' },
     );
     const spy = vi.spyOn(EventRepository.prototype, 'create').mockRejectedValue(dup);
 
@@ -117,7 +118,7 @@ describe('EventService 補強：AC-12 窄捕捉 constraint 判別 + AC-9 稽核�
     expect(before.cancelled_at).not.toBeNull();
     expect(before.cancelled_by_user_id).toBe(member.id);
 
-    const r = await svc.cancelEvent({ groupId: G, executorLineUserId: HOST, messageId: 'z' });
+    const r = await svc.cancelEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'z' });
     expect(r.kind).toBe('ok');
 
     // G10：取消活動為狀態轉移，不得動 registrations——稽核欄逐欄不變。

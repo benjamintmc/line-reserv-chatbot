@@ -12,11 +12,13 @@
 | T-022 | D-013 實作（根治跨群）：migration 0004 複合 PK、repo 簽名 `(groupId, lineUserId)`、(N2) 收斂、D-004/D-011 errata、runbook 0004 段落 | **R2** | 實作完成，待裁定 | 分支 `feat/D-011-grouping`；未 commit、未 push，變更留工作區。審查包 `docs/reviews/RP-T-022.md` |
 | T-025 | M7 容器強化：新增 `.dockerignore`＋runtime 階段 `USER node`（來源：`docs/security-review-2026-08-22.md` M7） | R0 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-025.md`；AC-1/AC-2 為**手動實跑 docker** 之輸出（非 unit test）；未 commit，變更留工作區 |
 | T-034 | D-019：`編輯 費用` 支援切換計費模式（per_person↔split_venue），反轉 D-015 決議⑥ | **R2** | 實作完成，**機器關卡未跑**（環境無 node/npm，亦無 docker） | 分支 `feat/t-032-edit-billing-mode`；未 commit，變更留工作區。詳見下方筆記 |
+| T-033a | 解除單場限制 + 消歧義全鏈路 + `名單` 回退（0006 migration／`EventReader` 換介面／12 呼叫端／dispatch 管線／G9 回退） | **R2** | 實作完成，四關全綠，待裁定 | 分支 `feat/t-033a-multi-event-unlock`；審查包 `docs/reviews/RP-T-033a.md`。未 push、未開 PR |
 | T-032 | 測試檔假綠防護（`tsconfig.test.json` + `npm run typecheck` + CI 接線，修掉暴露的 17 個既有型別錯誤） | R1 | 實作完成，待裁定 | 審查包 `docs/reviews/RP-T-032.md`；未 commit，變更留工作區 |
 
 ## 狀態提議（等待 Orchestrator 裁定）
 | 任務 ID | 提議轉換 | 證據（審查包/測試結果/產出路徑） |
 |---|---|---|
+| T-033a | PROPOSE → DONE | 審查包 **`docs/reviews/RP-T-033a.md`**（Guardrails **G1/G2/G5/G6/G8/G9/G10/G11/G12/G14 + close/cancel 雙層授權**逐條自檢全 ✓、17 條 AC 對照全 PASS）。交付新檔 8：`src/db/migrations/0006_multi_event_per_group.sql`、`src/commands/selector.ts`、`src/domain/event-disambiguation.ts`、`src/domain/disambiguation-formatter.ts` ＋ 4 個測試檔（`d021-schema-unlock`／`selector`／`event-disambiguation`／`handler.disambiguation`）；生產碼修改 9：`event-repository.ts`（`findActiveByGroup` **整個移除** → `listActiveByGroup`，`ORDER BY id ASC`）、`event-service.ts`（8 呼叫端＋G8 窄捕捉改新索引名）、`grouping-service.ts`（2）、`registration-service.ts`（2＋G9 `getListView` 回退）、`webhook/handler.ts`（D-026 §5.2 管線）、`server.ts`、`schema.ts`／`tx.ts`（僅過時註解）、`scripts/seed-open-event.ts`。D-020 §一 窮舉表 7 處連帶測試已同批處置。機器關卡：**lint 0／typecheck exit 0／build 綠／`npm test` 522 passed（基線 488，+34，零回歸）／`npm run harness:check` 全過、AC 覆蓋 266/266**（施工中的 249/266 已補齊，**未**加回任何豁免行）。`design/` 與 `harness/` diff 為空；`docs/task-board.md` 未動。 |
 | T-032 | PROPOSE → DONE | 審查包 **`docs/reviews/RP-T-032.md`**（G1–G5 自檢全 ✓、AC-1..5 全 PASS，含兩次反向驗證原始輸出）。交付：`tsconfig.test.json`（新增）、`package.json`（`typecheck` script）、`.github/workflows/ci.yml`（Lint 與 Build 之間插入 Typecheck 步驟）、修正 8 個測試/腳本檔。**`src/` 生產碼 diff 0 行**（`git diff --stat -- 'src/**' ':!src/**/*.test.ts' ':!src/**/__tests__/**'` 空輸出）。機器關卡：**lint 0／build 綠／477 tests 全綠（基線 477，零回歸）／`npm run typecheck` exit 0／harness AC 242/242 全過** |
 | T-018 | PROPOSE → DONE | B1/B2 已修：`src/domain/grouping-service.ts`（`NextRoundInput.groupId` + `conv.group_id` 比對 → `no_session`；`groupBalanced` 首步交易外 `markProcessed` → `duplicate`）、`src/webhook/handler.ts`（`group_next` 傳 groupId、`renderBalanced` 加 `duplicate` → `[]`）、`src/server.ts`（注入 `processed`）。測試：`src/domain/grouping-service.test.ts`（`[D-011 AC-23 errata 跨群]`、`[D-011 AC-24 errata 去重]`）＋`src/webhook/handler.test.ts` 兩條接線層測試。設計 errata：`design/D-011-grouping.md`（狀態行、AC-23/AC-24、討論紀錄）。機器關卡：lint 0／build 綠／**355 tests 全綠**（基線 343，新增 12，零回歸）／`harness:check --strict` 全過（AC 184/184） |
 | T-020 | PROPOSE → DONE | B1 已修：`src/domain/list-formatter.ts` `formatBatchSummary` 改依類別聚合（`已報名：${names.join('、')}`、落候補者各自標「（候補）」；取消同理）。測試：新增 `src/domain/list-formatter.batch.test.ts`（5 案）＋更新 `src/webhook/handler.batch.test.ts` :113/:179 斷言。D-012 **未改**（依使用者裁決）。機器關卡同上 |
@@ -164,6 +166,41 @@
   - **`check_board_sync.py` 目前會報一行**：`T-032 提議 → DONE，但 task-board 尚未裁定`。這是該 check 的設計行為
     （待裁定訊號），寫 PROPOSE 之前三個 check 全綠；orchestrator 於 task-board 裁定後即恢復全綠。未為此改 task-board。
   - 未 commit、未 push；未動 `docs/task-board.md`（其工作區既有的 T-032 那一行是 orchestrator 派工時寫的，非我所改）。
+
+- **T-033a 筆記**：
+  - **`ORDER BY id ASC` 是整批的正確性依據**（派工單特別點名的陷阱）。舊 `findActiveByGroup` 是
+    `ORDER BY id DESC LIMIT 1`；刪掉 `LIMIT 1` 而留 `DESC` 會讓開團側 `actives.at(-1)` 取到**最舊**那場。
+    已依 D-021 §2 釘死 ASC，並在 repo 方法 doc-comment 內聯寫明「不得改為 DESC」的理由；
+    `[D-021 AC-2]` 以 3 列升冪斷言＋`at(-1)` 等於 id 最大者作保護網。
+  - **G1 例外只有 3 處，且刻意不抽共用函式**：`grep -n "at(-1)\|length - 1" src/domain/event-service.ts`
+    恰 3 個 code 命中（`startCreation`/`handleOneline`/`confirm`），與 D-021 §1 clause 3 的 T-033c
+    驗收 grep 一致。抽成 helper 會變成 G1 禁止的 wrapper，故三處各自內聯、各附「T-033c 整段移除」註記。
+  - **149 個既有測試呼叫端的連帶更新**（派工單只點名了 7 處舊索引名，這是介面變更的必然連帶）：
+    新增 `activeEventId(t, groupId)` 於 `src/db/__tests__/test-db.ts`，等義重現 dispatch 在候選 ≤1
+    時的解析結果。**只在 `__tests__` 內、生產碼零 import**。已列入審查包 §5 第 1 點請 reviewer 確認。
+  - **舊索引名 fixture 的語意改造（非只改字串）**：`[D-004 AC-12]`（event-service.test.ts）與
+    `[D-007 AC-9]`（d007-postgres.test.ts）原本靠「同群第二場」觸發 23505，0006 後必須改成
+    **「同群 active 內場地+時間相同」**才會撞到新索引；兩處的 fixture 都改了場地/時間而非只改名字，
+    否則會變成「永遠不拋錯」的假綠。`[D-001 AC-9]`（migrate.test.ts）同理，並補了一條反面斷言
+    （場地不同 → 放行）。
+  - **`event-repository.billing.test.ts:158` 未改語意（與 D-020 窮舉表的建議不同）**：該 describe 以
+    獨立 schema `backfill_test` 只重放到 0002，**從未套用 0006** ⇒ `ux_events_active_group` 在該 schema
+    內合法存在，原斷言正確。改成「新語意」反而會是錯的。只補了一行註解說明。已跑過確認綠。
+  - **`d008-auto-release.test.ts` 的 `[D-008 AC-9]` 需改 mock 順序**：該測試以 spy `getById` 模擬
+    「鎖內重讀見 done」。D-021 §5.1 後**交易外也走 `getById`**，若整條都回 stale 值，會在交易外就落
+    `no_open_event`、測不到鎖內 re-check。改為 `mockResolvedValueOnce(live)` + 其後 stale，
+    正是該測試原本敘述的「交易外 live／鎖內 stale」語意，未放寬任何斷言。
+  - **quote 恆 `undefined`（相位）**：`resolveQuotedEventInGroup` 依 D-026 逐字實作並實際被呼叫，
+    但 `rawQuotedEventId` 常數為 `undefined`（機制 A 寫入屬 T-033b）。AC-7 文案中的「回覆」本批恆無效，
+    **未依此改寫釘死字串**（派工單明示）；已在 formatter 與 handler 兩處各留相位註記。
+  - **`matchSelector` 的 `now` 目前不參與判斷**（`void now;` + 註解）：D-023 步驟 4 明定月日 token
+    忽略年份 ⇒ 不需讀年份，但簽名為釘死值故保留。已列入審查包 §5 第 3 點請裁決是否為設計歧義。
+  - **`handleBatch` 的消歧義插在「可執行行數為 0」之後**：否則每則 ≥2 行的雜訊訊息都會多打一次
+    `listActiveByGroup`。G6（整則超限拒絕）維持在更前面，行為零改變。
+  - 凍結區：`src/db/migrations/0001~0005` 零改動（只新增 0006）；`src/db/tx.ts` 只改一行**註解**
+    （舊索引名 → 新索引名），交易 runner 邏輯零改動。
+  - **未加回 AC 豁免行、未改 `design/` 任何檔、未動 `docs/task-board.md`**（`git diff -- design/ harness/`
+    空輸出）。未 push、未開 PR、未切換分支。
 
 ## 我要回報給 Orchestrator 的事項
 | 類型（阻塞/契約疑義/重複問題/建議） | 內容 |

@@ -119,6 +119,12 @@ export interface SignupInput {
   messageId: string;
   count: number;
   proxyName?: string;
+  /**
+   * D-021 §5.1：由 handler 層消歧義解出的目標活動（`undefined` = 候選數為 0，沿用既有
+   * `no_open_event` 分支，行為零改變）。跨群校驗已於 dispatch 層完成（G14），
+   * 此處 `getById(eventId)` 不重複比對 `group_id`。
+   */
+  eventId?: number;
 }
 
 export interface CancelInput {
@@ -128,11 +134,22 @@ export interface CancelInput {
   messageId: string;
   count: number;
   proxyName?: string;
+  /**
+   * D-021 §5.1：由 handler 層消歧義解出的目標活動（`undefined` = 候選數為 0，沿用既有
+   * `no_open_event` 分支，行為零改變）。跨群校驗已於 dispatch 層完成（G14），
+   * 此處 `getById(eventId)` 不重複比對 `group_id`。
+   */
+  eventId?: number;
 }
 
 export interface ListInput {
   groupId: string;
   messageId: string;
+  /**
+   * D-021 §5.1／D-022 §5.4：消歧義解出的目標活動。**不可與其他 Input 統一處理**——
+   * `undefined`（＝候選數 0）時才退回 `findLatestDisplayable`，見 `findEventForDisplay`（G9）。
+   */
+  eventId?: number;
 }
 
 export interface AddCapacityInput {
@@ -141,6 +158,12 @@ export interface AddCapacityInput {
   messageId: string;
   /** 加開名額數（新增量；parser 已保證 1..MAX_COUNT）。 */
   count: number;
+  /**
+   * D-021 §5.1：由 handler 層消歧義解出的目標活動（`undefined` = 候選數為 0，沿用既有
+   * `no_open_event` 分支，行為零改變）。跨群校驗已於 dispatch 層完成（G14），
+   * 此處 `getById(eventId)` 不重複比對 `group_id`。
+   */
+  eventId?: number;
 }
 
 export interface RegistrationServiceDeps {
@@ -208,13 +231,17 @@ export class RegistrationService {
   }
 
   /**
-   * 報名用（`+N`/`-N`）：取當前 group 可報名事件（open ∧ 未過期，D-008 §2）。
+   * 報名用（`+N`/`-N`）：取消歧義解出的目標事件並判可報名性（open ∧ 未過期，D-008 §2）。
    * - open ∧ 未過期 → `{ ok, event }`；
    * - open ∧ 已過期 → `{ event_ended }`（活動已結束，拒報名/取消，OP-2）；
-   * - 無 / draft（未物化）→ `{ no_open_event }`（closed 不在 findActiveByGroup 集合）。
+   * - `eventId === undefined`（候選數 0）／查無／draft（未物化）→ `{ no_open_event }`。
+   *
+   * D-021 §5.1：由 `findActiveByGroup(groupId)` 改吃 `eventId`（handler 消歧義解出）。
    */
-  private async findOpenEventForSignup(groupId: string): Promise<SignupEventResolution> {
-    const event = await this.events.findActiveByGroup(groupId);
+  private async findOpenEventForSignup(
+    eventId: number | undefined,
+  ): Promise<SignupEventResolution> {
+    const event = eventId === undefined ? undefined : await this.events.getById(eventId);
     if (event === undefined) return { kind: 'no_open_event' };
     const now = nowIso();
     if (isOpenForSignup(event, now)) return { kind: 'ok', event };
@@ -223,12 +250,25 @@ export class RegistrationService {
   }
 
   /**
-   * 顯示用（`名單`）：取最新一場可顯示活動（{draft,open,closed} latest-by-id，D-008 §2/OP-4）+ phase。
+   * 顯示用（`名單`）：候選數 >=1 → 用消歧義解出的那場；候選數 0 → 才退回最新一場可顯示活動
+   * （{draft,open,closed} latest-by-id，D-008 §2/OP-4）+ phase。
    * latest 為 cancelled/無 → undefined（no_open_event）；done 不入顯示集（必被更新 open 取代）。
    */
   private async findEventForDisplay(
+    eventId: number | undefined,
     groupId: string,
   ): Promise<{ event: EventRow; phase: ListPhase } | undefined> {
+    // D-022 §5.4 / G9：候選數 >= 1（dispatch 已跑完消歧義 ⇒ eventId !== undefined）時
+    // **一律**用解出的那場（必為 draft/open，天然正確）。多場並行下 latest-by-id 已不安全：
+    // 較晚建立但已 closed 的活動會蓋掉仍 open 的較舊活動。
+    if (eventId !== undefined) {
+      const event = await this.events.getById(eventId);
+      if (event === undefined) return undefined;
+      return { event, phase: displayPhase(event, nowIso()) };
+    }
+    // **只有**候選數 === 0（eventId === undefined；ambiguous/conflict/not_found/too_many 已於
+    // dispatch 層短路、不會走到 service）才退回 findLatestDisplayable——此時只剩 closed/cancelled
+    // 可選，不存在「蓋掉仍開放活動」的風險，既有行為零回歸。
     const event = await this.events.findLatestDisplayable(groupId);
     if (event === undefined) return undefined;
     return { event, phase: displayPhase(event, nowIso()) };
@@ -249,7 +289,7 @@ export class RegistrationService {
 
   // ── +N 報名（D-003 §2 / D-008 §6b） ────────────────────────────────
   async signup(input: SignupInput): Promise<SignupResult> {
-    const resolved = await this.findOpenEventForSignup(input.groupId);
+    const resolved = await this.findOpenEventForSignup(input.eventId);
     if (resolved.kind === 'no_open_event') return { kind: 'no_open_event' };
     if (resolved.kind === 'event_ended') return { kind: 'event_ended' };
     const event = resolved.event;
@@ -301,7 +341,7 @@ export class RegistrationService {
 
   // ── -N 取消（D-003 §3 / D-008 §6b） ────────────────────────────────
   async cancel(input: CancelInput): Promise<CancelResult> {
-    const resolved = await this.findOpenEventForSignup(input.groupId);
+    const resolved = await this.findOpenEventForSignup(input.eventId);
     if (resolved.kind === 'no_open_event') return { kind: 'no_open_event' };
     if (resolved.kind === 'event_ended') return { kind: 'event_ended' };
     const event = resolved.event;
@@ -404,8 +444,9 @@ export class RegistrationService {
   // ── 加開名額（`加開 N`；D-010 §一.2/§一.3） ─────────────────────────────
   async addCapacity(input: AddCapacityInput): Promise<AddCapacityResult> {
     // 交易外前置（early-return，不 mark、無 DB 變更，仿 close/cancel；G4 非授權零副作用）。
-    // 1. active 且為 open（draft/closed 非 open 或不在 active 集）→ no_open_event。
-    const event = await this.events.findActiveByGroup(input.groupId);
+    // 1. 消歧義解出的活動且為 open（undefined=候選數 0／draft 非 open）→ no_open_event（D-021 §5.1）。
+    const event =
+      input.eventId === undefined ? undefined : await this.events.getById(input.eventId);
     if (event === undefined || event.status !== 'open') return { kind: 'no_open_event' };
     // 2. 過期 open → event_ended（活動已結束）。
     if (isExpired(event, nowIso())) return { kind: 'event_ended' };
@@ -459,7 +500,7 @@ export class RegistrationService {
     if (!(await this.processed.markProcessed(input.messageId))) {
       return { kind: 'duplicate' };
     }
-    const resolved = await this.findEventForDisplay(input.groupId);
+    const resolved = await this.findEventForDisplay(input.eventId, input.groupId);
     if (resolved === undefined) return { kind: 'no_open_event' };
     return { kind: 'ok', view: await this.buildView(resolved.event), phase: resolved.phase };
   }

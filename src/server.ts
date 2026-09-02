@@ -75,6 +75,8 @@ export function buildHandler(): WebhookHandler {
     service,
     eventService,
     grouping,
+    // D-026 §5.2：dispatch 層消歧義的候選集合來源（pool-bound 唯讀）。
+    events,
     users,
     conversations,
     profile: lineClient,

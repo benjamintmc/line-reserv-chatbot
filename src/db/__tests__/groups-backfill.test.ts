@@ -43,7 +43,8 @@ describe('D-018 migration 0005 backfill', () => {
   it('[D-018 AC-7] 每個曾出現過的 group_id 都補一列；重跑不重複插入', async () => {
     await seedEvent(t, { capacity: 4, groupId: 'G-a', hostLineId: 'U-1' });
     await seedEvent(t, { capacity: 4, groupId: 'G-b', hostLineId: 'U-2' });
-    // 同群第二場（先把第一場移出 active 集合，避開 ux_events_active_group）。
+    // 同群第二場（先把第一場移出 active 集合）。seedEvent 的場地+時間固定，故不論 0006 前的
+    // 「同群一場」或 0006 後的「場地+時間查重」，都須先移出 active 集合才建得起來；行為不變。
     await t.pool.query("UPDATE events SET status = 'done' WHERE group_id = 'G-a'");
     await seedEvent(t, { capacity: 4, groupId: 'G-a', hostLineId: 'U-1' });
 

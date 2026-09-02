@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { createTestDb, type TestDb } from '../db/__tests__/test-db';
+import { createTestDb, type TestDb, activeEventId } from '../db/__tests__/test-db';
 import { EventService } from './event-service';
 import { RegistrationService } from './registration-service';
 import { formatClosed } from './event-formatter';
@@ -57,8 +57,8 @@ async function openEvent(
   return r.event.id;
 }
 
-async function listText(reg: RegistrationService): Promise<string> {
-  const r = (await reg.getListView({ groupId: G, messageId: nextMid() })) as ListResult;
+async function listText(t: TestDb, reg: RegistrationService): Promise<string> {
+  const r = (await reg.getListView({ groupId: G, eventId: await activeEventId(t, G), messageId: nextMid() })) as ListResult;
   if (r.kind !== 'ok') throw new Error('list 非 ok');
   return formatList(r.view).text;
 }
@@ -96,28 +96,28 @@ describe('EventService 計費（D-005 §3–§4）', () => {
     const { evt, reg } = makeServices(t);
     await openEvent(evt, { priceMode: 'split_venue', venueFee: 3000 });
     // 主辦後正取=1（估 3000）。
-    expect(await listText(reg)).toContain('平均每人約 3000 元（暫估，關閉報名後結算）');
+    expect(await listText(t, reg)).toContain('平均每人約 3000 元（暫估，關閉報名後結算）');
     // 成員 +3 → 正取=4 → ceil(3000/4)=750。
-    await reg.signup({ groupId: G, executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 3 });
-    expect(await listText(reg)).toContain('平均每人約 750 元（暫估，關閉報名後結算）');
+    await reg.signup({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 3 });
+    expect(await listText(t, reg)).toContain('平均每人約 750 元（暫估，關閉報名後結算）');
   });
 
   it('[D-005 AC-5] split -N 後均攤重算：正取4(每人750) -1 → 正取3 → 每人約 1000', async () => {
     const { evt, reg } = makeServices(t);
     await openEvent(evt, { priceMode: 'split_venue', venueFee: 3000 });
-    await reg.signup({ groupId: G, executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 3 });
-    expect(await listText(reg)).toContain('平均每人約 750 元');
+    await reg.signup({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 3 });
+    expect(await listText(t, reg)).toContain('平均每人約 750 元');
     // 成員 -1 → 正取=3 → ceil(3000/3)=1000。
-    await reg.cancel({ groupId: G, executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 1 });
-    expect(await listText(reg)).toContain('平均每人約 1000 元（暫估，關閉報名後結算）');
+    await reg.cancel({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 1 });
+    expect(await listText(t, reg)).toContain('平均每人約 1000 元（暫估，關閉報名後結算）');
   });
 
   it('[D-005 AC-7] split 關閉報名 → 持久化 settled_per_person=429 + 公告最終攤額', async () => {
     const { evt, reg } = makeServices(t);
     const eventId = await openEvent(evt, { priceMode: 'split_venue', venueFee: 3000 });
     // 主辦(1) + 成員 +6 = 正取7 → ceil(3000/7)=429。
-    await reg.signup({ groupId: G, executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 6 });
-    const close = await evt.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    await reg.signup({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: 'U-m', executorDisplayName: '成員', messageId: nextMid(), count: 6 });
+    const close = await evt.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: nextMid() });
     expect(close.kind).toBe('ok');
     if (close.kind !== 'ok') return;
     expect(close.confirmedCount).toBe(7);
@@ -134,7 +134,7 @@ describe('EventService 計費（D-005 §3–§4）', () => {
   it('[D-005 AC-8] per_person 關閉報名 → settled_per_person 維持 NULL、不附結算列', async () => {
     const { evt } = makeServices(t);
     const eventId = await openEvent(evt, { priceMode: 'per_person', price: 2200 });
-    const close = await evt.closeEvent({ groupId: G, executorLineUserId: HOST, messageId: nextMid() });
+    const close = await evt.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: nextMid() });
     expect(close.kind).toBe('ok');
     if (close.kind !== 'ok') return;
     expect(close.settledPerPerson).toBeNull();
