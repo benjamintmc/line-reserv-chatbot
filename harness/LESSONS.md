@@ -71,3 +71,5 @@
 > **仍為「規則已立、碼未收斂」的兩處**（已登記 task-board Backlog，皆碰 R2 模組故不夾帶）：
 > ①拒絕回覆去重的現行不對稱實作 ②D-007 §3「cancel candidates 唯讀讀安全」的 errata。
 > 尚在觀察中（未達門檻）的項目仍留在上方問題登記表。
+
+| 2026-09-02 (T-033c) | **對不存在的鎖做出併發保證宣稱——同型第 2 次**：T-033c 的 `confirm` 新註解寫「（**鎖內**權威重讀，防入口查驗後、`確認` 前的 race window）」，但 `this.tx` 是 `TransactionRunner`，`tx.ts:44` 明文「**不鎖 event**」、`createTransactionRunner` 的 begin 是 `async () => {}`。比對 `git show ced4a86:src/domain/event-service.ts` 確認舊註解只寫「交易內權威重讀」⇒ **「鎖內」是本批新加的**。第 1 次是 T-033a 的 `closeEvent`／`cancelEvent` 宣稱 `FOR UPDATE`（D-021 errata 已更正、交接文件 §3.2 列為長期風險項），**同一份交接明文警告過，下一批仍然復發**。危害不在註解本身：它座落於 CLAUDE.md §4.5 的高風險模組，會誘導後人以「反正有鎖」為由弱化 G7 下半的 DB 安全網。**與 2026-08-05「假綠比沒有檢查更糟」同族**：一個不存在的保證，比明說沒有保證更危險。**教訓**：併發相關的措辭（鎖內／序列化／原子／防 race）是**可驗證的事實宣稱**，不是修辭；寫下前必須回頭確認該路徑實際走哪一個 runner。 | **2**（承 T-033a 的 `FOR UPDATE` 誤述） | 待回寫（提案：①`architect-reviewer` 角色檔增列固定檢查項「diff 內任何『鎖內／序列化／原子／防 race』字樣，須指出實際提供該保證的程式碼位置，指不出即為 blocker」；②`tx.ts` 的兩個 runner 改為型別層可辨識，讓「用了哪個 runner」在呼叫點就看得見） | — |
