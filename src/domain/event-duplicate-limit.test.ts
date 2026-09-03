@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { createTestDb, type TestDb } from '../db/__tests__/test-db';
 import { EventRepository } from '../db/repositories/event-repository';
 import { EventService, MAX_OPEN_EVENTS_PER_GROUP } from './event-service';
-import { formatAlreadyActiveEntry, formatGroupCapacityReached } from './event-formatter';
+import { formatDuplicateEventEntry, formatGroupCapacityReached, formatRaceLost } from './event-formatter';
 import type { EventRow } from '../db/schema';
 
 // D-027 開團查重（場地+時間）＋ D-028 同群 open 上限 3 場（T-033c，兩份同批落地）。
@@ -14,6 +14,11 @@ import type { EventRow } from '../db/schema';
 
 const G = 'G-1';
 const HOST = 'U-host';
+/**
+ * 查重訊息 (I) 的**設計指定首句**（D-004 §6 errata／D-020 clause 2／brief FR-8，逐字不可改）。
+ * 與上限訊息、與 (L) race-lost 三者必須是三則不同文案（G13 + D-027 §一）。
+ */
+const DUP_HEADLINE = '已有相同時間地點的球敘：';
 
 function makeSvc(t: TestDb): EventService {
   return new EventService({
@@ -99,6 +104,16 @@ describe('D-027 開團查重 / D-028 同群 open 上限', () => {
     expect(r.kind).toBe('duplicate_event');
     if (r.kind !== 'duplicate_event') return;
     expect(r.event.id).toBe(existing.id); // 帶既存衝突活動（handler 據此附 relatedEventId）
+    // **文案逐字**（雙審 B-1：先前只驗 kind，AC 表 ✓ 但實際要求沒做到）。
+    const dupText = formatDuplicateEventEntry(r.event).text;
+    expect(dupText.split('\n')[0]).toBe(DUP_HEADLINE);
+    expect(dupText).toContain('場地：東方球場');
+    expect(dupText).toContain('日期：2999-08-15 07:30');
+    // 開燈後這兩句都是假的（換時間/場地就能開；撞重複者未必有權取消）⇒ 整行已刪除。
+    expect(dupText).not.toContain('目前已有進行中的活動');
+    expect(dupText).not.toContain('取消活動');
+    // (L) 是另一則訊息，不得互相替代。
+    expect(dupText).not.toBe(formatRaceLost().text);
     // 無 DB 副作用：不寫 conversation_states、未新增 event、未 mark（入口純判斷的快速失敗）。
     expect(await t.conversations.get(G, 'U-second')).toBeUndefined();
     expect((await t.events.listActiveByGroup(G)).length).toBe(1);
@@ -134,6 +149,14 @@ describe('D-027 開團查重 / D-028 同群 open 上限', () => {
       text: '確認', hostDisplayName: '別人',
     });
     expect(r.kind).toBe('duplicate_event');
+    // **與一行式回同一則訊息**（AC-4「回同上訊息」；雙審 B-1：先前走 (L)「手腳慢了一步」，
+    // 但這是應用層的**確定性**查重、不是 race）。應用層查重必帶衝突列。
+    if (r.kind !== 'duplicate_event') return;
+    expect(r.event?.id).toBe(existing.id);
+    const confirmText = formatDuplicateEventEntry(r.event!).text;
+    expect(confirmText.split('\n')[0]).toBe(DUP_HEADLINE);
+    expect(confirmText).toBe(formatDuplicateEventEntry(existing).text);
+    expect(confirmText).not.toBe(formatRaceLost().text);
     // 該列 conversation_states 被清（nit-2 落敗者清理）、不 INSERT 新 event。
     expect(await t.conversations.get(G, 'U-second')).toBeUndefined();
     const actives = await t.events.listActiveByGroup(G);
@@ -164,6 +187,8 @@ describe('D-027 開團查重 / D-028 同群 open 上限', () => {
     const r3 = await svc.confirm({ groupId: G, executorLineUserId: 'U-3', messageId: nextMid(), hostDisplayName: 'U3' });
     spy.mockRestore();
     expect(r3.kind).toBe('duplicate_event');
+    // DB race-lost 路徑**不帶** event（不易得知衝突列，D-027 §一）⇒ handler 走 (L) 文案、不附錨點。
+    if (r3.kind === 'duplicate_event') expect(r3.event).toBeUndefined();
     expect((await t.events.listActiveByGroup(G)).length).toBe(1);
     expect(await t.conversations.get(G, 'U-3')).toBeUndefined(); // 落敗者流程被清
   });
@@ -214,10 +239,15 @@ describe('D-027 開團查重 / D-028 同群 open 上限', () => {
       venue_fee: null, settled_per_person: null, status: 'open',
       created_at: '2999-01-01T00:00:00Z', updated_at: '2999-01-01T00:00:00Z',
     } as EventRow;
-    const dupText = formatAlreadyActiveEntry(event).text;
+    // 查重那則**就是設計指定的那則**（D-004 §6 errata 首句逐字），不只是「與上限文案不同」。
+    const dupText = formatDuplicateEventEntry(event).text;
+    expect(dupText.split('\n')[0]).toBe(DUP_HEADLINE);
+    expect(dupText).toContain('東方球場'); // 查重訊息帶衝突活動明細（上限訊息不帶）
     expect(dupText).not.toBe(limitText);
-    expect(dupText).toContain('東方球場'); // 查重訊息帶衝突活動明細
-    expect(limitText).not.toContain('無法再開新團'); // 兩句用語不重疊，肉眼可辨
+    // 三則文案兩兩不同：上限 / 查重 (I) / race-lost (L)。
+    const raceText = formatRaceLost().text;
+    expect(new Set([limitText, dupText, raceText]).size).toBe(3);
+    expect(limitText).not.toContain(DUP_HEADLINE);
   });
 
   it('[D-028 AC-27] 上限為動態計算：關閉一場後候選降為 2 → 一行式與逐步問答皆能再開', async () => {

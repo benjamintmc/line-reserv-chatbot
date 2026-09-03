@@ -136,8 +136,34 @@ describe('webhook handler（D-004 §9 開團接線）', () => {
       groupTextEvent('開團 2999/08/15 07:30 東方球場 16人 2200元', { messageId: 'lim-3' }),
     );
     expect(textOf(dup)).not.toBe(LIMIT_TEXT);
-    expect(textOf(dup)).toContain('目前已有進行中的活動');
-    expect(textOf(dup)).toContain('東方球場');
+    expect(textOf(dup).split('\n')[0]).toBe('已有相同時間地點的球敘：'); // 設計指定首句，逐字
+    expect(textOf(dup)).toContain('場地：東方球場');
+    expect(textOf(dup)).not.toContain('取消活動'); // 指引句已整行刪除（開燈後為假）
+  });
+
+  // 雙審 B-1：`確認` 撞查重先前走 (L)「手腳慢了一步！」，但那不是 race 而是應用層確定性查重。
+  // D-027 AC-4 要求「回**同上**訊息」＝與一行式同一則 (I)。
+  it('[D-027 AC-4] 端到端：逐步問答 `確認` 撞查重 → 回 (I) 同一則文案（非 (L) race-lost）', async () => {
+    const handler = makeHandler(t);
+    const host = await t.users.upsert(HOST, '主辦人');
+    await t.events.create({
+      groupId: G, hostUserId: host.id, eventDatetime: '2999-08-14T23:30:00Z', location: '東方球場',
+      capacity: 16, pricePerPerson: 2200, priceMode: 'per_person', status: 'open',
+    });
+    // 逐步問答走到 awaiting_confirm（欄位與既有活動場地+時間相同）。
+    await handleMessages(handler, groupTextEvent('開團', { userId: 'U-b', messageId: 'dup-0' }));
+    const steps: [string, string][] = [
+      ['2999/08/15', 'dup-1'], ['07:30', 'dup-2'], ['東方球場', 'dup-3'], ['16', 'dup-4'], ['2200', 'dup-5'],
+    ];
+    for (const [text, mid] of steps) {
+      await handleMessages(handler, groupTextEvent(text, { userId: 'U-b', messageId: mid }));
+    }
+    const out = await handleMessages(handler, groupTextEvent('確認', { userId: 'U-b', messageId: 'dup-6' }));
+    expect(textOf(out).split('\n')[0]).toBe('已有相同時間地點的球敘：');
+    expect(textOf(out)).toContain('場地：東方球場');
+    expect(textOf(out)).not.toContain('手腳慢了一步'); // (L) 不得替代 (I)
+    expect(await t.conversations.get(G, 'U-b')).toBeUndefined(); // 落敗流程已清
+    expect((await t.events.listActiveByGroup(G)).length).toBe(1); // 未 INSERT 第二場
   });
 
   it('[D-004 AC-15] mid-flow per-user 隔離：host 開團中，成員 +1 照走 D-003（不被當作答案）', async () => {

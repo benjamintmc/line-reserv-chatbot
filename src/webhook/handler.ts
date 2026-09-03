@@ -95,7 +95,7 @@ import {
   formatAborted,
   formatNotAuthorized,
   formatMyId,
-  formatAlreadyActiveEntry,
+  formatDuplicateEventEntry,
   formatGroupCapacityReached,
   formatAlreadyClosed,
   formatNoActiveEvent,
@@ -575,7 +575,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         // (I)。D-029 §5.3 表列 `renderCreateEntry / duplicate_event` → `result.event.id`；
         // T-033a~b 期間該位置是 `already_active`、依相位刻意不附錨點（errata E1），T-033c 改名
         // 落地即**必須**補上，否則使用者引用該則訊息會失效。
-        return anchored(result.event.id, toLineMessage(formatAlreadyActiveEntry(result.event)));
+        return anchored(result.event.id, toLineMessage(formatDuplicateEventEntry(result.event)));
       case 'group_open_limit':
         // (I2)。D-029 §5.3「明確不附」清單明列：純上限拒絕，無單一衝突列可指涉。
         return plain(toLineMessage(formatGroupCapacityReached()));
@@ -622,8 +622,13 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
         // (D)。D-029 §5.3：**新建活動的公告訊息，最重要的錨點**——群組後續的 quote 幾乎都指向它。
         return anchored(result.event.id, toLineMessage(formatOpenAnnouncement(result.event)));
       case 'duplicate_event':
-        // (L)。不帶 event 明細（DB race-lost catch 不易得知衝突列）→ 不附錨點（D-029 §5.3）。
-        return plain(toLineMessage(formatRaceLost()));
+        // 兩種來源、兩則文案（雙審 B-1）：
+        // - 帶 `event`＝`確認` 交易內的**應用層**查重（確定性）⇒ (I) 同一則「已有相同時間地點的
+        //   球敘」+ 明細，並附 `relatedEventId`（D-027 AC-4 要求與一行式回同一訊息）。
+        // - 不帶＝ DB race-lost 窄捕捉 ⇒ (L) 文案原樣、不附錨點（D-029 §5.3「明確不附」）。
+        return result.event === undefined
+          ? plain(toLineMessage(formatRaceLost()))
+          : anchored(result.event.id, toLineMessage(formatDuplicateEventEntry(result.event)));
       case 'group_open_limit':
         return plain(toLineMessage(formatGroupCapacityReached())); // (I2)
       default: {
@@ -639,7 +644,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       case 'duplicate':
         return NO_REPLY;
       case 'duplicate_event':
-        return plain(toLineMessage(formatRaceLost())); // (L)；不帶明細 → 不附錨點（D-029 §5.3）
+        // 同 renderContinue：帶 `event`＝應用層查重 → (I) + 錨點；不帶＝ race-lost → (L)、不附。
+        return result.event === undefined
+          ? plain(toLineMessage(formatRaceLost()))
+          : anchored(result.event.id, toLineMessage(formatDuplicateEventEntry(result.event)));
       case 'group_open_limit':
         return plain(toLineMessage(formatGroupCapacityReached())); // (I2)
       case 'created':

@@ -8,7 +8,7 @@ import {
   formatOpenAnnouncement,
   formatClosed,
   formatCancelled,
-  formatAlreadyActiveEntry,
+  formatDuplicateEventEntry,
   formatOnelineFormatHelp,
 } from './event-formatter';
 
@@ -101,11 +101,16 @@ describe('event-formatter 計費 + 中性化（D-005 §5 / §7）', () => {
     expect(formatCancelled(evt({})).text).toBe('「東方球場」球敘已取消。');
   });
 
+  // T-033c：(I) 已更名 `formatDuplicateEventEntry` 且首句改為設計指定的「已有相同時間地點的
+  // 球敘：」（D-004 §6 errata）。本條驗的是**費用列 mode-aware**，該語意未變，斷言力不減；
+  // 另補首句與「指引句已刪除」的釘死，避免文案再度漂移。
   it('[D-005 AC-14] 重複活動摘要 split 費用列 mode-aware', () => {
     const e = evt({ price_mode: 'split_venue', venue_fee: 3000, price_per_person: 0 });
-    const text = formatAlreadyActiveEntry(e).text;
+    const text = formatDuplicateEventEntry(e).text;
     expect(text).toContain('費用：場地費 3000 元，將依報名人數均攤（暫估，關閉報名後結算）');
     expect(text).toContain('場地：東方球場');
+    expect(text.split('\n')[0]).toBe('已有相同時間地點的球敘：');
+    expect(text).not.toContain('取消活動');
   });
 
   it('[D-005 AC-18] (K′) 一行式格式提示涵蓋兩種計費語法', () => {

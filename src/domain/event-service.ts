@@ -119,10 +119,14 @@ export type ContinueFlowResult =
   | { kind: 'aborted' }
   | { kind: 'created'; event: EventRow }
   /**
-   * D-027：查重落敗（`確認` 交易內權威判定，或 DB race-lost 窄捕捉）。**不帶 event 明細**
-   * （DB catch 路徑不易得知具體衝突列，沿用既有簡化；formatter 文案不變）。
+   * D-027：查重落敗。`event` **選填**且語意明確二分（雙審 B-1 修正）：
+   * - **有值**＝`確認` 交易內的**應用層**查重（確定性判定，手上就有衝突列）⇒ handler 走 (I)
+   *   `formatDuplicateEventEntry(event)` 並附 `relatedEventId`。
+   * - **省略**＝ DB race-lost 的窄捕捉路徑（不易得知具體衝突列，D-027 §一明文）⇒ handler 走 (L)
+   *   `formatRaceLost()`、不附錨點。
+   * **不得**把應用層查重也回成不帶 `event` 的形狀——那會讓確定性的重複被說成「手腳慢了一步」。
    */
-  | { kind: 'duplicate_event' }
+  | { kind: 'duplicate_event'; event?: EventRow }
   /** D-028：同群 active 數已達上限（**應用層 COUNT**，非 DB catch；與查重為兩種獨立拒絕，G13）。 */
   | { kind: 'group_open_limit' }
   | { kind: 'duplicate' };
@@ -131,8 +135,11 @@ export type ContinueFlowResult =
 export type ConfirmResult =
   | { kind: 'noop' }
   | { kind: 'duplicate' }
-  /** D-027：場地+時間與既有 active 相同（交易內權威判定或 DB 安全網窄捕捉）。 */
-  | { kind: 'duplicate_event' }
+  /**
+   * D-027：場地+時間與既有 active 相同。`event` 選填，語意同 {@link ContinueFlowResult}：
+   * 有值＝交易內應用層查重（帶衝突列）；省略＝ DB 安全網窄捕捉（race-lost）。
+   */
+  | { kind: 'duplicate_event'; event?: EventRow }
   /** D-028：同群 active 數已達上限（應用層 COUNT，先於查重判斷，G13）。 */
   | { kind: 'group_open_limit' }
   | { kind: 'created'; event: EventRow };
@@ -529,7 +536,12 @@ export class EventService {
         if (r.kind === 'created') return { kind: 'created', event: r.event };
         // D-028 先、D-027 後：轉傳 confirm 的兩種獨立拒絕，不合併（G13）。
         if (r.kind === 'group_open_limit') return { kind: 'group_open_limit' };
-        if (r.kind === 'duplicate_event') return { kind: 'duplicate_event' };
+        if (r.kind === 'duplicate_event') {
+          // 轉傳衝突列（若有）：應用層查重帶、DB race-lost 不帶——兩種文案由 handler 分流。
+          return r.event === undefined
+            ? { kind: 'duplicate_event' }
+            : { kind: 'duplicate_event', event: r.event };
+        }
         if (r.kind === 'duplicate') return { kind: 'duplicate' };
         return { kind: 'noop' };
       }
@@ -574,8 +586,13 @@ export class EventService {
       return await this.tx<ConfirmResult>(async (repos) => {
         if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
 
-        // 兩路徑（一行式／逐步問答）的最終匯流點＝**唯一權威判定**：於交易內重讀候選集合
-        // （鎖內權威重讀，防入口查驗後、`確認` 前的 race window），比照 D-004 §4/§6 的兩層模式。
+        // 兩路徑（一行式／逐步問答）的最終匯流點＝**唯一權威判定**：於交易內重讀候選集合，
+        // 比照 D-004 §4/§6 的兩層模式（入口查 + 交易內再查）。
+        //
+        // 交易內權威重讀（DEFERRED runner，**不鎖 event**；`tx.ts:44`）：查重的殘餘 race 由
+        // `ux_events_active_group_venue_time` 兜底（G7 下半）；上限無 DB 約束，其 race window 依
+        // D-028 由應用層承擔，短暫超出可接受。**不得**把這次重讀寫成「鎖內」或宣稱任何併發保證
+        // （D-021 errata 已更正過同型錯誤一次）。
         const candidates = await repos.events.listActiveByGroup(input.groupId);
         const now = nowIso();
 
@@ -612,7 +629,8 @@ export class EventService {
         );
         if (dup !== undefined) {
           await repos.conversations.delete(input.groupId, input.executorLineUserId);
-          return { kind: 'duplicate_event' };
+          // 帶上衝突列 ⇒ handler 走 (I) 新文案 +`relatedEventId`（D-027 AC-4：與一行式同一則訊息）。
+          return { kind: 'duplicate_event', event: dup };
         }
 
         // G8：host_user_id = 建立者（任一群成員，D-006 開團全開）的 user.id。

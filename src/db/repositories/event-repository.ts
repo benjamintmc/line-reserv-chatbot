@@ -113,9 +113,13 @@ export class EventRepository implements EventReader {
   /**
    * 查某 group 目前**全部** active 活動（status ∈ {draft,open}；D-008：不含 closed），依 id 升冪。
    *
-   * **`ORDER BY id ASC` 為 D-021 §2 釘死值，不得改為 `DESC`**：D-021 §1 過渡條文的開團側三處
-   * 以 `actives.at(-1)`（＝最新一場）取代舊 `findActiveByGroup` 的 `ORDER BY id DESC LIMIT 1`，
-   * 升冪是該取用的唯一正確性依據；改成降冪會讓它靜默取到最舊一場（`[D-021 AC-2]` 為保護網）。
+   * **`ORDER BY id ASC` 為 D-021 §2 釘死值，不得改為 `DESC`**：升冪是**本介面的排序契約**
+   * ——呼叫端（消歧義候選列表、開團查重與同群 open 上限計數）依賴穩定且可預期的順序，
+   * 由 `[D-021 AC-2]` 於 repository 層鎖定。
+   *
+   * 註（T-033c）：舊敘述把升冪的理由掛在 D-021 §1 過渡條文「開團側三處取末列」上；那段條文與
+   * 對應程式碼均已隨 D-027／D-028 落地整段移除（D-021 errata E2），本契約**不再指涉任何
+   * 「取單一列」的用法**（G1：不得以單值取用變相恢復單場假設）。
    */
   async listActiveByGroup(groupId: string): Promise<EventRow[]> {
     const res = await this.q.query<EventRow>(
