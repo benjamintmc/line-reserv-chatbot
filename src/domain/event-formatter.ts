@@ -226,18 +226,45 @@ export function formatMyId(userId: string): MessageDescriptor {
   );
 }
 
-// (I) 已有進行中活動（重複開團；附現有活動摘要）。
-// D-006 §五-1（D-004 errata B3）：「主辦人」→「開團的人」，與 (H′) 用詞一致。
-export function formatAlreadyActiveEntry(event: EventRow): MessageDescriptor {
+/**
+ * (I) 開團查重落敗：同群已有**場地 + 時間皆相同**的活動（`duplicate_event`；附衝突活動摘要）。
+ *
+ * **D-004 §6 errata（D-020 clause 2）逐字要求**：首句改為 **「已有相同時間地點的球敘：」**
+ * （設計指定字串，逐字不可改；同句見 D-020:173 與 `docs/00-project-brief.md` FR-8）。函式亦自
+ * `formatAlreadyActiveEntry` 更名、**不留 alias**——舊名描述的是 T-033c 前「已有任何 active
+ * 就擋」的語意，留著會被誤用。
+ *
+ * **末行指引句「（如需另開新團，請開團的人先輸入「取消活動」結束目前活動。）」整行刪除**
+ * （使用者裁決 2026-09-02）：多場並行開燈後該句兩處皆假——換個時間或場地本來就能開，
+ * 且撞到重複的人未必是那場的建立者，無權 `取消活動`（D-006 §1.2 授權）。
+ *
+ * (L) `formatRaceLost()` 是**另一則**訊息（DB race-lost、不帶明細），文案依同一條 errata
+ * **沿用不動**；兩者不得互相替代。
+ */
+export function formatDuplicateEventEntry(event: EventRow): MessageDescriptor {
   return text(
     [
-      '目前已有進行中的活動，無法再開新團：',
+      '已有相同時間地點的球敘：',
       `日期：${eventDateTimeDisplay(event)}`,
       `場地：${event.location}`,
       eventFeeLine(event),
-      '（如需另開新團，請開團的人先輸入「取消活動」結束目前活動。）',
     ].join('\n'),
   );
+}
+
+/**
+ * (I2) 同群 open 活動數已達上限（D-028 §3.5；`group_open_limit`）。
+ *
+ * **逐字釘死**（2026-08-31 使用者裁決，一字不可改），一行式入口／逐步問答入口／`確認` 的權威
+ * 拒絕三處共用同一句。**不帶任何活動明細**（純上限拒絕，無單一衝突列可指涉——與 (I)
+ * `formatDuplicateEventEntry` 帶衝突活動摘要不同，兩則文案不得互相替代，G13）。
+ *
+ * 句中的「3」**刻意寫死不內插** `MAX_OPEN_EVENTS_PER_GROUP`：文案是逐字釘死的裁決結果（內插會讓
+ * 常數一改就悄悄改動已釘死的句子），且本檔為零耦合純函式（不 import domain service，避免循環）。
+ * 上限值若日後調整，屬需重新裁決文案的變更，兩處一併改。
+ */
+export function formatGroupCapacityReached(): MessageDescriptor {
+  return text('此群組已有 3 場進行中的球敘，請等其中一場結束後再開新團');
 }
 
 // (J) 生命週期指令但狀態不符：已關閉報名（D-008：closed 釋放後 close 路徑不可達，保留供防禦）。

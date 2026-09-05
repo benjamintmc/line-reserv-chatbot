@@ -157,7 +157,7 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
     expect(await t.processed.markProcessed('x8')).toBe(false);
   });
 
-  it('[D-007 AC-9] 窄捕捉 23505 + constraint===ux_events_active_group_venue_time → already_active；其他錯誤 re-throw', async () => {
+  it('[D-007 AC-9] 窄捕捉 23505 + constraint===ux_events_active_group_venue_time → duplicate_event；其他錯誤 re-throw', async () => {
     const { host, event: seeded } = await seedEvent(t, { capacity: 4, groupId: 'G9' });
     // (a) 真實重複（D-021 §1：0006 後判別鍵為「同群 active 內場地+時間相同」）→ pg 錯誤帶
     //     code 23505 + constraint = 新索引名（窄捕捉的判別鍵，G8）。
@@ -171,7 +171,7 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
     expect(err.code).toBe('23505');
     expect(err.constraint).toBe('ux_events_active_group_venue_time');
 
-    // (b) confirm 交易內 INSERT 撞約束（pre-check 以 prototype spy 失效模擬 race）→ 窄捕捉 already_active。
+    // (b) confirm 交易內 INSERT 撞約束（pre-check 以 prototype spy 失效模擬 race）→ 窄捕捉 duplicate_event。
     const evt = makeEvt(t);
     // draft 的場地+時間須與 G9 既有 active 相同（seedEvent：林口高球場 / 2999-01-01T00:00:00Z
     // ＝台灣 2999-01-01 08:00）才會撞 ux_events_active_group_venue_time（D-021 §1）。
@@ -179,9 +179,9 @@ describe('D-007 Postgres 移植 Acceptance Checks', () => {
     const spy = vi.spyOn(EventRepository.prototype, 'listActiveByGroup').mockResolvedValue([]);
     const r = await evt.confirm({ groupId: 'G9', executorLineUserId: 'U-h2', messageId: 'm9', hostDisplayName: 'H2' });
     spy.mockRestore();
-    expect(r.kind).toBe('already_active');
+    expect(r.kind).toBe('duplicate_event');
 
-    // (c) 非 23505 錯誤 → 一律 re-throw（不吞成 already_active）。
+    // (c) 非 23505 錯誤 → 一律 re-throw（不吞成 duplicate_event）。
     await t.conversations.upsert({ lineUserId: 'U-h3', groupId: 'G-other', state: 'awaiting_confirm', payload: JSON.stringify({ date: '2026-09-03', time: '08:00', location: 'Q', capacity: 4, price: 0, priceMode: 'per_person' }) });
     const boom = Object.assign(new Error('connection exception'), { code: '08006' });
     const spy2 = vi.spyOn(EventRepository.prototype, 'create').mockRejectedValue(boom);

@@ -15,10 +15,21 @@
 //
 // D-008 T-014（單場名額自動釋放）：
 //   - 入口早退放寬為 `active && !isExpired`（過期 open 於入口放行、不 flip，§1b）。
-//   - `確認` 交易內、insert 新 open 前：現存 active 若未過期 → already_active（清 conversation，nit-1）；
-//     若過期 → updateStatus('done') flip 釋放索引槽，再 insert（原子，§1b/G1）。
+//     **D-027／D-028（T-033c）改寫**：「已有 active 就拒絕」的入口早退已移除；`確認` 交易內的
+//     判定改為「先上限（`group_open_limit`）、後查重（`duplicate_event`）」，見下。
+//   - `確認` 交易內、insert 新 open 前**第一步**：過期 active 逐一 updateStatus('done') flip，釋放
+//     候選席次／索引槽，再判上限/查重、insert（原子，§1b/G1）。**入口不 flip、但也不把過期候選
+//     計入上限或查重**（使用者裁決 2026-09-02）——否則 3 場過期 open 會使該群永遠開不了團。
 //   - `確認` 建立前以 taipeiToUtcIso 合併 draft.date/time → event_datetime（UTC，§3）。
 //   - close/cancel 遇過期 open → no_active（不 flip，OP-7/G5）；closed 已釋放 → 不在 active 候選集合內。
+//
+// D-027／D-028 T-033c（開團查重 + 同群 open 上限 3 場；多場並行對使用者開燈的那一步）：
+//   - D-027 §3：開團不再「已有 active 就拒絕」。查重＝**場地 + 時間**皆相同才擋（`duplicate_event`）；
+//     `startCreation` 不做查重（欄位尚空無從比對），`handleOneline` 入口快速失敗，`確認` 交易內權威
+//     重讀為唯一權威判定，INSERT 仍以 `ux_events_active_group_venue_time` 窄捕捉為 DB 安全網（G7/G8）。
+//   - D-028 §3.5：同群同時最多 `MAX_OPEN_EVENTS_PER_GROUP` 場 active（`group_open_limit`）。上限與查重
+//     **各自獨立判斷、獨立 kind、獨立文案**，`handleOneline`／`confirm` 皆**先上限、後查重**（G13）。
+//     上限不設 DB 約束（刻意，D-028），故該分支必由**應用層 COUNT** 產生，不是 DB 例外 catch。
 //
 // D-004 errata（跨群語意，2026-08-18）：continueFlow/confirm/abort 皆先比對
 // `conv.group_id === input.groupId`，不同群一律 noop（別群訊息不被當流程答案、不建立活動、
@@ -69,9 +80,28 @@ import {
  */
 export type AbandonedKind = 'grouping';
 
-/** `開團`（一行式 / 逐步）入口結果。D-006：開團全開，移除 not_authorized。 */
+/**
+ * 同群同時可存在的 active（`{draft,open}`）活動數上限（D-028 §3.5，2026-08-31 使用者裁決）。
+ *
+ * **刻意不設 DB 唯一索引／CHECK**（D-028）：超出僅是「短暫多開幾場」，不損資料完整性；故上限
+ * 一律由應用層 COUNT 把關。**永遠即時計算** `listActiveByGroup(groupId).length >= 此值`——
+ * 不快取候選數、不記錄「這是第幾場」，故任一場被 `關閉報名`／`取消活動`／過期後即刻恢復。
+ * **計數集合為「未過期的 active」**（使用者裁決 2026-09-02）：過期 open 直到下次 `確認` 交易才
+ * 物理 flip 為 done，計入上限會造成入口死鎖（3 場過期 ⇒ 永遠擋在 `確認` 之前，flip 不可達）。
+ */
+export const MAX_OPEN_EVENTS_PER_GROUP = 3;
+
+/**
+ * `開團`（一行式 / 逐步）入口結果。D-006：開團全開，移除 not_authorized。
+ *
+ * D-027／D-028（T-033c）：舊 `already_active`（已有任何 active 就擋）改名並改語意為
+ * `duplicate_event`（**場地+時間**皆相同才擋，帶衝突活動明細）；另新增獨立的
+ * `group_open_limit`（同群 active 數已達 {@link MAX_OPEN_EVENTS_PER_GROUP}，不帶明細）。
+ * 兩者**不得合併**為同一 kind 或同一次布林判斷（G13）。
+ */
 export type CreateEntryResult =
-  | { kind: 'already_active'; event: EventRow }
+  | { kind: 'duplicate_event'; event: EventRow }
+  | { kind: 'group_open_limit' }
   | { kind: 'duplicate' }
   | { kind: 'flow_started'; state: CreateState; abandoned?: AbandonedKind }
   | { kind: 'awaiting_confirm'; draft: CreateEventDraft; abandoned?: AbandonedKind };
@@ -88,14 +118,30 @@ export type ContinueFlowResult =
   | { kind: 'confirm_reprompt' }
   | { kind: 'aborted' }
   | { kind: 'created'; event: EventRow }
-  | { kind: 'already_active' }
+  /**
+   * D-027：查重落敗。`event` **選填**且語意明確二分（雙審 B-1 修正）：
+   * - **有值**＝`確認` 交易內的**應用層**查重（確定性判定，手上就有衝突列）⇒ handler 走 (I)
+   *   `formatDuplicateEventEntry(event)` 並附 `relatedEventId`。
+   * - **省略**＝ DB race-lost 的窄捕捉路徑（不易得知具體衝突列，D-027 §一明文）⇒ handler 走 (L)
+   *   `formatRaceLost()`、不附錨點。
+   * **不得**把應用層查重也回成不帶 `event` 的形狀——那會讓確定性的重複被說成「手腳慢了一步」。
+   */
+  | { kind: 'duplicate_event'; event?: EventRow }
+  /** D-028：同群 active 數已達上限（**應用層 COUNT**，非 DB catch；與查重為兩種獨立拒絕，G13）。 */
+  | { kind: 'group_open_limit' }
   | { kind: 'duplicate' };
 
 /** `確認`（無流程時 noop）結果。 */
 export type ConfirmResult =
   | { kind: 'noop' }
   | { kind: 'duplicate' }
-  | { kind: 'already_active' }
+  /**
+   * D-027：場地+時間與既有 active 相同。`event` 選填，語意同 {@link ContinueFlowResult}：
+   * 有值＝交易內應用層查重（帶衝突列）；省略＝ DB 安全網窄捕捉（race-lost）。
+   */
+  | { kind: 'duplicate_event'; event?: EventRow }
+  /** D-028：同群 active 數已達上限（應用層 COUNT，先於查重判斷，G13）。 */
+  | { kind: 'group_open_limit' }
   | { kind: 'created'; event: EventRow };
 
 /** `取消`（abort）結果。 */
@@ -351,17 +397,24 @@ export class EventService {
 
   // ── `開團`（逐步問答入口，§3；D-006 §1.1 開團全開） ──────────────────
   async startCreation(input: StartCreationInput): Promise<CreateEntryResult> {
-    // 入口先查（§6 fail fast）：已有**未過期** active（open）→ 拒絕、不寫 conversation。
-    // D-008 §1b：過期 open 於入口放行（不 flip、不建立），實際 flip 延至 `確認` 交易。
+    // D-027 §3：**查重的入口早退已移除**——多場並行下 `開團` 永遠可以開始一段新問答；欄位全空時
+    // 無從比對場地+時間，故查重延後到 `確認`（見 confirm）。
     //
-    // D-021 §1 開團側過渡條文（G1 的明示例外，T-033c 落地 §3 時整段移除）：機械替換為
-    // `listActiveByGroup` 取**末列**（`ORDER BY id ASC` ⇒ `.at(-1)` = id 最大者 = 舊
-    // `findActiveByGroup` 的 `ORDER BY id DESC LIMIT 1`）。**不得取 `[0]`**（會取到最舊一場，
-    // 是靜默行為變更），亦不得抽成共用函式／方法（抽出去就成了 G1 禁止的 wrapper）。
-    const actives = await this.events.listActiveByGroup(input.groupId);
-    const active = actives.at(-1);
-    if (active !== undefined && !isExpired(active, nowIso())) {
-      return { kind: 'already_active', event: active };
+    // D-028 §3.5：**上限**檢查不需要任何欄位，故這是本設計唯一一處 `startCreation` 仍做的入口早退
+    // ——否則使用者得答完五題才在 `確認` 被拒。達上限 → 不進入 `awaiting_date`、不寫
+    // `conversation_states`（純查詢、零寫入副作用）。
+    //
+    // **上限只數「未過期」候選**（使用者裁決 2026-09-02）：`listActiveByGroup` 回的是 status ∈
+    // {draft,open}，**不含過期判定**；過期的 open 直到下次 `確認` 交易才會被 flip 為 done。若把
+    // 它們計入上限，3 場過期活動就會讓該群**再也開不了團**（兩個入口都在 `確認` 之前擋下 ⇒
+    // flip 永不可達＝死鎖），且回的還是「已有 3 場**進行中**」這種與事實不符的話。
+    // 入口**不 flip**（D-008 §1b：過期 open 於入口放行、不 flip，實際 flip 延至 `確認` 交易）。
+    const now = nowIso();
+    const live = (await this.events.listActiveByGroup(input.groupId)).filter(
+      (e) => !isExpired(e, now),
+    );
+    if (live.length >= MAX_OPEN_EVENTS_PER_GROUP) {
+      return { kind: 'group_open_limit' };
     }
 
     return this.tx<CreateEntryResult>(async (repos) => {
@@ -386,11 +439,28 @@ export class EventService {
 
   // ── `開團 <欄位…>`（一行式入口，§2 / D-005 §6.1；D-006 §1.1 開團全開） ──
   async handleOneline(input: OnelineInput): Promise<CreateEntryResult> {
-    // D-021 §1 開團側過渡條文（同 startCreation：取末列、不得取 [0]、不得抽共用函式）。
-    const actives = await this.events.listActiveByGroup(input.groupId);
-    const active = actives.at(-1);
-    if (active !== undefined && !isExpired(active, nowIso())) {
-      return { kind: 'already_active', event: active };
+    // 一行式欄位在解析當下即齊備 ⇒ 入口即可做**應用層快速失敗**（G7 的上半；下半是 confirm 的
+    // DB 唯一索引窄捕捉，兩層缺一不可）。
+    //
+    // **固定順序：先上限、後查重**（D-028 §3.5 / G13）——「群組滿了」比「這場活動重複了」更根本；
+    // 固定順序也讓邊界情況不會因判斷次序不同而給出不一致的訊息。兩者皆不寫 `conversation_states`。
+    //
+    // **上限與查重皆只看「未過期」候選**（使用者裁決 2026-09-02，理由同 `startCreation`）：對一場
+    // **已結束**的活動回 `duplicate_event`（「已有相同時間地點的球敘」）與把它計入上限是同一種
+    // 與事實不符的話。入口**不 flip**（D-008 §1b），flip 一律延至 `確認` 交易。
+    const now = nowIso();
+    const live = (await this.events.listActiveByGroup(input.groupId)).filter(
+      (e) => !isExpired(e, now),
+    );
+    if (live.length >= MAX_OPEN_EVENTS_PER_GROUP) {
+      return { kind: 'group_open_limit' };
+    }
+    const proposedDatetime = taipeiToUtcIso(input.date, input.time);
+    const entryDup = live.find(
+      (e) => e.location === input.location && e.event_datetime === proposedDatetime,
+    );
+    if (entryDup !== undefined) {
+      return { kind: 'duplicate_event', event: entryDup };
     }
 
     const draft: CreateEventDraft = {
@@ -464,7 +534,14 @@ export class EventService {
           hostDisplayName: input.hostDisplayName,
         });
         if (r.kind === 'created') return { kind: 'created', event: r.event };
-        if (r.kind === 'already_active') return { kind: 'already_active' };
+        // D-028 先、D-027 後：轉傳 confirm 的兩種獨立拒絕，不合併（G13）。
+        if (r.kind === 'group_open_limit') return { kind: 'group_open_limit' };
+        if (r.kind === 'duplicate_event') {
+          // 轉傳衝突列（若有）：應用層查重帶、DB race-lost 不帶——兩種文案由 handler 分流。
+          return r.event === undefined
+            ? { kind: 'duplicate_event' }
+            : { kind: 'duplicate_event', event: r.event };
+        }
         if (r.kind === 'duplicate') return { kind: 'duplicate' };
         return { kind: 'noop' };
       }
@@ -509,29 +586,59 @@ export class EventService {
       return await this.tx<ConfirmResult>(async (repos) => {
         if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
 
-        // G3 入口再確認（交易內權威重讀）。D-008 §1b：
-        //   未過期 active → already_active（清 conversation，nit-1）；
-        //   過期 open → flip done（釋放索引槽），再於同交易 insert 新 open（原子，G1）。
-        // D-021 §1 開團側過渡條文（同 startCreation：取末列、不得取 [0]、不得抽共用函式）。
-        const actives = await repos.events.listActiveByGroup(input.groupId);
-        const active = actives.at(-1);
-        if (active !== undefined) {
-          if (!isExpired(active, nowIso())) {
-            await repos.conversations.delete(input.groupId, input.executorLineUserId);
-            return { kind: 'already_active' };
-          }
-          await repos.events.updateStatus(active.id, 'done');
+        // 兩路徑（一行式／逐步問答）的最終匯流點＝**唯一權威判定**：於交易內重讀候選集合，
+        // 比照 D-004 §4/§6 的兩層模式（入口查 + 交易內再查）。
+        //
+        // 交易內權威重讀（DEFERRED runner，**不鎖 event**；`tx.ts:44`）：查重的殘餘 race 由
+        // `ux_events_active_group_venue_time` 兜底（G7 下半）；上限無 DB 約束，其 race window 依
+        // D-028 由應用層承擔，短暫超出可接受。**不得**把這次重讀寫成「鎖內」或宣稱任何併發保證
+        // （D-021 errata 已更正過同型錯誤一次）。
+        const candidates = await repos.events.listActiveByGroup(input.groupId);
+        const now = nowIso();
+
+        // (0) D-008 §1b：過期 active → flip done（釋放候選席次與索引槽），與新 open 的 INSERT 同
+        // 交易原子完成（G1）。多場並行後「唯一 active」的假設已不成立 ⇒ 逐一 flip **所有**過期
+        // 候選（使用者裁決 2026-09-02；不得再從候選集合取單一末列充當「那一場」，D-021 G1／
+        // errata E2）。**必須在上限與查重之前**：兩個入口只放行未過期候選，若 flip 排在上限之後，
+        // 過期活動會同時佔著席次又永遠等不到 flip（入口死鎖）。
+        for (const candidate of candidates) {
+          if (isExpired(candidate, now)) await repos.events.updateStatus(candidate.id, 'done');
+        }
+        // flip 後的權威候選集合（過期者已成 done ∉ {draft,open}）。
+        const live = candidates.filter((e) => !isExpired(e, now));
+
+        // **固定順序：先上限（D-028）、後查重（D-027）**（G13，與 handleOneline 同序）。兩者皆
+        // `conversation.delete(...)` 清落敗流程（沿用 nit-2 邏輯）、**不 INSERT**。
+        //
+        // 註（去重政策）：這兩個拒絕分支位於**帶 `markProcessed` 的同一交易內**，且會一併提交上方
+        // flip 的寫入 ⇒ 走 CLAUDE.md §4 的**預設**政策（拒絕回覆一律消費 message.id），**不是**
+        // 例外 (b)；例外 (b) 只涵蓋兩個入口那種零寫入的早退。
+        //
+        // (1) 上限：**應用層 COUNT**（D-028 刻意不設 DB 約束，故此分支不可能來自 DB catch）。
+        if (live.length >= MAX_OPEN_EVENTS_PER_GROUP) {
+          await repos.conversations.delete(input.groupId, input.executorLineUserId);
+          return { kind: 'group_open_limit' };
+        }
+
+        // D-008 §3：台灣本地 draft.date/time → UTC event_datetime（一行式與逐步問答皆匯流至此）。
+        const eventDatetime = taipeiToUtcIso(draft.date, draft.time);
+
+        // (2) 查重：場地 + 時間皆相同才擋（D-027 §3；G7 的應用層快速失敗那一層）。
+        const dup = live.find(
+          (e) => e.location === draft.location && e.event_datetime === eventDatetime,
+        );
+        if (dup !== undefined) {
+          await repos.conversations.delete(input.groupId, input.executorLineUserId);
+          // 帶上衝突列 ⇒ handler 走 (I) 新文案 +`relatedEventId`（D-027 AC-4：與一行式同一則訊息）。
+          return { kind: 'duplicate_event', event: dup };
         }
 
         // G8：host_user_id = 建立者（任一群成員，D-006 開團全開）的 user.id。
         const host = await repos.users.upsert(input.executorLineUserId, input.hostDisplayName);
 
-        // D-008 §3：台灣本地 draft.date/time → UTC event_datetime（一行式與逐步問答皆匯流至此）。
-        const eventDatetime = taipeiToUtcIso(draft.date, draft.time);
-
         // 真正安全網：INSERT 撞 ux_events_active_group_venue_time（並行競態）。PG 下唯一違反會 abort 整個交易，
         // 故此處**不** catch-and-continue；讓錯誤逸出 → 交易 runner ROLLBACK + rethrow → 由下方 catch
-        // 於**另一交易**清落敗者流程（nit-2）並回 already_active。
+        // 於**另一交易**清落敗者流程（nit-2）並回 duplicate_event。
         const event = await repos.events.create({
           groupId: input.groupId,
           hostUserId: host.id,
@@ -559,14 +666,15 @@ export class EventService {
         return { kind: 'created', event };
       });
     } catch (err) {
-      // G3 窄捕捉：僅命中 ux_events_active_group_venue_time 的 UNIQUE → already_active；其餘一律 re-throw。
+      // G7 下半 + G8 窄捕捉（**DB 唯一索引安全網，不得因應用層已擋而移除、亦不得放寬**）：
+      // 僅命中 ux_events_active_group_venue_time 的 UNIQUE → duplicate_event；其餘一律 re-throw。
       if (!isActiveGroupUniqueViolation(err)) throw err;
       // 落敗者：上方交易已整批 ROLLBACK（含 markProcessed）。另起交易清落敗者流程，不卡 awaiting_confirm（nit-2）。
       await this.tx(async (repos) => {
         await repos.conversations.delete(input.groupId, input.executorLineUserId);
         return undefined;
       });
-      return { kind: 'already_active' };
+      return { kind: 'duplicate_event' };
     }
   }
 

@@ -110,3 +110,32 @@
   牽動 D-011 的授權與 session 語意（closed 活動還能不能開新 session、`下一輪` 要不要跟著放寬）。
   **動工前**：先由使用者裁決要不要支援，再由 architect 決定是改 D-011 還是新開設計。
   （出處：architect-reviewer 複審意見 (b)，`docs/reviews/RP-T-033b.md` §7。）
+
+- **（T-033c 驗收衍生，2026-09-02，文件維護）`CLAUDE.md` §4 去重政策例外 (b) 的「現況為…」枚舉不完整**：
+  該句只列了 `closeEvent`／`cancelEvent` 的交易外 `not_authorized` 與 D-026 §5.2 的四種消歧義拒絕，
+  但**開團入口的早退拒絕早在 T-033c 之前就同屬例外 (b)**——T-033a~b 的 `already_active`
+  （`startCreation`／`handleOneline` 於 `this.tx` 之前 early-return、零寫入）從未被列入。
+  T-033c 把它改名為 `duplicate_event` 並新增 `group_open_limit`，兩者已依 §4 要求分別明列於
+  `design/D-027` errata E2 與 `design/D-028` errata E2，**規則本身沒有被繞過**；缺的只是憲法那句
+  快照的準確性。**為什麼現在不做**：`CLAUDE.md` 是專案憲法，且 §0–§7 編號已凍結、多份 APPROVED
+  文件硬引用 §4，改動應由使用者裁決而非 orchestrator 逕行。
+  **動工前**：確認是「補列這三個分支」還是「改寫成指向各設計文件的通則、不再逐一枚舉」（後者較不易再次過時）。
+
+- **（T-033c R2 雙審 architect-reviewer N-2，2026-09-02，開燈後首次可達）3 場全過期時，消歧義提示會說「多場球敘進行中」**：
+  群組若有 N≥2 場**已過期但仍 `open`** 的活動、且無人開新團，`名單`／`+1`／`-1` 會走到
+  `resolveTargetEvent` 的 `ambiguous` 分支（`event-disambiguation.ts:143-148`；候選集合
+  `handler.ts` 的 `listActiveByGroup` **未濾過期**），回「群組內有多場球敘**進行中**」
+  （`disambiguation-formatter.ts:43`）。與 T-033c §3(C) 死鎖被否決的理由同款＝**不實陳述**；
+  差別是這裡沒有開團那條自癒路徑（flip 點只在 `confirm`），只能靠 quote／`@selector` 繞過。
+  開團入口到 T-033c 才放行第二場 ⇒ **本批上線後才首次可達**。
+  **已查證的兩條路都不通，不要重跑**（orchestrator 2026-09-02）：
+  ①**直接在消歧義候選集合濾掉過期 ⇒ 造成回歸**。`registration-service.ts:236-247` 明文區分
+  「`eventId` 有值 ∧ 已過期 → `event_ended`」與「`eventId === undefined` → `no_open_event`」；
+  濾掉之後，**單場過期時 `+1` 會從「活動已結束」變成「目前沒有進行中的活動」**——那是 T-033a~b
+  已上線的行為，不能順手改掉。
+  ②**使用者提案「收到 `開團` 時一併 flip 過期活動」只能部分解**：它縮短復原時間（中途放棄的
+  開團流程也能自癒），但沒人開團的群組照樣一直說謊；且入口一旦有寫入就**打破 D-027／D-028
+  errata E2 剛裁定的例外 (b) 分類**（入口拒絕須零寫入）並牴觸 D-008 §1b。
+  **真正的根因是那句釘死文案「多場球敘**進行中**」本身**（它已因另一個理由列在上方的
+  D-024／D-026 文案 backlog 項）。**動工前**：與該項合併處理，由使用者裁決新文案，再出
+  D-024／D-026 errata。

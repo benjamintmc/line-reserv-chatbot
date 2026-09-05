@@ -1,9 +1,38 @@
 # D-027: 開團查重（取代舊的「已有 active 就拒絕」）
 
 - 狀態：**APPROVED（繼承 D-020，2026-09-01）**——設計內容自 D-020 §3 **逐字**切出，未改動任何已核可決定。
-- AC 覆蓋：**待動工豁免**（**T-033c** 尚未動工；**動工時必須移除本行**，否則本檔 3 條 AC 不受檢＝假綠）。
 - 風險等級：**R2（高）**——本檔移除開團入口的 `already_active` 拒絕，是多場並行**對使用者開燈**的那一步；動 `src/domain/event-service.ts`（CLAUDE.md §4.5 高風險模組）。
 - 來源：D-020 §3；內文所有 `§x` 皆指 **D-020 的舊章節編號**（轉址表見 umbrella `D-020`）。同屬 T-033c 的並行文件：D-028（同批落地，不得只上其一）。
+
+## errata E1（2026-09-02，T-033c 驗收發現；隨 D-028 errata E1 同批生效）
+
+> **查重的候選範圍同樣排除「已過期但仍為 `open`」的活動。** §3 的
+> `candidates = listActiveByGroup(groupId)` 於 `handleOneline` 入口與 `confirm` 交易內，
+> 一律先濾掉 `isExpired` 者再比對場地+時間——理由與 D-028 errata E1 同源：對一場**已結束**的活動
+> 回「已有相同時間地點的球敘」是同一種不實陳述。
+>
+> `confirm` 內的過期候選會在判斷前先 flip 為 `done`（見 D-028 errata E1 的順序：
+> **flip 過期 → 判上限 → 判查重**），故該路徑濾除與 flip 的結果一致。
+>
+> **G7 的兩層防護不受影響**：`ux_events_active_group_venue_time` 的 predicate 為
+> `status IN ('draft','open')`，過期候選 flip 為 `done` 後即退出索引範圍，DB 安全網那一層
+> （G7 下半 / G8 窄捕捉）**維持原樣、不得移除或放寬**。
+>
+> **本節由 orchestrator 落筆，尚未經原設計 agent 確認。**
+
+## errata E2（2026-09-02，去重政策明列；依 CLAUDE.md §4「新增此類分支須在該設計文件明列」）
+
+> **`handleOneline` 入口的 `duplicate_event` 歸 CLAUDE.md §4 去重政策的例外 (b)；`確認` 交易內與
+> DB 窄捕捉路徑的 `duplicate_event` 走預設政策（消費 `message.id`）。** 由 orchestrator 裁定，
+> 判準與 D-028 errata E2 同源，該表為權威，此處不重複。
+>
+> **本分支不是新增的例外，是既有成員的改名**：T-033c 之前，`startCreation`／`handleOneline` 入口的
+> `already_active` 早退同樣位於 `this.tx` 之前、零寫入 ⇒ 早已屬例外 (b)。**惟 CLAUDE.md §4 的
+> 「現況為…」枚舉從未列入它**——該枚舉在 T-033c 之前即已不完整，非本任務造成，已登記 Backlog。
+>
+> AC-3 明文要求本分支「**不寫 `conversation_states`**（**無 DB 副作用**）」，與上述分類一致。
+>
+> **本節由 orchestrator 落筆。**
 
 ## 一、設計內容
 

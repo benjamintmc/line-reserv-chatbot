@@ -245,22 +245,37 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     for (const m of ['b3', 'b4']) expect(await t.processed.has(m)).toBe(false); // 未 mark
   });
 
-  it('[D-004 AC-11 / D-008 AC-1/AC-3] 未過期 open 再開團 → already_active；closed 釋放後可再開', async () => {
+  // D-027（T-033c）後語意調整：拒絕依據由「已有任何 active」收斂為**場地+時間皆相同**。
+  // 故本測試改驗「同場地同時間 → duplicate_event（一行式入口）」＋「不同場地/時間 → 放行」，
+  // 斷言力較舊版**更強**（舊版只證明會擋，未證明擋的是正確的那一種）。
+  it('[D-004 AC-11 / D-008 AC-1/AC-3] 同場地+時間再開團 → duplicate_event；不同場地放行；closed 釋放後可再開', async () => {
     const svc = makeSvc(t);
     await walkToConfirm(svc);
     await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'c', hostDisplayName: '主辦人' });
 
+    // D-027 §3：`startCreation` 不再做查重早退（欄位全空無從比對）→ 正常開始問答。
     const start = await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'r1' });
-    expect(start.kind).toBe('already_active');
-    const oneline = await svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r2', date: '2026-09-01', time: '08:00', location: 'Y', capacity: 8, price: 0, priceMode: 'per_person' });
-    expect(oneline.kind).toBe('already_active');
+    expect(start.kind).toBe('flow_started');
+    await svc.abort({ groupId: G, executorLineUserId: HOST, messageId: 'r1b' });
+
+    // 一行式、場地+時間與既有 active 完全相同 → duplicate_event（帶衝突活動明細）、不寫 conversation。
+    const dup = await svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r2', date: '2999-08-15', time: '07:30', location: '東方球場', capacity: 8, price: 0, priceMode: 'per_person' });
+    expect(dup.kind).toBe('duplicate_event');
+    if (dup.kind === 'duplicate_event') expect(dup.event.location).toBe('東方球場');
     expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 不寫 conversation
-    expect(await t.processed.has('r1')).toBe(false);
     expect(await t.processed.has('r2')).toBe(false);
 
-    // D-008 AC-1：closed 已釋放擋團 → 可再開新團（flow_started，非 already_active）。
+    // 場地不同（時間相同）→ 放行；時間不同（場地相同）亦放行 —— 證明擋的是「場地+時間」而非「已有 active」。
+    const otherVenue = await svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r2b', date: '2999-08-15', time: '07:30', location: '林口高球場', capacity: 8, price: 0, priceMode: 'per_person' });
+    expect(otherVenue.kind).toBe('awaiting_confirm');
+    const otherTime = await svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r2c', date: '2999-08-15', time: '09:30', location: '東方球場', capacity: 8, price: 0, priceMode: 'per_person' });
+    expect(otherTime.kind).toBe('awaiting_confirm');
+    await svc.abort({ groupId: G, executorLineUserId: HOST, messageId: 'r2d' });
+
+    // D-008 AC-1：closed 已釋放擋團 → 可再開新團（同場地+時間亦可，closed ∉ {draft,open}）。
     await svc.closeEvent({ groupId: G, eventId: await activeEventId(t, G), executorLineUserId: HOST, messageId: 'cl' });
-    expect((await svc.startCreation({ groupId: G, executorLineUserId: HOST, messageId: 'r3' })).kind).toBe('flow_started');
+    const reopen = await svc.handleOneline({ groupId: G, executorLineUserId: HOST, messageId: 'r3', date: '2999-08-15', time: '07:30', location: '東方球場', capacity: 8, price: 0, priceMode: 'per_person' });
+    expect(reopen.kind).toBe('awaiting_confirm');
   });
 
   // D-004 errata (N2) → **D-013 §3 收斂**：`abandoned: 'create'` 已移除（構造性不可達——查詢鍵
@@ -288,7 +303,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(c.kind === 'flow_started' ? c.abandoned : undefined).toBeUndefined();
   });
 
-  it('[D-004 AC-12] confirm 撞 ux_events_active_group_venue_time（UNIQUE）→ 窄捕捉 already_active + 清 conversation', async () => {
+  it('[D-004 AC-12] confirm 撞 ux_events_active_group_venue_time（UNIQUE）→ 窄捕捉 duplicate_event + 清 conversation', async () => {
     const svc = makeSvc(t);
     // 直接布置 awaiting_confirm 流程（避免 startCreation 觸 listActiveByGroup）。
     await t.conversations.upsert({
@@ -306,7 +321,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     const spy = vi.spyOn(EventRepository.prototype, 'listActiveByGroup').mockResolvedValue([]);
 
     const r = await svc.confirm({ groupId: G, executorLineUserId: HOST, messageId: 'm', hostDisplayName: '主辦人' });
-    expect(r.kind).toBe('already_active');
+    expect(r.kind).toBe('duplicate_event');
     spy.mockRestore();
     expect(await t.conversations.get(G, HOST)).toBeUndefined(); // 清落敗者流程（nit-2）
     // 仍只有 1 場 open（未建立第二場）。
@@ -314,7 +329,7 @@ describe('EventService（D-004 / D-005 / D-008）', () => {
     expect(Number(openCount.rows[0]!.n)).toBe(1);
   });
 
-  it('[D-004 AC-12] confirm 遇非 UNIQUE 錯誤 → 一律 re-throw，不當作 already_active', async () => {
+  it('[D-004 AC-12] confirm 遇非 UNIQUE 錯誤 → 一律 re-throw，不當作 duplicate_event', async () => {
     const svc = makeSvc(t);
     await t.conversations.upsert({
       lineUserId: HOST,

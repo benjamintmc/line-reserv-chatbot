@@ -223,6 +223,17 @@ describe('D-029 §5.3 送出點枚舉 + §5.5 GroupingState.eventId', () => {
         text: '下一輪',
       },
       {
+        // T-033c（D-029 errata E1）：此列在 T-033a~b 期間尚不存在（當時是刻意不附錨點的
+        // `already_active`）；D-027 落地改名為 `duplicate_event` 後**必須**附上 `result.event.id`
+        // ——否則使用者引用該則「已有相同時間地點」的訊息會找不到對應活動。
+        label: 'renderCreateEntry/duplicate_event',
+        stub: () =>
+          void vi
+            .spyOn(b.eventService, 'handleOneline')
+            .mockResolvedValue({ kind: 'duplicate_event', event: ev }),
+        text: '開團 2999/08/15 07:30 東方球場 16人 2200元',
+      },
+      {
         label: 'renderConfirm/created',
         stub: () =>
           void vi
@@ -328,6 +339,14 @@ describe('D-029 §5.3 送出點枚舉 + §5.5 GroupingState.eventId', () => {
     // `unknown`（雜訊）：本就不回覆 ⇒ 沒有 sentMessages 可登記。
     const noise = await emit(b.handler, groupTextEvent('今天天氣真好', { messageId: 'noise' }));
     expect(noise.recorded).toEqual([]);
+
+    // `group_open_limit`（D-028；§5.3「明確不附」清單明列——純上限拒絕無單一衝突列可指涉）。
+    // 以 spy 直接餵 service 結果：真實構造需該群剛好 3 場 open，會干擾本測試其餘案例的候選集合。
+    vi.spyOn(b.eventService, 'startCreation').mockResolvedValue({ kind: 'group_open_limit' });
+    const limitEntry = await emit(b.handler, groupTextEvent('開團', { messageId: 'noattach-limit' }));
+    expect(limitEntry.relatedEventId, 'group_open_limit').toBeUndefined();
+    expect(limitEntry.recorded, 'group_open_limit').toEqual([]);
+    vi.restoreAllMocks();
   });
 
   it('[D-029 AC-22] `分組`／`下一輪` 的訊息映射到 session 綁定的那場，非其他候選', async () => {

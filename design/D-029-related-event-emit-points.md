@@ -73,3 +73,24 @@ quote，不代表它參與消歧義判斷。
 payload 沒有該欄位的 grouping session。實作因此讓 `NextRoundResult.round.eventId` 為選填，
 `nextRound` 只在確實讀到數字時才回傳。代價僅是那幾則舊 session 的 `下一輪` 訊息不能被 quote；
 **不得**因缺欄位而改判 `no_session`（那會直接打斷使用者進行中的分組）。
+
+### E3：新增送出點 `renderConfirm`／`renderContinue` 的 `duplicate_event`（帶 `event` 時附錨點）
+
+> 落筆者：orchestrator（T-033c R2 雙審後，2026-09-02）。**依 G4 補列，本節與 §5.3 表同等效力。**
+
+T-033c 落地時發現 `[D-027 AC-4]` 無法被滿足：逐步問答 `確認` 撞**應用層確定性查重**時，
+`ConfirmResult`／`ContinueFlowResult` 的 `duplicate_event` 不帶 `event`，handler 只能渲染 (L)
+`formatRaceLost()`「手腳慢了一步！剛剛已有另一場活動成立」——但那不是 race。
+AC-4 要求「回同上訊息」＝「已有相同時間地點的球敘」。
+
+**處置**：兩個 result 的 `duplicate_event` 改帶**選填** `event`——`confirm` 交易內的應用層查重
+手上本就有衝突列（`live.find(...)`）故帶值；**DB race-lost 的 catch 路徑維持不帶**（不易得知
+衝突列，D-027 §一明文）。§5.3 表因此新增一列、並自「明確不附」清單作對應區分：
+
+| 分支（函式／case） | eventId 來源 |
+|---|---|
+| `renderConfirm` / `duplicate_event`（**`event` 有值**） | `result.event.id`（既存衝突活動） |
+| `renderContinue` / `duplicate_event`（**`event` 有值**） | 同上 |
+
+**仍明確不附**：上述兩分支在 `event === undefined`（DB race-lost）時——無單一衝突列可指涉，
+維持 `plain` + (L) 文案不動。`group_open_limit` 三處亦維持不附（E1 前段不變）。
