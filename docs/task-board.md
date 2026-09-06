@@ -8,10 +8,11 @@
 
 > Service `https://golf-reserv-chatbot-1006751446489.asia-east1.run.app`（GCP `group-chatbot-504305`／`asia-east1`／min-instances=0／Neon 免費層＝$0）。
 > 座標與部署程序見 `docs/deployment-runbook.md`；憑證走 Secret Manager。migration 已套用 **0001–0006**。
-> 現況全綠（2026-09-02 於本機實跑）：lint 0／typecheck 0／build／**537 tests**／harness **AC 273/273**。
-> **T-033b 已於 2026-09-02 上線**（PR #25 以 merge commit `d89a572` 併入 main；image `:v10`／revision `00014-npk`／100% 流量）。**本次無 migration**（`message_event_map` 隨 `0006` 已在 `:v9` 建好）⇒ 回滾至 `:v9` 無 schema 顧慮。冒煙四項全過（`/health` 200、未簽章 401、錯誤簽章 401、**正確簽章 200**），log 無 ERROR。**兩項未驗**：pooled 連線真實查詢本次未跑（工具權限攔截；本批未動連線字串，`:v9` 同項驗證仍有效）、`message_event_map` 的 INSERT 路徑在 PROD 尚未跑過（併入 T-033c 後的真機驗證）。
-> 最近一輪（**T-033b**）：quote-reply 映射 + `relatedEventId` 送出點枚舉上線（PR #25）。前一輪 T-033a 為 PR #24（＋文件 PR #23）。
-> **⚠️ 真機驗證：使用者裁決（2026-09-02）延到 T-033c 之後一次做完**——見下方。
+> 現況全綠：lint 0／typecheck 0／build／**549 tests（69 檔，零 skip）**／harness **AC 279/279**。
+> **T-033c 已於 2026-09-06 上線**（PR #26 → merge commit `ac25ce4`；文件收尾 PR #27 → `6803ded`；image **`:v11`**／revision **`00015-6b5`**／100% 流量／digest `sha256:78dfd67e`）。**多場並行自此對使用者開燈。** **本次無 migration**（最新仍 0006）⇒ 回滾至 `:v10` 無 schema 顧慮。冒煙**走完 §4.4 全部項目**：`/health` 200、未簽章 401、錯誤簽章 401、**正確簽章 200**、log 無 ERROR、**✅ pooled 連線真實查詢成功**（`schema_migrations` 0001–0006 六列、`events` 15 列）——**該項自 `:v10` 起連兩次未驗，本次缺口關閉**。**一項仍未驗**：`message_event_map` 的 INSERT 路徑在 PROD 仍未跑過，屬真機驗證範圍（已排在 `docs/manual-test-T-033.md` §2 C2，該腳本最高風險項）。
+> **真機驗證進行中**：使用者於 2026-09-06 開始照 `docs/manual-test-T-033.md`（**2 帳號 2 群組版**）實測。**T-033c 在真機測試全過之前不得標 DONE**；標 DONE 時記得先把最舊一筆 DONE 歸檔至 `docs/task-board-archive.md`（上限 10 筆）。
+> 最近一輪（**T-033c**）：開團查重 + 同群 open 上限 3 場上線（PR #26／#27）。前兩輪 T-033b 為 PR #25、T-033a 為 PR #24（＋文件 PR #23）。
+> **⚠️ 真機驗證腳本：`docs/manual-test-T-033.md`**（2 帳號 2 群組；甲必不在 `ADMIN_USER_IDS`、乙必須在；§6 G0 清空那步不能跳，否則 H5 會假通過）。
 > 部署細節、pre/post-flight 證據與退版條件見 `docs/deployment-runbook.md` §2.2。
 
 ### 真機驗證：延後至功能完整（使用者裁決 2026-09-02）
