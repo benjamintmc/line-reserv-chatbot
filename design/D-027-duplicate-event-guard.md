@@ -34,6 +34,39 @@
 >
 > **本節由 orchestrator 落筆。**
 
+## errata E3（2026-09-06，R2 複審 design-reviewer N-1；**假鎖宣稱更正，本節取代 §3 對應敘述**）
+
+> **§3 `confirm` 段落的「（鎖內權威重讀候選集合…）」中的「鎖內」二字為誤述，本節更正為
+> 「交易內權威重讀」。** `confirm` 走的是 `EventServiceDeps.runInTransaction`＝
+> `tx.ts:87-90` 的 **DEFERRED runner**，其 `begin` 為 `async () => {}`，**不鎖任何列**
+> （`tx.ts:44` docstring 明寫「不鎖 event」）。交易本身在 PG 預設 READ COMMITTED 下
+> **不會**阻止另一個 session 做同樣的讀 ⇒ 兩個並行 `確認` 可能都讀到「無重複」。
+>
+> **真正提供保證的是 DB 唯一索引** `ux_events_active_group_venue_time`
+> （`src/db/migrations/0006_multi_event_per_group.sql:21`）：INSERT 撞 23505 → 窄捕捉 →
+> 回 (L) race-lost。交易內重讀的作用是**縮小 race window 並給出帶明細的 (I) 文案**，
+> **不是**消除競態。兩層缺一不可（G7）。
+>
+> **對照**：全專案唯一真的有列鎖的路徑是 `editEvent`，走 `createImmediateRunner`
+> （`tx.ts:93-101`，begin 下 `SELECT id FROM events WHERE id=$1 FOR UPDATE`）。
+> `confirm`／`closeEvent`／`cancelEvent` 三者**皆無列鎖**。
+>
+> **為何列為 errata 而非筆誤**：本專案已因「對不存在的鎖做併發保證宣稱」犯錯 **3 次**
+> （T-033a 誤述 `FOR UPDATE`；T-033c `confirm` 註解，`82bd449` 已修；本節）。
+> 程式碼 `event-service.ts:589-595` 現已明寫「**不得**把這次重讀寫成『鎖內』或宣稱任何併發保證」
+> ——**設計文件不同步更正，下一位實作者會照著設計把正確的註解改回去**。
+> 已回寫 `harness/LESSONS.md`，並於 `.claude/agents/architect-reviewer.md` 增列固定檢查項
+> （使用者裁決 2026-09-06）。
+>
+> **附帶更正（同 N-2）**：本檔如有以 `formatAlreadyActiveEntry` 指涉 (I) 文案者，該函式已於
+> `82bd449` 更名為 **`formatDuplicateEventEntry`**（不留 alias）。
+>
+> **附帶更正（errata E2 的狀態）**：E2 末段稱 CLAUDE.md §4 的「現況為…」枚舉不完整、
+> 「已登記 Backlog」——該枚舉**已於 2026-09-06 由使用者裁決補列**（開團入口早退與批次 G6 皆已入列，
+> 並修正了「不呼叫任何 service」這句與現況不符的判準）。E2 其餘內容不變。
+>
+> **本節由 orchestrator 落筆。**
+
 ## 一、設計內容
 
 ### 3. 開團查重（取代舊的「已有 active 就拒絕」）
