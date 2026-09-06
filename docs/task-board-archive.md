@@ -136,3 +136,8 @@
 | ~~T-027 真機驗證~~ | **2026-08-23 使用者實測 `名單` 正常回覆 ⇒ 結案**。首次部署（`00005-89q`）因憑證取值錯誤全故障 33 分鐘，修復後最終 revision **`00007-pdv`** 端到端通過 | – |
 | ~~（先前）~~ | **2026-08-23 全數清空**：①**跨群修復（T-021/T-022）使用者以兩個群 PROD 實測通過**——8/19 起掛著的最後一項未驗項目結案（A 群開團問答途中於 B 群發言不被攔截、不會把 A 群 draft 建成 B 群活動、`下一輪` 不外洩他群名單）。②**T-026 編輯活動資訊 PROD 正向流程實測通過**（使用者回報）。③既有 2026-08-22 已回報：分組／多行報名／加開名額三項正向流程通過。**仍未驗（不阻擋、非缺陷）**：21 人以上的 @ mention 退化路徑——需大場次才觸發，記於 `docs/backlog.md`（T-026 nit ⑦），非阻塞項故不留於本表 | – |
 
+## 2026-09-06 自 board 移出（T-033c 標 DONE，board 受 10 筆 DONE 上限）
+
+| ID | 任務 | 設計 | 風險 | 負責 | 狀態 | 交付 | 備註 |
+|---|---|---|---|---|---|---|---|
+| T-027 | **資安加固批次 H1／M2–M5**（TLS verify-full、Secret Manager、告警+帳單天花板、`{}` 跳脫、log 去 PII） | `design/D-016-security-hardening.md`＋`design/D-014`（H1） | R1 | orchestrator | **DONE（2026-08-23，真機實測通過）** | src/db/index.ts, src/webhook/handler.ts, src/config.ts, src/log-redact.ts, +3 測試檔, runbook §4, .env.example | 使用者裁決「資安類 1-5 先全部修好」。**關卡全綠**：lint 0／build 綠／**445 tests**（+7）／harness 223/223 AC。**PROD 最終 revision `00007-pdv`**：三憑證改 Secret Manager 參照、`DATABASE_URL` 收斂 `verify-full`、`--max-instances=3`、401 告警政策已建。**⚠️ 首次部署（00005）三個憑證取值錯誤（gcloud `value()` 對 list 加 `['…']` 包裝）⇒ 全部 LINE 訊息回 401、33 分鐘全故障，使用者實測才發現**；已修（secret 版本 2、壞版本已 disable）並補冒煙：帶正確簽章 `POST` 200、真實查詢連上 Neon。事故登記 LESSONS 2026-08-23。**M4 動工前查證推翻 T-006 nit-3 舊判斷**——未跳脫的單一 `{` 會被 LINE API 拒絕 ⇒ 整則回覆漏送（非僅「冒名」）。M6 使用者裁決不做 |
