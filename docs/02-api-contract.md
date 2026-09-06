@@ -1,13 +1,14 @@
 # 02 — 指令契約（LINE Command Contract）
 
-> 擁有者：api-contract-designer。**版本：v0.4（由既有實作反向產生，尚未凍結）**
+> 擁有者：api-contract-designer。**版本：v0.5（由既有實作反向產生，尚未凍結）**
 >
 > **本專案沒有前後端分離**：對外介面是 **LINE 群組對話**，不是 REST。真正需要凍結的「介面」
 > 是指令語法與回覆範本——使用者記得的是 `+1`，不是 endpoint。REST 面只有 LINE 平台呼叫的
 > 兩條，機器可讀版見 `docs/api/openapi.yaml`。
 >
 > **權威來源**：指令語法 → `design/D-002`；回覆文案 → `src/domain/*-formatter.ts` 與
-> D-003/D-004/D-005/D-008。本文件是**跨文件的統一視圖**，衝突時以權威來源為準。
+> D-003/D-004/D-005/D-008，開團查重與同群上限另見 D-027/D-028。本文件是**跨文件的統一視圖**，
+衝突時以權威來源為準。
 
 ## 通用約定
 
@@ -99,12 +100,17 @@ parser 對 `編輯 <欄位> <新值>` 的「新值」取法**依欄位而異**�
 | 開團問答提問 / 欄位錯誤 / 確認摘要 | `formatFlowPrompt` / `formatFieldError` / `formatConfirmSummary` | `event-formatter.ts` |
 | 開團成功公告 | `formatOpenAnnouncement` | `event-formatter.ts` |
 | 關閉報名 / 取消活動 / 放棄流程 | `formatClosed` / `formatCancelled` / `formatAborted` | `event-formatter.ts` |
-| 未授權 / 已有活動 / 無 active | `formatNotAuthorized` / `formatAlreadyActiveEntry` / `formatNoActiveEvent` | `event-formatter.ts` |
+| 未授權 / 無 active | `formatNotAuthorized` / `formatNoActiveEvent` | `event-formatter.ts` |
+| 開團查重落敗（同群已有**場地＋時間皆相同**的活動；**帶**衝突活動明細） | `formatDuplicateEventEntry`（result kind `duplicate_event`） | `event-formatter.ts`；T-033c／`82bd449` 自 `formatAlreadyActiveEntry` 更名並**刻意不留 alias**——舊名描述的是「已有任何 active 就擋」的舊語意，留著會被誤用 |
+| 開團同群 open 上限（達 3 場） | `formatGroupCapacityReached`（result kind `group_open_limit`） | `event-formatter.ts`；文案逐字釘死、**零活動明細**，與 `formatDuplicateEventEntry` 為兩則獨立訊息，**不得互相替代**（D-028 G13） |
+| 開團 `確認` 撞 DB 唯一索引（race-lost；**不帶**明細） | `formatRaceLost`（`duplicate_event` 但**不帶** `event` 時走此） | `event-formatter.ts` |
 | 一行式格式說明 | `formatOnelineFormatHelp` | `event-formatter.ts` |
 | 編輯成功（改前 → 改後）＋ @ 正取者 / 導引 / 各類拒絕 | 編輯專用 formatter（**不得沿用 `formatFieldError`** 的開團問答字串——那會叫使用者裸打日期，落入 `unknown` 靜默死角） | D-015 §3 逐字釘死；`fee` 欄位切換計費模式時的成功句型與 `bad_fee` 文案改依 D-019 §5 |
 
-> 【技術債】`formatAlreadyClosed`、`formatRaceLost` 於 D-008 把 `closed` 移出 active 集合後
-> 已成不可達的防禦死碼。
+> 【技術債】`formatAlreadyClosed` 於 D-008 把 `closed` 移出 active 集合後已成不可達的防禦死碼。
+> **`formatRaceLost` 不是死碼**（2026-09-06 更正）：`確認` 撞 `ux_events_active_group_venue_time`
+> 的窄捕捉會回**不帶** `event` 的 `duplicate_event`，`handler.ts` 即以有無 `event` 分派到
+> `formatDuplicateEventEntry` / `formatRaceLost`，該分支可達，勿當死碼刪除。
 
 ## 去重與拒絕回應政策（**目前不對稱，待統一**）
 
@@ -115,7 +121,9 @@ parser 對 `編輯 <欄位> <新值>` 的「新值」取法**依欄位而異**�
 | 有副作用的步驟（報名、取消、開團、關閉…） | ✔ | 不重複執行、回「重複」 |
 | `list` 的 `no_open_event` | ✔ | 不重複回 |
 | **`編輯` 路徑的所有會回覆分支（含全部拒絕：`edit_help`、人數導向、未授權、無 active、已截止、已結束、不得改到過去、`bad_fee`、`bad_location`／格式錯）** | ✔ | 不重複回（`markProcessed` 位於該交易內所有拒絕 early-return **之前**；D-015 G5） |
-| `signup` / `cancel` 的 `no_open_event`、非白名單、無 active、重複開團 | ✘ | **會重覆回覆一次** |
+| `signup` / `cancel` 的 `no_open_event`、非白名單、無 active | ✘ | **會重覆回覆一次** |
+| **開團入口的早退拒絕**：`startCreation` 的 `group_open_limit`、`handleOneline` 的 `group_open_limit` / `duplicate_event`（三者皆 return 於交易之前，全程唯讀） | ✘ | **會重覆回覆一次**（CLAUDE.md §4 例外 (b) 第 ③ 類；T-033c 前的前身 `already_active` 自始即屬本類，非新增例外） |
+| `確認` 交易內的 `group_open_limit` / `duplicate_event`（權威判定；`markProcessed` 為該交易首步，且會一併提交 flip 過期活動的寫入） | ✔ | 不重複回（**走預設政策，不是例外 (b)**；D-028 errata E1）。例外：撞 DB 唯一索引的 race-lost 路徑整批 ROLLBACK（含 `markProcessed`），清落敗流程走另一交易 |
 | `unknown`、無流程的 `confirm`/`abort` | ✘（且不回覆） | 無 |
 
 **這是已知缺口，非設計意圖**：同型問題在 D-003 nit-3、D-004 §9、D-006 三處各出現一次
@@ -127,26 +135,36 @@ parser 對 `編輯 <欄位> <新值>` 的「新值」取法**依欄位而異**�
 > `closeEvent`／`cancelEvent`，D-010 G4 的範圍限 `addCapacity`。非授權者在編輯路徑
 > **會** mark `processed_events`，但仍**不得** upsert `users`。
 
-## 尚未生效的預告：D-020（同群多場並行活動，DRAFT）
+## 同群多場並行活動（D-020 家族）
 
-> **本節純供追溯／預告，不代表目前系統行為**。`design/D-020-multi-event-per-group.md` 仍是
-> **DRAFT**（待 design-reviewer + architect-reviewer 雙審 + 使用者核可才會實作）。在其落地前，
-> 系統仍維持本文件其餘章節所述的「同群同時只有一場 active 活動」限制；以下僅預先登記其**若**
-> 落地會牽動的契約面，供 reviewer／未來實作者追溯，**不得誤讀為現行行為**。
+> **狀態更新（2026-09-06，v0.5）**：本節於 v0.3 寫作時標題為「尚未生效的預告」，**該框架已失效**。
+> `design/D-020-multi-event-per-group.md` 已 **APPROVED（2026-09-01）** 並切為 D-021~D-029 九份
+> 子文件；T-033a／T-033b／T-033c 皆已併入 `main`（T-033c ＝ PR #26／merge commit `ac25ce4`），
+> **多場並行已於 T-033c 對使用者開燈**。以下為 `main` 的現行契約，**不再是預告**。
+> 唯一保留的但書：T-033c 尚未部署至 PROD（仍為 `:v10`），PROD 實際行為以部署進度為準。
+> 本文件其餘章節若仍隱含「同群同時只有一場 active 活動」，一律以本節為準。
 
 - **解除單場限制**：同群可同時有多場 `open` 活動；`+N`/`-N`/`名單`/`加開`/`分組`/`下一輪`/
   `關閉報名`/`取消活動`/`編輯` 於候選數 > 1 時需**消歧義**才能決定目標活動。
 - **消歧義機制 A（quote-reply）**：使用者引用 bot 先前的一則訊息並回覆，即以該訊息對應的活動
-  為目標。
+  為目標（`message_event_map`，含跨群校驗；D-025 §4.1）。
 - **消歧義機制 B（`@selector` 前綴）**：訊息以 `@<場地/日期/時間片段>` 開頭可指定目標活動，
-  如 `@旭陽 8/15 +1`；語法細節見 D-020 §4.2。
+  如 `@旭陽 8/15 +1`；語法細節見 D-024 §4.2。
 - **消歧義失敗的四種新拒絕**：候選 >1 且無 quote/selector（`ambiguous`）、quote 與 selector
   指向不同活動（`conflict`）、selector 命中 0 場（`not_found`）、selector 命中 >1 場
-  （`too_many`），各自固定中文提示，見 D-020 §5.2。
-- **開團新增同群上限**：同群同時最多 **3 場** `open` 活動；達上限時 `開團`（一行式與逐步問答
-  皆同）回固定文案「此群組已有 3 場進行中的球敘，請等其中一場結束後再開新團」（不帶任何活動
-  明細），與既有的「場地+時間查重」（`duplicate_event`）為**兩種獨立拒絕**，訊息與判斷邏輯
-  不共用（D-020 §3.5）。此上限為**應用層計數**判斷，非 DB 約束。
+  （`too_many`），各自固定中文提示，見 D-026 §5.2。
+- **開團查重（`duplicate_event`，取代舊的 `already_active`）**：開團**不再**「已有任何 active
+  就擋」；只有同群已存在**場地 ＋ 時間皆相同**的活動才拒絕，回 `formatDuplicateEventEntry`
+  （**帶**衝突活動明細，首句「已有相同時間地點的球敘：」）。一行式入口與 `確認` 各查一次
+  （後者為交易內權威判定），並以 DB 唯一索引 `ux_events_active_group_venue_time` 作安全網；
+  撞索引的 race-lost 回**不帶**明細的 `formatRaceLost`，兩則文案**不得互相替代**。見 D-027 §3。
+- **開團同群上限（`group_open_limit`）**：同群同時最多 **3 場** `open` 活動；達上限時 `開團`
+  （一行式與逐步問答皆同）回逐字釘死文案「此群組已有 3 場進行中的球敘，請等其中一場結束後再開新團」
+  （**不帶任何活動明細**），與上一條的查重為**兩種獨立拒絕**，訊息與判斷邏輯不共用（D-028 §3.5／
+  G13）。此上限為**應用層計數**判斷，非 DB 約束。
+- **上限與查重皆排除「已過期但仍為 `open`」的候選**（D-027／D-028 errata E1；否則 3 場過期活動
+  會把群組永久鎖死）：兩個入口不 flip、只數未過期者；`確認` 交易內順序為
+  **flip 全部過期候選 → 判上限 → 判查重**（「先上限、後查重」不變，只在兩者之前多一步 flip）。
 
 ## REST 面（僅供平台呼叫）
 
@@ -167,3 +185,4 @@ CLAUDE.md §4 記載的統一錯誤格式 `{ code, message, details }` 目前**�
 | v0.2 | 2026-08-23 | D-015／T-026 回填：指令一覽新增 `編輯` 6 列；新增〈`編輯` 的取值規則〉〈`編輯` 的回覆政策〉〈型別〉三節（`edit_event`／`edit_help`、`InvalidCommandKind:'edit_event'`、`InvalidReason:'bad_location'`、選填 `invalid.detail{len}`）；去重政策表新增編輯路徑列與明文例外註；回覆範本索引新增編輯列。REST 面與 `openapi.yaml` 無異動（本功能不新增 HTTP endpoint） | architect-reviewer（T-026 PASS） |
 | v0.3 | 2026-08-31 | 新增〈尚未生效的預告：D-020〉一節，預先登記同群多場並行活動＋訊息消歧義（`@selector`／quote-reply）與同群 open 數上限（3 場，固定文案）若落地將牽動的契約面。**D-020 仍是 DRAFT，本次僅為 errata 預先登記，不代表現行行為已改變**；其餘章節未變動 | architect（D-020 errata） |
 | v0.4 | 2026-09-01 | **本次變更來源 D-019（2026-09-01，APPROVED）**：`編輯 費用` errata——反轉 D-015 決議⑥，改為**任何時候皆可切換計費模式**（含已有人報名後），語法不變、沿用 `validateFee` 依前綴判斷 `per_person`/`split_venue`；同步更新〈`編輯` 的取值規則〉表 `fee` 列說明（`validateFee` 取代 `validateVenueFee`/`validatePrice`，不再是「已被 D-015 G6 禁用」）；補上新 `bad_fee` 固定文案（純格式錯誤，不再依現有計費模式分岔）；回覆範本索引 `編輯` 列註記切換行為改依 D-019 §5。**REST 面與 `openapi.yaml` 無異動**（本功能不新增/變更 HTTP endpoint，`EditEventResult`/`EditOk` 等為 domain 內部型別，未列於本文件〈型別〉節，故無需同步） | 待 architect-reviewer 確認 |
+| v0.5 | 2026-09-06 | **本次變更來源 T-033c R2 雙審抓到的懸空識別字**：①〈回覆範本索引〉的 `formatAlreadyActiveEntry` 已於 `82bd449` 更名為 `formatDuplicateEventEntry`（**刻意不留 alias**）——該列拆為四列：未授權／無 active、`duplicate_event`、新增的 `group_open_limit`（`formatGroupCapacityReached`，逐字釘死、零活動明細）、race-lost（`formatRaceLost`）；原列標題「已有活動」語意已誤（現在擋的是**同場地＋同時間重複**，非「已有任何活動」），一併改寫。②技術債註更正：`formatRaceLost` **不是死碼**（`duplicate_event` 不帶 `event` 時可達），僅 `formatAlreadyClosed` 仍不可達。③去重政策表拆出「開團入口早退拒絕（`group_open_limit`／`duplicate_event`，CLAUDE.md §4 例外 (b) 第 ③ 類）」與「`確認` 交易內權威拒絕（走預設政策）」兩列，取代原本語意含混的「重複開團」。④〈尚未生效的預告：D-020（DRAFT）〉整節改寫為〈同群多場並行活動（D-020 家族）〉——D-020 已 APPROVED 並切為 D-021~D-029，T-033a/b/c 皆已併入 `main`（`ac25ce4`），原「不代表目前系統行為／仍維持同群一場 active」的框架已完全失效；同步補上 `duplicate_event`／`group_open_limit`／過期候選排除規則，並把 D-020 §4.2／§5.2／§3.5 的引用改指切檔後的 D-024／D-026／D-028。**REST 面與 `openapi.yaml` 無異動**（T-033c 不新增/變更 HTTP endpoint，`CreateEntryResult`/`ConfirmResult` 等 result kind 為 domain 內部型別，不在 HTTP 面） | 待 architect-reviewer 確認 |

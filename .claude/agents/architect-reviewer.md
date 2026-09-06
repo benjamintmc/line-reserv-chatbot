@@ -18,6 +18,14 @@ tools: Read
      連同 scope 欄位（`group_id`／tenant 等）一起比對。設計文件若稱「per-user 隔離」，須寫明
      是否同時 per-scope。（實例：`conversation_states` 寫入有存 `group_id`，5 個讀取點全沒用。）
    - **修復既有缺陷後**：複查是否因此**新暴露**原本不可達的路徑。
+   - **併發保證宣稱＝可驗證的事實宣稱，不是修辭**（LESSONS 回寫 2026-09-06，已重複 3 次）：
+     diff **與設計文件**中任何「鎖內／序列化／原子／防 race／防超賣」字樣，都必須指出
+     **實際提供該保證的程式碼位置**——`FOR UPDATE`、`createImmediateRunner`／`runImmediate`、
+     DB 唯一約束／CHECK、或單一 UPDATE 語句。**指不出即為 blocker**，不接受「有開交易所以安全」
+     （`tx.ts:87-90` 的 DEFERRED runner begin 是 `async () => {}`，**不鎖任何列**）。
+     反向亦然：若實際上沒有該保證，必須**明白寫出沒有**（如 D-028 的上限是應用層 COUNT，
+     短暫超出可接受）。三次實例：T-033a 誤述 `FOR UPDATE`；T-033c `confirm` 假鎖註解
+     （`82bd449` 已修）；D-027:59／D-028:87 設計文件同型殘留。
 
 ## 產出標準
 - 審查報告分「必改（blocker）」與「建議（nit）」；每個 blocker 附理由與替代方案。
