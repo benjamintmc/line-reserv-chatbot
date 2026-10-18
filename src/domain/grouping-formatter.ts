@@ -48,9 +48,19 @@ export function formatInsufficientForRounds(): string {
   return '報名人數不足，無法分組';
 }
 
-/** `下一輪` 但無進行中 session（AC-23）。 */
+/**
+ * `下一輪` 但無進行中 session（AC-23）。
+ *
+ * D-030 §1.4：補一句引導——非開團者不引用時只會撈到「自己的」session（必定沒有），
+ * 原文案會讓人以為功能壞掉。**G5**：不得提及任何活動名稱／場地／時間或「某場是否存在」。
+ */
 export function formatNoGroupingSession(): string {
-  return '目前沒有進行中的分組，請先『分組 …』';
+  return '目前沒有進行中的分組，請先『分組 …』\n（已經有人分組了？請引用那則分組訊息再打「下一輪」）';
+}
+
+/** `下一輪` 非開團者且該場無報名（D-030 §1.1）。G5：不提任何活動資訊。 */
+export function formatNextRoundNotAllowed(): string {
+  return '只有開團的人或有報名的人可以喊下一輪。';
 }
 
 /** `下一輪` 但已達輪數上限（AC-22）。 */

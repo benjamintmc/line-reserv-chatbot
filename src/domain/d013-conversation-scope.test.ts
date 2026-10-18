@@ -91,7 +91,8 @@ describe('D-013 (N2) 收斂與查詢鍵掃描', () => {
     const sqlChunks = stripComments(repo)
       .split(/[`']/)
       .filter((x) => x.includes('conversation_states'));
-    expect(sqlChunks).toHaveLength(3); // upsert / get / delete
+    // upsert / get / getGroupingByEvent（D-030，2026-10-18）/ delete
+    expect(sqlChunks).toHaveLength(4);
     for (const stmt of sqlChunks) expect(stmt).toContain('group_id');
 
     // G2：domain/handler 等非測試碼不得自拼本表 SQL 繞過 repository。

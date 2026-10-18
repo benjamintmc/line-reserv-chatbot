@@ -121,6 +121,7 @@ import {
   formatNoGroupingSession,
   formatRoundsExhausted,
   formatGroupNotHost,
+  formatNextRoundNotAllowed,
   formatGroupFormatHelp,
 } from '../domain/grouping-formatter';
 import { redactId } from '../log-redact';
@@ -552,6 +553,10 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
     switch (result.kind) {
       case 'no_session':
         return plain(textMessage(formatNoGroupingSession()));
+      // D-030 §1：quote 指定 session 但發話者非 host 且該場無報名。純拒絕、零寫入
+      // （service 於 markProcessed 之前 return）⇒ CLAUDE.md §4 去重例外 (b)，已於 D-030 明列。
+      case 'not_authorized':
+        return plain(textMessage(formatNextRoundNotAllowed()));
       case 'duplicate':
         return NO_REPLY;
       case 'exhausted':
@@ -967,10 +972,13 @@ export function createWebhookHandler(deps: WebhookHandlerDeps): WebhookHandler {
       }
       case 'group_next': {
         // B1：傳來源 groupId，service 比對 session 的 group_id（跨群 → no_session，不外洩他群名單）。
+        // D-030 §2（G1）：quote 一律先經 `resolveQuotedEvent`（內含 G14 跨群校驗）才下傳；
+        // `下一輪` 仍不進 `NEEDS_EVENT_SET`、不跑 `resolveTargetEvent`（G11 不變）。
         const result = await deps.grouping.nextRound({
           groupId,
           executorLineUserId: userId,
           messageId,
+          quotedEventId: await resolveQuotedEvent(quotedMessageId, groupId),
         });
         return renderNextRound(result);
       }

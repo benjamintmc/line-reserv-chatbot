@@ -41,6 +41,14 @@ handler 的 `renderNextRound`/`renderStartRounds` 用它作為 `relatedEventId`�
 **`下一輪` 本身仍不跑 `splitSelector`/`resolveTargetEvent`**（G11）——這只是讓它的訊息也能被
 quote，不代表它參與消歧義判斷。
 
+> **errata（2026-10-18，依 D-030；不改本文件 APPROVED 狀態）**：`GroupingState.eventId`
+> **不再只是回覆錨點**——D-030 起它同時是 grouping session 的**查詢鍵**
+> （`ConversationReader.getGroupingByEvent(groupId, eventId)`，供 `下一輪` 的 quote 路徑以
+> `(group_id, eventId)` 而非 `(group_id, line_user_id)` 指定 session）。
+> **新增的只是語意**：欄位型別、寫入點（`startRounds`）與「`nextRound` 原樣沿回」皆不變，
+> §5.3 的送出點表亦不變；G11「`下一輪` 不跑 `resolveTargetEvent`」仍然成立
+> （它只消費 dispatch 層已解出的 quote，不做 selector／ambiguous 判斷）。
+
 ## 二、Guardrails（Must NOT）
 
 - **G4（送出點枚舉完整性）**：§5.3 表為完整清單；新增/修改任何會產生「與某活動相關」訊息的
