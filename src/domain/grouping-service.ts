@@ -21,7 +21,12 @@ import type { ConversationReader } from '../db/repositories/conversation-reposit
 import type { UserRepository } from '../db/repositories/user-repository';
 import type { ProcessedEventRepository } from '../db/repositories/processed-event-repository';
 import type { TransactionRunner } from '../db/tx';
-import { ACTIVE_EVENT_STATUSES, type EventRow } from '../db/schema';
+import {
+  ACTIVE_EVENT_STATUSES,
+  GROUPING_STATE,
+  type ConversationStateRow,
+  type EventRow,
+} from '../db/schema';
 import { buildRoster } from './roster';
 import {
   partitionBalanced,
@@ -38,8 +43,11 @@ import {
  * 分組 session 的 conversation_states.state 標記（與開團問答共用同一列，互斥）。
  * **單一來源**：event-service 需辨識「被覆寫的前一段流程是分組」時亦 import 此常數，
  * 勿在其他檔案重寫字面值（design-reviewer nit，2026-08-18）。
+ *
+ * D-030：本體已下放至 `db/schema`（repository 層也要用、而 db 不得 import domain），
+ * 此處保留 re-export 讓既有匯入點（`event-service`、本檔）不必改動。
  */
-export const GROUPING_STATE = 'grouping';
+export { GROUPING_STATE };
 
 export interface GroupingServiceDeps {
   events: EventReader;
@@ -68,14 +76,22 @@ export interface StartRoundsInput extends BalancedInput {
   mode: GroupMode;
 }
 /**
- * `下一輪`。**刻意不帶 `eventId`（G11）**：目標活動完全由既有 grouping session 決定，
- * session 本身即是消歧義結果，不需重跑（decision #9 判斷順序清單未列 `下一輪`）。
+ * `下一輪`。**刻意不進 `NEEDS_EVENT_SET`、不跑消歧義（G11 不變）**：不吃 `@selector`、無
+ * ambiguous 分支。D-030 起**只多消費一樣東西**——dispatch 層已解出的 quote 目標活動。
  */
 export interface NextRoundInput {
   /** 來源群。D-013：session 鍵為 `(group_id, line_user_id)`，本欄即**查詢鍵**（原僅供 B1 守衛比對）。 */
   groupId: string;
   executorLineUserId: string;
   messageId: string;
+  /**
+   * D-030 §2：引用訊息解出的活動 id。
+   *
+   * **G1**：必須是 dispatch 層 `resolveQuotedEventInGroup` 的產物（D-025 G14 跨群防線已在那裡
+   * 走過）；本層**不得**自行讀 `message_event_map`、**不得**接收原始 `quotedMessageId`。
+   * `undefined`（未引用／引用解不出／跨群被擋）⇒ 沿用 §3 既有路徑：撈發話者自己的 session。
+   */
+  quotedEventId?: number;
 }
 
 export type BalancedResult =
@@ -93,6 +109,12 @@ export type StartRoundsResult =
 
 export type NextRoundResult =
   | { kind: 'no_session' }
+  /**
+   * D-030 §1：以 quote 指定 session 時，發話者既非該場 host、該場也查無其未取消報名列。
+   * 零寫入早退（`markProcessed` 之前 return、全程唯讀）⇒ CLAUDE.md §4 去重政策例外 (b)，
+   * 依該條「新增此類分支須在該設計文件明列」已列於 D-030「將改動的既有文件」。
+   */
+  | { kind: 'not_authorized' }
   | { kind: 'duplicate' }
   | { kind: 'exhausted' }
   /**
@@ -146,6 +168,20 @@ export class GroupingService {
   private async isHost(event: EventRow, executorLineUserId: string): Promise<boolean> {
     const executor = await this.users.getByLineUserId(executorLineUserId);
     return executor !== undefined && executor.id === event.host_user_id;
+  }
+
+  /**
+   * D-030 §1 授權（**僅 `下一輪` 的 quote 路徑**）：該場 host 本人 **∪** 該場有未取消報名列的人
+   * （含 waitlist、含其代報名列）。唯讀、不寫任何列。
+   *
+   * **G3**：`groupBalanced`／`startRounds` 仍走 {@link isHost}，本方法不得被它們引用；
+   * super-admin 亦**不**在此集合內（service 自始不知 admin 概念，沿用 errata 2026-08-17）。
+   */
+  private async isHostOrRegistered(event: EventRow, executorLineUserId: string): Promise<boolean> {
+    const executor = await this.users.getByLineUserId(executorLineUserId);
+    if (executor === undefined) return false;
+    if (executor.id === event.host_user_id) return true;
+    return (await this.registrations.findActiveByOwner(event.id, executor.id)).length > 0;
   }
 
   /** 取當前 active event 的正取 labels（confirmed、含 proxy、排除 waitlist/cancelled，G3）。 */
@@ -214,9 +250,29 @@ export class GroupingService {
    *
    * **D-013**：session 鍵已含 group_id ⇒ 別群查詢**結構上**撈不到他群 session；
    * 下方 `conv.group_id !== input.groupId` 因而恆為 false，仍依 G3 保留為縱深防禦與回歸錨點。
+   *
+   * **D-030（2026-10-18，授權放寬）**：以上「host-only」敘述自本版起**僅適用於無 quote 的路徑**。
+   * 帶 `quotedEventId` 時改以 `(group_id, eventId)` 指定 session，可執行者為
+   * 「該場 host ∪ 該場有未取消報名列的人」（{@link isHostOrRegistered}），非此集合 → `not_authorized`。
+   * B1 的跨群防線不因此鬆動：`quotedEventId` 已由 dispatch 層比對過 `group_id`（G1/G14），
+   * 且 `getGroupingByEvent` 本身帶 `group_id`，跨群仍撈不到他群 session。
    */
   async nextRound(input: NextRoundInput): Promise<NextRoundResult> {
-    const conv = await this.conversations.get(input.groupId, input.executorLineUserId);
+    let conv: ConversationStateRow | undefined;
+    if (input.quotedEventId === undefined) {
+      // §3 無 quote：維持現狀（撈自己的 session），host 既有體驗零回歸。
+      conv = await this.conversations.get(input.groupId, input.executorLineUserId);
+    } else {
+      // §2 有 quote：session 以 `(group_id, eventId)` 指定，與發話者是誰無關。
+      const event = await this.events.getById(input.quotedEventId);
+      if (event === undefined) return { kind: 'no_session' };
+      // 授權**先於** session 查詢：未授權者連「該場有沒有進行中的分組」都不該被告知（G5）。
+      // 這也使 AC-3 的 `not_authorized` 不因 session 存在與否而變。
+      if (!(await this.isHostOrRegistered(event, input.executorLineUserId))) {
+        return { kind: 'not_authorized' }; // 零寫入早退（§4 例外 (b)）：尚未 markProcessed
+      }
+      conv = await this.conversations.getGroupingByEvent(input.groupId, input.quotedEventId);
+    }
     if (conv === undefined || conv.state !== GROUPING_STATE || conv.payload === null) {
       return { kind: 'no_session' };
     }
@@ -229,8 +285,23 @@ export class GroupingService {
 
     return this.tx<NextRoundResult>(async (repos) => {
       if (!(await repos.processed.markProcessed(input.messageId))) return { kind: 'duplicate' };
+      // **B1（architect-reviewer 2026-10-18，D-030 errata E2）：交易內重讀該列再確認。**
+      // `conversation_states` 的 `(group_id, line_user_id)` 是**開團問答 draft 與分組 session
+      // 共用**的同一列（`event-service.ts` 的 upsert/delete 用同鍵），而本 runner 只是
+      // `BEGIN…COMMIT`、**不鎖列**。D-030 之前 `下一輪` 只寫發話者自己的列，窗口僅 host 自己
+      // 可造成；放寬授權後，任一有報名者都能寫 host 的列——若窗口內 host 開始 `開團`，此處的
+      // upsert 會把 draft 靜默覆寫為 grouping；若 host 剛 `確認`／`放棄`（delete），則會把
+      // 已結束的 session 復活。兩者皆**毀掉他人進行中的流程**，與使用者裁決忽略的
+      // 「連跳一輪」不同級。此處重讀並比對，不一致即早退（不需 `FOR UPDATE`、不宣稱任何鎖）。
+      const fresh = await repos.conversations.get(conv.group_id, conv.line_user_id);
+      if (fresh === undefined || fresh.state !== GROUPING_STATE || fresh.payload !== conv.payload) {
+        return { kind: 'no_session' };
+      }
       await repos.conversations.upsert({
-        lineUserId: input.executorLineUserId,
+        // **G2（session 不得易主）**：寫回撈到那一列的 `line_user_id`（＝開團者），
+        // **不得**用 `input.executorLineUserId`——否則有報名者喊一次 `下一輪`
+        // 就把 session 複製／搬到自己名下，host 的 `下一輪` 從此失效。
+        lineUserId: conv.line_user_id,
         groupId: conv.group_id,
         state: GROUPING_STATE,
         payload: JSON.stringify(advanced.state),

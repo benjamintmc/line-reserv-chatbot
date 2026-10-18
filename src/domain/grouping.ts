@@ -41,9 +41,10 @@ export interface GroupingState {
   /**
    * D-029 §5.5：本 session 綁定的活動 id（消歧義解出，`startRounds` 寫入、`nextRound` 原樣沿用）。
    *
-   * 唯一用途是讓 `分組`／`下一輪` 的回覆能登記進 `message_event_map`（可被 quote）。
-   * **不參與任何分組運算**，也不代表 `下一輪` 會重跑消歧義（G11：`下一輪` 的目標活動
-   * 完全由既有 session 決定）。
+   * 用途有二：①讓 `分組`／`下一輪` 的回覆能登記進 `message_event_map`（可被 quote）；
+   * ②**D-030（D-029 §5.5 errata 2026-10-18）**：作為 session 的查詢鍵——`下一輪` 帶 quote 時
+   * 以 `(group_id, eventId)` 撈 session（`ConversationReader.getGroupingByEvent`）。
+   * **仍不參與任何分組運算**，也不代表 `下一輪` 會重跑消歧義（G11：目標活動不由 selector 決定）。
    */
   eventId: number;
   mode: GroupMode;

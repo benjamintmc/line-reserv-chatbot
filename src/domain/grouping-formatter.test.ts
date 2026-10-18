@@ -6,6 +6,7 @@ import {
   formatNoGroupingSession,
   formatRoundsExhausted,
   formatGroupNotHost,
+  formatNextRoundNotAllowed,
   formatGroupFormatHelp,
 } from './grouping-formatter';
 import type { PartitionResult, Round } from './grouping';
@@ -69,7 +70,25 @@ describe('D-011 §4 中性組版', () => {
     assertNeutral(formatNoGroupingSession());
     assertNeutral(formatRoundsExhausted());
     assertNeutral(formatGroupNotHost());
+    assertNeutral(formatNextRoundNotAllowed());
     assertNeutral(formatGroupFormatHelp());
+  });
+
+  // ── D-030（2026-10-18）：`下一輪` 授權放寬帶來的兩條文案變更 ──────────────
+  it('[D-030 AC-3] 非 host 且該場無報名的拒絕文案（逐字；不提活動名稱／場地／時間，G5）', () => {
+    const out = formatNextRoundNotAllowed();
+    expect(out).toBe('只有開團的人或有報名的人可以喊下一輪。');
+    assertNeutral(out);
+  });
+
+  it('[D-011 AC-23 errata D-030] 無 session 文案末尾加引導引用句（逐字）', () => {
+    const out = formatNoGroupingSession();
+    expect(out).toBe(
+      ['目前沒有進行中的分組，請先『分組 …』', '（已經有人分組了？請引用那則分組訊息再打「下一輪」）'].join(
+        '\n',
+      ),
+    );
+    assertNeutral(out);
   });
 
   it('[D-011 AC-5] 不足提示文案', () => {

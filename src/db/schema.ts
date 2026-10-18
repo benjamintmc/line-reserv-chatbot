@@ -89,6 +89,16 @@ export interface RegistrationRow {
   created_at: string;
 }
 
+/**
+ * 分組 session 的 `conversation_states.state` 標記（與開團問答共用同一列，互斥）。
+ *
+ * **單一來源**（design-reviewer nit，2026-08-18）：`grouping-service` 以 re-export 續供既有
+ * 匯入點，勿在其他檔案重寫字面值。D-030 起 `conversation-repository` 亦需要它
+ * （`getGroupingByEvent` 的 SQL 條件）——該層不得 import domain，故常數下放至 schema 層
+ * （它本就是一個資料表的欄位值，schema.ts 是其自然歸屬）。
+ */
+export const GROUPING_STATE = 'grouping';
+
 /** conversation_states 表列（逐步開團問答暫存）。 */
 export interface ConversationStateRow {
   line_user_id: string;

@@ -1,6 +1,6 @@
 import type { Queryable } from '../index';
 import { nowIso } from '../time';
-import type { ConversationStateRow } from '../schema';
+import { GROUPING_STATE, type ConversationStateRow } from '../schema';
 
 export interface UpsertConversationInput {
   lineUserId: string;
@@ -19,6 +19,39 @@ export interface UpsertConversationInput {
  */
 export interface ConversationReader {
   get(groupId: string, lineUserId: string): Promise<ConversationStateRow | undefined>;
+  /**
+   * D-030 §2：以 **`(group_id, eventId)`** 撈該群進行中的分組 session（`下一輪` 的 quote 路徑）。
+   * `eventId` 取自 payload 的 `GroupingState.eventId`（D-029 §5.5）。查無 → `undefined`。
+   */
+  getGroupingByEvent(
+    groupId: string,
+    eventId: number,
+  ): Promise<ConversationStateRow | undefined>;
+}
+
+/**
+ * 取 `conversation_states.payload` 內的 `eventId`；**非 JSON／無該欄位／非數字一律 `undefined`**。
+ *
+ * G4（D-030）：T-033b 之前建立的 grouping session，payload 沒有 `eventId`；更早的列甚至可能
+ * 不是合法 JSON。Postgres 的 `::jsonb` cast 碰到非 JSON 文字會丟 22P02，而 WHERE 子句的
+ * 求值順序**不保證**——前置 `payload LIKE '{%'` 之類的守衛可能被 planner 排在 cast 之後，
+ * 整個查詢仍會炸。故本查詢的 SQL **完全不碰 payload 內容**（只篩 `(group_id, state)`，每群
+ * 至多數列），比對改在此處以 try/catch 完成：結構上不可能讓查詢報錯。
+ *
+ * 此處的 catch **不是吞例外**：「payload 不是合法 JSON」是本函式要回答的問題之一
+ * （歷史資料的已知形狀），不是非預期錯誤。
+ */
+function payloadEventId(payload: string | null): number | undefined {
+  if (payload === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const value: unknown = (parsed as Record<string, unknown>).eventId;
+  return typeof value === 'number' ? value : undefined;
 }
 
 /**
@@ -63,6 +96,26 @@ export class ConversationRepository implements ConversationReader {
       [groupId, lineUserId],
     );
     return res.rows[0];
+  }
+
+  /**
+   * D-030 §2：該群「綁定某一場活動」的分組 session（見 {@link ConversationReader}）。
+   *
+   * G4：SQL 只篩 `(group_id, state)` 並取回整列，`eventId` 的比對交給 {@link payloadEventId}
+   * ——理由見該函式註解（`::jsonb` cast 會被歷史非 JSON 列炸掉，且 WHERE 求值順序不可倚賴）。
+   * 多列相符時取最近更新者（`ORDER BY updated_at DESC`；實務上同一場至多一列）。
+   */
+  async getGroupingByEvent(
+    groupId: string,
+    eventId: number,
+  ): Promise<ConversationStateRow | undefined> {
+    const res = await this.q.query<ConversationStateRow>(
+      `SELECT * FROM conversation_states
+       WHERE group_id = $1 AND state = $2 AND payload IS NOT NULL
+       ORDER BY updated_at DESC, line_user_id`,
+      [groupId, GROUPING_STATE],
+    );
+    return res.rows.find((row) => payloadEventId(row.payload) === eventId);
   }
 
   /** 刪除該群該人的對話狀態（完成/放棄/TTL 逾時清理）。回傳是否刪到列。 */
